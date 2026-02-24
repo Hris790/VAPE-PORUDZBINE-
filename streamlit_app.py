@@ -86,17 +86,14 @@ class PredictionEngine:
             for _,r in ha.iterrows():
                 self.hist_dict[(int(r['ID KOMITENTA']),int(r['id artikla']))] = float(r['mean'])
                 self.hist_total_dict[(int(r['ID KOMITENTA']),int(r['id artikla']))] = int(r['sum'])
-            # Count historical months per artikal
             for ida in self.hist_df['id artikla'].unique():
                 sub=self.hist_df[self.hist_df['id artikla']==ida]
                 self.hist_months_per_art[int(ida)]=sub[['Godina','Mesec']].drop_duplicates().shape[0]
             self.log(f"Istorijski prosek za {len(self.hist_dict)} kombinacija")
-        # Count recent months per artikal
         self.recent_months_per_art={}
         for ida in self.prodaja['id artikla'].unique():
             sub=self.prodaja[self.prodaja['id artikla']==ida]
             self.recent_months_per_art[int(ida)]=sub[['Godina','Mesec']].drop_duplicates().shape[0]
-        # Total months per artikal = hist + recent
         self.total_months_per_art={}
         all_arts=set([int(x) for x in self.prodaja['id artikla'].unique()])
         if self.has_history: all_arts|=set([int(x) for x in self.hist_df['id artikla'].unique()])
@@ -167,58 +164,152 @@ class PredictionEngine:
         self.df_monthly=pd.DataFrame(rows)
 
     def _predict_all(self):
-        analysis=[]
-        for _,k in self.all_keys.iterrows():
-            idk,ida=k['ID KOMITENTA'],k['id artikla']; poc=self.startni_dict.get((idk,ida),0)
-            sales,oos,pocs=[],[],[]
-            for god,mes in self.meseci_order:
-                pv,lv,_=self.prodaja_dict.get((idk,ida,god,mes),(0,0,0)); lv=lv if not pd.isna(lv) else 0
-                sales.append(pv); oos.append(1 if poc==0 else 0); pocs.append(poc); poc=lv
-            ha=self.hist_dict.get((idk,ida),0)
-            analysis.append({'idk':idk,'ida':ida,'sales':np.array(sales,dtype=float),'oos':np.array(oos),'poc':np.array(pocs,dtype=float),'ha':ha})
-        preds={}
+        analysis = []
+        for _, k in self.all_keys.iterrows():
+            idk, ida = k['ID KOMITENTA'], k['id artikla']
+            poc = self.startni_dict.get((idk, ida), 0)
+            sales, oos, pocs = [], [], []
+            for god, mes in self.meseci_order:
+                pv, lv, _ = self.prodaja_dict.get((idk, ida, god, mes), (0, 0, 0))
+                lv = lv if not pd.isna(lv) else 0
+                sales.append(pv)
+                oos.append(1 if poc == 0 else 0)
+                pocs.append(poc)
+                poc = lv
+            ha = self.hist_dict.get((idk, ida), 0)
+            lager_danas = self.trenutni_dict.get((idk, ida), 0)
+            analysis.append({
+                'idk': idk, 'ida': ida,
+                'sales': np.array(sales, dtype=float),
+                'oos': np.array(oos),
+                'poc': np.array(pocs, dtype=float),
+                'ha': ha,
+                'lager_danas': lager_danas
+            })
+
+        preds = {}
         for it in analysis:
-            s,o,p=it['sales'],it['oos'],it['poc']; n=len(s); ha=it['ha']
-            noos=s[o==0]
-            if len(noos)>0 and noos.mean()>0:
-                an=noos.mean(); adj=np.where(o==1,an,s)
+            s, o, p = it['sales'], it['oos'], it['poc']
+            n = len(s)
+            ha = it['ha']
+            lager_danas = it['lager_danas']
+
+            # --- KORAK 1: OOS korekcija ---
+            noos = s[o == 0]
+            if len(noos) > 0 and noos.mean() > 0:
+                an = noos.mean()
+                adj = np.where(o == 1, an, s)
                 for m in range(n):
-                    if o[m]==0 and p[m]>0 and p[m]<an*0.5: adj[m]=0.5*s[m]+0.5*an
-            elif ha>0: adj=np.full(n,ha)
-            else: adj=s.copy()
-            if n>=2:
-                lev=adj[0]; tr=(adj[-1]-adj[0])/max(n-1,1)
-                for i in range(1,n):
-                    nl=self.alpha*adj[i]+(1-self.alpha)*(lev+tr); nt=self.beta*(nl-lev)+(1-self.beta)*tr; lev,tr=nl,nt
-                holt=lev+tr
-            else: holt=adj[0]
-            w=WMA_WEIGHTS[-n:] if n<=5 else WMA_WEIGHTS; w=w/w.sum()
-            wma=np.dot(adj[-len(w):],w) if n>=3 else adj.mean()
-            comb=0.5*holt+0.5*wma
-            ma=adj.mean()
-            if ma>0 and n>=3: comb*=(1+min((np.std(adj)/ma)*0.3,0.5))
-            if ha>0 and comb>0: comb=(1-HIST_WEIGHT)*comb+HIST_WEIGHT*ha
-            elif ha>0 and comb==0 and s.sum()==0: comb=ha*0.20
-            # Full average: (hist_total + recent_total) / total_months
-            ht=self.hist_total_dict.get((it['idk'],it['ida']),0)
-            rt=float(s.sum())
-            tm=self.total_months_per_art.get(it['ida'],n)
-            full_avg=(ht+rt)/max(tm,1)
-            preds[(it['idk'],it['ida'])]=(max(0,comb),full_avg)
-        items=[{'k':k,'p':v[0],'a':v[1]} for k,v in preds.items()]; df_p=pd.DataFrame(items)
-        df_p['pr']=df_p['p'].apply(lambda x: round(x) if x>=0.5 else (1 if x>0 else 0))
-        for ida in df_p['k'].apply(lambda x:x[1]).unique():
-            mask=df_p['k'].apply(lambda x:x[1]==ida); sub=df_p[mask]
-            tgt=round(sub['p'].sum()); cur=sub['pr'].sum(); d=tgt-cur
-            if d!=0:
-                rem=sub['p']-np.floor(sub['p']); am=sub['p']>0
-                if d>0:
-                    for idx in rem[am].sort_values(ascending=False).index[:int(d)]: df_p.loc[idx,'pr']+=1
-                elif d<0:
-                    for idx in rem[am&(sub['pr']>0)].sort_values(ascending=True).index[:int(abs(d))]:
-                        if df_p.loc[idx,'pr']>0: df_p.loc[idx,'pr']-=1
-        df_p['ar']=df_p['a'].apply(lambda x:round(x))
-        self.pred_dict={r['k']:(int(r['pr']),int(r['ar']),int(r['pr']-r['ar'])) for _,r in df_p.iterrows()}
+                    if o[m] == 0 and p[m] > 0 and p[m] < an * 0.5:
+                        adj[m] = 0.5 * s[m] + 0.5 * an
+            elif ha > 0:
+                adj = np.full(n, ha)
+            else:
+                adj = s.copy()
+
+            # --- KORAK 2: Osnovne metrike ---
+            max_sale = adj.max()
+            avg_all = adj.mean()
+            avg_2m = adj[-2:].mean() if n >= 2 else avg_all
+            avg_3m = adj[-3:].mean() if n >= 3 else avg_all
+
+            # --- KORAK 3: Trend detekcija ---
+            if avg_all > 0:
+                trend_ratio = avg_2m / avg_all
+            else:
+                trend_ratio = 1.0
+
+            # --- KORAK 4: Holt DES ---
+            if n >= 2:
+                lev = adj[0]
+                tr = (adj[-1] - adj[0]) / max(n - 1, 1)
+                for i in range(1, n):
+                    nl = self.alpha * adj[i] + (1 - self.alpha) * (lev + tr)
+                    nt = self.beta * (nl - lev) + (1 - self.beta) * tr
+                    lev, tr = nl, nt
+                holt = lev + tr
+            else:
+                holt = adj[0]
+
+            # --- KORAK 5: WMA ---
+            w = WMA_WEIGHTS[-n:] if n <= 5 else WMA_WEIGHTS
+            w = w / w.sum()
+            wma = np.dot(adj[-len(w):], w) if n >= 3 else adj.mean()
+
+            # --- KORAK 6: Kombinacija Holt + WMA ---
+            comb = 0.5 * holt + 0.5 * wma
+
+            # --- KORAK 7: Varijansa boost ---
+            ma = adj.mean()
+            if ma > 0 and n >= 3:
+                comb *= (1 + min((np.std(adj) / ma) * 0.3, 0.5))
+
+            # --- KORAK 8: Istorijski blend ---
+            if ha > 0 and comb > 0:
+                comb = (1 - HIST_WEIGHT) * comb + HIST_WEIGHT * ha
+            elif ha > 0 and comb == 0 and s.sum() == 0:
+                comb = ha * 0.20
+
+            # --- KORAK 9 (NOVO): Trend + MAX korekcija ---
+            if max_sale > 0 and avg_all > 0:
+                if trend_ratio >= 1.0:
+                    # Trend raste ili stabilan -> gurni prema MAX-u
+                    comb = max(comb, 0.6 * comb + 0.4 * max_sale)
+                else:
+                    # Trend opada -> ostani blize proseku poslednja 3 meseca
+                    comb = max(comb, avg_3m)
+
+            # --- KORAK 10 (NOVO): Provera zaliha u MAX mesecu ---
+            if max_sale > 0:
+                max_idx = np.argmax(adj)
+                if max_idx < len(p) and p[max_idx] < max_sale * 0.5:
+                    comb = max(comb, max_sale * 1.1)
+
+            # --- KORAK 11 (NOVO): Artikli sa vecim obimom (10+ mesecno) ---
+            if avg_all > 10:
+                comb = max(comb, avg_all * 1.2)
+
+            # --- KORAK 12 (NOVO): Niska zaliha sa aktivnom prodajom ---
+            has_recent_sales = (adj[-2:].sum() > 0) if n >= 2 else (adj.sum() > 0)
+            if lager_danas <= 2 and has_recent_sales and avg_all > 0:
+                min_dopuna = 2 * avg_all
+                comb = max(comb, min_dopuna)
+
+            # --- Full average ---
+            ht = self.hist_total_dict.get((it['idk'], it['ida']), 0)
+            rt = float(s.sum())
+            tm = self.total_months_per_art.get(it['ida'], n)
+            full_avg = (ht + rt) / max(tm, 1)
+
+            preds[(it['idk'], it['ida'])] = (max(0, comb), full_avg)
+
+        # --- Zaokruzivanje i largest remainder ---
+        items = [{'k': k, 'p': v[0], 'a': v[1]} for k, v in preds.items()]
+        df_p = pd.DataFrame(items)
+        df_p['pr'] = df_p['p'].apply(lambda x: round(x) if x >= 0.5 else (1 if x > 0 else 0))
+
+        for ida in df_p['k'].apply(lambda x: x[1]).unique():
+            mask = df_p['k'].apply(lambda x: x[1] == ida)
+            sub = df_p[mask]
+            tgt = round(sub['p'].sum())
+            cur = sub['pr'].sum()
+            d = tgt - cur
+            if d != 0:
+                rem = sub['p'] - np.floor(sub['p'])
+                am = sub['p'] > 0
+                if d > 0:
+                    for idx in rem[am].sort_values(ascending=False).index[:int(d)]:
+                        df_p.loc[idx, 'pr'] += 1
+                elif d < 0:
+                    for idx in rem[am & (sub['pr'] > 0)].sort_values(ascending=True).index[:int(abs(d))]:
+                        if df_p.loc[idx, 'pr'] > 0:
+                            df_p.loc[idx, 'pr'] -= 1
+
+        df_p['ar'] = df_p['a'].apply(lambda x: round(x))
+        self.pred_dict = {
+            r['k']: (int(r['pr']), int(r['ar']), int(r['pr'] - r['ar']))
+            for _, r in df_p.iterrows()
+        }
         self.log(f"Predikcija: {sum(v[0] for v in self.pred_dict.values())} kom")
 
     def _merge_lager(self):
@@ -247,21 +338,6 @@ class PredictionEngine:
 
     def _apply_min_order(self):
         self.adjustments=[]
-        for kid in sorted(self.df_result['ID KOMITENTA'].unique()):
-            if kid in self.excluded: continue
-            mask=self.df_result['ID KOMITENTA']==kid; total=self.df_result.loc[mask,'Porudzbina_2'].sum()
-            if 1<=total<self.min_order:
-                needed=self.min_order-total
-                if total>=2:
-                    cands=self.df_result.loc[mask&(self.df_result['Porudzbina_2']>0)].sort_values('Predikcija',ascending=False)
-                    rem=int(needed)
-                    for idx in cands.index:
-                        if rem<=0: break
-                        add=min(rem,2); self.df_result.loc[idx,'Porudzbina_2']+=add; rem-=add
-                    if rem>0 and len(cands)>0: self.df_result.loc[cands.index[0],'Porudzbina_2']+=rem
-                    self.adjustments.append((kid,f"{total}->{self.min_order}"))
-                else:
-                    self.df_result.loc[mask,'Porudzbina_2']=0; self.adjustments.append((kid,f"{total}->0"))
 
 
 def create_excel(engine):
@@ -381,10 +457,20 @@ def create_excel(engine):
     # O modelu
     ws3=wb.create_sheet("O modelu"); ws3.column_dimensions['A'].width=100
     info=["OPIS MODELA PREDIKCIJE I PORUDZBINE","",f"=== PREDIKCIJA ZA {engine.pred_label.upper()} ===","",
-        "Model predvidja POTENCIJAL PRODAJE.","",f"  1. OOS korekcija",f"  2. Holt DES (alpha={engine.alpha}, beta={engine.beta}) + WMA",
-        "  3. Parcijalni OOS blend","  4. Largest remainder zaokruzivanje"]
-    if engine.has_history: info+=[f"  5. Istorijski podaci: {HIST_WEIGHT*100:.0f}% tezina","     - OOS objekti bez recentne prodaje koriste istoriju"]
-    info+=["",f"=== PORUDZBINA ZA {engine.order_label.upper()} ===","",f"Osnovna: max(Pred-Lager, 0)",
+        "Model predvidja POTENCIJAL PRODAJE.","",
+        "  1. OOS korekcija - meseci bez zaliha se koriguju prosekom meseci sa zalihama",
+        "  2. Metrike: MAX prodaja, prosek 2m, prosek 3m, ukupni prosek, trend",
+        f"  3. Holt DES (alpha={engine.alpha}, beta={engine.beta}) + WMA kombinacija",
+        "  4. Varijansa boost - veca varijansa = veca predikcija",
+        "  5. Trend + MAX korekcija:",
+        "     - Trend raste/stabilan: predikcija se pomera ka MAX-u (60% pred + 40% MAX)",
+        "     - Trend opada: predikcija ostaje blizu proseka poslednja 3 meseca",
+        "  6. Provera zaliha u MAX mesecu - ako je bilo malo zaliha, potencijal je veci (110% MAX)",
+        "  7. Frekventni artikli (10+ mesecno): predikcija minimum 120% proseka",
+        "  8. Niska zaliha (0-2) sa aktivnom prodajom: minimum 2x prosecna mesecna prodaja"]
+    if engine.has_history: info+=[f"  9. Istorijski podaci: {HIST_WEIGHT*100:.0f}% tezina"]
+    info+=["  Largest remainder zaokruzivanje za tacne totale po artiklima","",
+        f"=== PORUDZBINA ZA {engine.order_label.upper()} ===","",f"Osnovna: max(Pred-Lager, 0)",
         f"Min {engine.min_lager}: max(Pred-Lager, {engine.min_lager}-Lager, 0)",f"Min po objektu: >={engine.min_order} ili 0",
         f"Iskljuceni: {', '.join(str(x) for x in sorted(engine.excluded))}","",f"Generisano: {datetime.datetime.now().strftime('%d.%m.%Y. u %H:%M')}"]
     for i,line in enumerate(info,1):
@@ -395,8 +481,6 @@ def create_excel(engine):
     buf=io.BytesIO(); wb.save(buf); buf.seek(0); return buf
 
 # === STREAMLIT UI ===
-import datetime
-
 DEFAULT_EXCLUDED = "1023, 1027, 1034, 1043, 1057, 1060, 1061, 1076, 1315, 1347, 1349, 1359"
 
 st.set_page_config(page_title="VAPE Porudzbine", page_icon="\U0001f4a8", layout="wide", initial_sidebar_state="expanded")
