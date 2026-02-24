@@ -225,9 +225,7 @@ class PredictionEngine:
             if len(idx)>0:
                 ix=idx[0]; self.df_monthly.loc[ix,'Predikcija']=pred; self.df_monthly.loc[ix,'Prosek']=avg; self.df_monthly.loc[ix,'Razlika']=razl
                 if lager is not None: self.df_monthly.loc[ix,'Lager_danas']=lager
-                else:
-                    lg,lm=self.meseci_order[-1]; _,lv,_=self.prodaja_dict.get((idk,ida,lg,lm),(0,0,0))
-                    self.df_monthly.loc[ix,'Lager_danas']=int(lv) if not pd.isna(lv) else 0
+                else: self.df_monthly.loc[ix,'Lager_danas']=0
         for col in ['Predikcija','Prosek','Razlika','Lager_danas']:
             if col not in self.df_monthly.columns: self.df_monthly[col]=0
             self.df_monthly[col]=self.df_monthly[col].fillna(0).astype(int)
