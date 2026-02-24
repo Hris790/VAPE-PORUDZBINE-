@@ -199,11 +199,12 @@ class PredictionEngine:
             if ha>0 and comb>0: comb=(1-HIST_WEIGHT)*comb+HIST_WEIGHT*ha
             elif ha>0 and comb==0 and s.sum()==0: comb=ha*0.20
 
-            # NOVO 1: Niska zaliha (0,1,2) sa aktivnom prodajom -> minimum 2x prosek
+            # NOVO 1: Niska zaliha (0,1,2) sa aktivnom prodajom -> minimum 2x prosek poslednjih 5 meseci
             has_recent_sales = (s[-2:].sum() > 0) if n >= 2 else (s.sum() > 0)
-            if lager_danas <= 2 and has_recent_sales and ma > 0:
-                if comb < 2 * ma:
-                    comb = 2 * ma
+            avg_5m = adj[-5:].mean() if n >= 5 else adj.mean()
+            if lager_danas <= 2 and has_recent_sales and avg_5m > 0:
+                if comb < 2 * avg_5m:
+                    comb = 2 * avg_5m
 
             # NOVO 2: Prodaja 10+ mesecno -> predikcija minimum prosek
             if ma > 10 and comb < ma:
