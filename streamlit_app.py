@@ -5,7 +5,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 WMA_WEIGHTS = np.array([0.05, 0.10, 0.15, 0.25, 0.45])
-HIST_WEIGHT = 0.15
+HIST_WEIGHT = 0.05
 
 class PredictionEngine:
     def __init__(self, file_bytes, excluded_ids, alpha, beta, min_lager, min_order):
@@ -76,13 +76,28 @@ class PredictionEngine:
             key=(r['ID KOMITENTA'],r['id artikla'],r['Godina'],r['Mesec'])
             pm = r['PROMET KA NJIMA'] if self.has_promet else 0
             self.prodaja_dict[key] = (r.get('Prodata Kolicina',r.get('Kolicina',0)), r.get('Lager',0), pm if not pd.isna(pm) else 0)
-        self.hist_dict={}; self.hist_total_dict={}
+        self.hist_dict={}; self.hist_total_dict={}; self.hist_months_per_art={}
         if self.has_history:
             ha = self.hist_df.groupby(['ID KOMITENTA','id artikla'])['Prodata Kolicina'].agg(['sum','mean']).reset_index()
             for _,r in ha.iterrows():
                 self.hist_dict[(int(r['ID KOMITENTA']),int(r['id artikla']))] = float(r['mean'])
                 self.hist_total_dict[(int(r['ID KOMITENTA']),int(r['id artikla']))] = int(r['sum'])
+            # Count historical months per artikal
+            for ida in self.hist_df['id artikla'].unique():
+                sub=self.hist_df[self.hist_df['id artikla']==ida]
+                self.hist_months_per_art[int(ida)]=sub[['Godina','Mesec']].drop_duplicates().shape[0]
             self.log(f"Istorijski prosek za {len(self.hist_dict)} kombinacija")
+        # Count recent months per artikal
+        self.recent_months_per_art={}
+        for ida in self.prodaja['id artikla'].unique():
+            sub=self.prodaja[self.prodaja['id artikla']==ida]
+            self.recent_months_per_art[int(ida)]=sub[['Godina','Mesec']].drop_duplicates().shape[0]
+        # Total months per artikal = hist + recent
+        self.total_months_per_art={}
+        all_arts=set([int(x) for x in self.prodaja['id artikla'].unique()])
+        if self.has_history: all_arts|=set([int(x) for x in self.hist_df['id artikla'].unique()])
+        for ida in all_arts:
+            self.total_months_per_art[ida]=self.hist_months_per_art.get(ida,0)+self.recent_months_per_art.get(ida,0)
         self.povrat_total={}
         if len(self.povrat_df)>0:
             ic=[c for c in self.povrat_df.columns if 'id' in c.lower() and 'artikl' in c.lower()]
@@ -179,8 +194,13 @@ class PredictionEngine:
             ma=adj.mean()
             if ma>0 and n>=3: comb*=(1+min((np.std(adj)/ma)*0.3,0.5))
             if ha>0 and comb>0: comb=(1-HIST_WEIGHT)*comb+HIST_WEIGHT*ha
-            elif ha>0 and comb==0 and s.sum()==0: comb=ha*0.5
-            preds[(it['idk'],it['ida'])]=(max(0,comb),s.mean())
+            elif ha>0 and comb==0 and s.sum()==0: comb=ha*0.20
+            # Full average: (hist_total + recent_total) / total_months
+            ht=self.hist_total_dict.get((it['idk'],it['ida']),0)
+            rt=float(s.sum())
+            tm=self.total_months_per_art.get(it['ida'],n)
+            full_avg=(ht+rt)/max(tm,1)
+            preds[(it['idk'],it['ida'])]=(max(0,comb),full_avg)
         items=[{'k':k,'p':v[0],'a':v[1]} for k,v in preds.items()]; df_p=pd.DataFrame(items)
         df_p['pr']=df_p['p'].apply(lambda x: round(x) if x>=0.5 else (1 if x>0 else 0))
         for ida in df_p['k'].apply(lambda x:x[1]).unique():
@@ -280,7 +300,7 @@ def create_excel(engine):
     cell=ws1.cell(1,ps,f'{engine.pred_label} - PREDIKCIJA'); cell.font=Font(bold=True,color='FFFFFF',name='Arial',size=10)
     cell.fill=pred_hdr; cell.alignment=ca
     for cc in range(ps,ps+3): ws1.cell(1,cc).border=tb; ws1.cell(1,cc).fill=pred_hdr
-    for j,(sh,sfill) in enumerate(zip(['Predikcija','Prosek (5m)','Razlika'],[sf_pred,sf_avg,sf_razl])):
+    for j,(sh,sfill) in enumerate(zip(['Predikcija','Prosek (svi mes.)','Razlika'],[sf_pred,sf_avg,sf_razl])):
         cell=ws1.cell(2,ps+j,sh); cell.font=sfnt; cell.fill=sfill; cell.border=tb; cell.alignment=caw
     os_c=ps+3
     ws1.merge_cells(start_row=1,end_row=1,start_column=os_c,end_column=os_c+2)
@@ -347,7 +367,7 @@ def create_excel(engine):
             cell=ws2.cell(ri,c2,v); cell.font=Font(name='Arial',size=10); cell.fill=f; cell.alignment=ca; cell.border=tb; cell.number_format='#,##0'
     fr=ro+len(ml)+1
     ws2.cell(fr,1,f'PORUDZBINA {engine.order_label.upper()}').font=Font(bold=True,name='Arial',size=11,color='375623'); ws2.cell(fr,1).border=tb
-    ir=[(f'Predikcija {engine.pred_label}',int(df['Predikcija'].sum()),sf_pred),('Prosek (5m)',int(df['Prosek'].sum()),sf_avg),
+    ir=[(f'Predikcija {engine.pred_label}',int(df['Predikcija'].sum()),sf_pred),('Prosek (svi meseci)',int(df['Prosek'].sum()),sf_avg),
         ('Trenutni lager',int(df['Lager_danas'].sum()),sf_lager),
         ('Porudzbina (osnovna)',int(df[~df['ID KOMITENTA'].isin(engine.excluded)]['Porudzbina_1'].sum()),sf_p1),
         (f'Porudzbina (min. {engine.min_lager})',int(df[~df['ID KOMITENTA'].isin(engine.excluded)]['Porudzbina_2'].sum()),sf_p2)]
