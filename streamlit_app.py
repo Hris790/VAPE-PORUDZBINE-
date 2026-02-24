@@ -199,24 +199,30 @@ class PredictionEngine:
             if ha>0 and comb>0: comb=(1-HIST_WEIGHT)*comb+HIST_WEIGHT*ha
             elif ha>0 and comb==0 and s.sum()==0: comb=ha*0.20
 
-            # NOVO 1: Niska zaliha (0,1,2) sa aktivnom prodajom -> minimum 2x prosek poslednjih 5 meseci
+            # NOVO 1: Niska zaliha (0,1,2) - koristi prosek iz meseci kad JE bilo zaliha
+            # Ovo prepoznaje stvarni potencijal artikla koji je cesto bio OOS
             has_recent_sales = (s[-2:].sum() > 0) if n >= 2 else (s.sum() > 0)
-            avg_5m = adj[-5:].mean() if n >= 5 else adj.mean()
-            if lager_danas <= 2 and has_recent_sales and avg_5m > 0:
-                if comb < 2 * avg_5m:
-                    comb = 2 * avg_5m
+            if lager_danas <= 2 and has_recent_sales:
+                # Prosek prodaje SAMO iz meseci kad je pocetno stanje bilo > 0
+                stocked_sales = [s[i] for i in range(n) if p[i] > 0]
+                avg_when_stocked = np.mean(stocked_sales) if stocked_sales else 0
+                if avg_when_stocked > 0 and comb < avg_when_stocked:
+                    comb = avg_when_stocked
 
             # NOVO 2: Prodaja 10+ mesecno -> predikcija minimum prosek
             if ma > 10 and comb < ma:
                 comb = ma
+
+            # Prosek poslednjih 5 meseci (stvarna prodaja, ne adj)
+            avg_5m_raw = float(s[-5:].mean()) if n >= 5 else float(s.mean())
 
             # Full average: (hist_total + recent_total) / total_months
             ht=self.hist_total_dict.get((it['idk'],it['ida']),0)
             rt=float(s.sum())
             tm=self.total_months_per_art.get(it['ida'],n)
             full_avg=(ht+rt)/max(tm,1)
-            preds[(it['idk'],it['ida'])]=(max(0,comb),full_avg)
-        items=[{'k':k,'p':v[0],'a':v[1]} for k,v in preds.items()]; df_p=pd.DataFrame(items)
+            preds[(it['idk'],it['ida'])]=(max(0,comb),full_avg,avg_5m_raw)
+        items=[{'k':k,'p':v[0],'a':v[1],'avg5':v[2]} for k,v in preds.items()]; df_p=pd.DataFrame(items)
         df_p['pr']=df_p['p'].apply(lambda x: round(x) if x>=0.5 else (1 if x>0 else 0))
         for ida in df_p['k'].apply(lambda x:x[1]).unique():
             mask=df_p['k'].apply(lambda x:x[1]==ida); sub=df_p[mask]
@@ -229,21 +235,24 @@ class PredictionEngine:
                     for idx in rem[am&(sub['pr']>0)].sort_values(ascending=True).index[:int(abs(d))]:
                         if df_p.loc[idx,'pr']>0: df_p.loc[idx,'pr']-=1
         df_p['ar']=df_p['a'].apply(lambda x:round(x))
-        self.pred_dict={r['k']:(int(r['pr']),int(r['ar']),int(r['pr']-r['ar'])) for _,r in df_p.iterrows()}
+        self.pred_dict={r['k']:(int(r['pr']),int(r['ar']),int(r['pr']-r['ar']),r['avg5']) for _,r in df_p.iterrows()}
         self.log(f"Predikcija: {sum(v[0] for v in self.pred_dict.values())} kom")
 
     def _merge_lager(self):
         for _,k in self.all_keys.iterrows():
-            idk,ida=k['ID KOMITENTA'],k['id artikla']; pred,avg,razl=self.pred_dict.get((idk,ida),(0,0,0))
+            idk,ida=k['ID KOMITENTA'],k['id artikla']; pred,avg,razl,avg5m=self.pred_dict.get((idk,ida),(0,0,0,0))
             lager=self.trenutni_dict.get((idk,ida),None)
             idx=self.df_monthly[(self.df_monthly['ID KOMITENTA']==idk)&(self.df_monthly['id artikla']==ida)].index
             if len(idx)>0:
                 ix=idx[0]; self.df_monthly.loc[ix,'Predikcija']=pred; self.df_monthly.loc[ix,'Prosek']=avg; self.df_monthly.loc[ix,'Razlika']=razl
+                self.df_monthly.loc[ix,'Avg5m']=avg5m
                 if lager is not None: self.df_monthly.loc[ix,'Lager_danas']=lager
                 else: self.df_monthly.loc[ix,'Lager_danas']=0
         for col in ['Predikcija','Prosek','Razlika','Lager_danas']:
             if col not in self.df_monthly.columns: self.df_monthly[col]=0
             self.df_monthly[col]=self.df_monthly[col].fillna(0).astype(int)
+        if 'Avg5m' not in self.df_monthly.columns: self.df_monthly['Avg5m']=0
+        self.df_monthly['Avg5m']=self.df_monthly['Avg5m'].fillna(0)
 
     def _compute_orders(self):
         self.df_result=self.df_monthly.copy()
@@ -252,7 +261,15 @@ class PredictionEngine:
             return max(int(row['Predikcija'])-int(row['Lager_danas']),0)
         def p2(row):
             if row['ID KOMITENTA'] in self.excluded: return 0
-            return max(max(int(row['Predikcija'])-int(row['Lager_danas']),0),max(self.min_lager-int(row['Lager_danas']),0))
+            pred=int(row['Predikcija']); lager=int(row['Lager_danas'])
+            osnova=max(pred-lager,0)
+            # Za male zalihe (0,1,2): dopuni do 2x prosek poslednjih 5 meseci
+            if lager<=2:
+                target=int(round(2*row['Avg5m']))
+                dopuna=max(target-lager,0)
+            else:
+                dopuna=max(self.min_lager-lager,0)
+            return max(osnova,dopuna)
         self.df_result['Porudzbina_1']=self.df_result.apply(p1,axis=1).astype(int)
         self.df_result['Porudzbina_2']=self.df_result.apply(p2,axis=1).astype(int)
 
