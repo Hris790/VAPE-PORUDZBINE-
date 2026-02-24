@@ -68,7 +68,11 @@ class PredictionEngine:
     def _prepare_lookups(self):
         kp = self.prodaja[['ID KOMITENTA','id artikla','Naziv artikla','Grupa']].drop_duplicates()
         ks = self.startni[['ID KOMITENTA','id artikla','Naziv artikla','Grupa']].drop_duplicates()
-        self.all_keys = pd.concat([kp,ks]).drop_duplicates().sort_values(['ID KOMITENTA','id artikla']).reset_index(drop=True)
+        frames = [kp, ks]
+        if self.has_history:
+            kh = self.hist_df[['ID KOMITENTA','id artikla','Naziv artikla','Grupa']].drop_duplicates()
+            frames.append(kh)
+        self.all_keys = pd.concat(frames).drop_duplicates().sort_values(['ID KOMITENTA','id artikla']).reset_index(drop=True)
         self.startni_dict = {(r['ID KOMITENTA'],r['id artikla']): r['Kolicina'] for _,r in self.startni.iterrows()}
         self.has_promet = 'PROMET KA NJIMA' in self.prodaja.columns
         self.prodaja_dict = {}
