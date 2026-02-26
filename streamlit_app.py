@@ -231,8 +231,18 @@ class PredictionEngine:
             # "Normalni" meseci = nije constrained, imali robu i ostalo je
             normal_mask = ~constrained & (p > 0)
             normal_sales = s[normal_mask]
+            
+            # Ako ima normalnih meseci sa prodajom > 0, koristi samo te
+            # (meseci sa lagerom ali 0 prodaje mogu znaciti da artikal nije bio aktivan)
+            normal_with_sales = normal_sales[normal_sales > 0]
+            if len(normal_with_sales) > 0:
+                an = normal_with_sales.mean()
+            elif len(normal_sales) > 0:
+                an = normal_sales.mean()
+            else:
+                an = 0
 
-            if len(normal_sales) > 0 and normal_sales.mean() > 0:
+            if an > 0:
                 an = normal_sales.mean()
                 # Koriguj sve constrained mesece
                 adj = s.copy().astype(float)
@@ -293,8 +303,8 @@ class PredictionEngine:
             preds[(it['idk'],it['ida'])]=(max(0,comb),full_avg,avg_5m_raw)
         items=[{'k':k,'p':v[0],'a':v[1],'avg5':v[2]} for k,v in preds.items()]; df_p=pd.DataFrame(items)
 
-        # IZMENJENO: Zaokruzivanje predikcije nagore od 0.1
-        df_p['pr']=df_p['p'].apply(lambda x: math.ceil(x) if (x - math.floor(x)) >= 0.1 else math.floor(x))
+        # Zaokruzivanje predikcije: uvek nagore (ceil)
+        df_p['pr']=df_p['p'].apply(lambda x: math.ceil(x) if x > 0 else 0)
 
         for ida in df_p['k'].apply(lambda x:x[1]).unique():
             mask=df_p['k'].apply(lambda x:x[1]==ida); sub=df_p[mask]
@@ -726,7 +736,7 @@ def create_excel(engine):
         "  5. Niska zaliha (0-2): predikcija minimum prosek kad je na stanju",
         "  6. Prodaja 5+ mesecno: predikcija minimum prosek",
         "  7. Donje ogranicenje: predikcija < prosek samo ako poslednja 3 meseca padaju",
-        "  8. Zaokruzivanje: nagore od 0.1 (predikcija), round (prosek)",
+        "  8. Zaokruzivanje: uvek nagore/ceil (predikcija), round (prosek)",
         "  9. Largest remainder zaokruzivanje po artiklu"]
     if engine.has_history: info+=[f"  10. Istorijski podaci: {HIST_WEIGHT*100:.0f}% tezina"]
     info+=["",f"=== PORUDZBINA ZA {engine.order_label.upper()} ===","",
