@@ -262,8 +262,8 @@ class PredictionEngine:
                     for idx in rem[am&(sub['pr']>0)].sort_values(ascending=True).index[:int(abs(d))]:
                         if df_p.loc[idx,'pr']>0: df_p.loc[idx,'pr']-=1
 
-        # IZMENJENO: Prosek se zaokruzuje nadole (floor)
-        df_p['ar']=df_p['a'].apply(lambda x: math.floor(x))
+        # Prosek: standardno round zaokruzivanje
+        df_p['ar']=df_p['a'].apply(lambda x: round(x))
 
         self.pred_dict={r['k']:(int(r['pr']),int(r['ar']),int(r['pr']-r['ar']),r['avg5']) for _,r in df_p.iterrows()}
         self.log(f"Predikcija: {sum(v[0] for v in self.pred_dict.values())} kom")
@@ -676,7 +676,7 @@ def create_excel(engine):
         "  4. Varijansa boost (faktor 0.4, max 70%)",
         "  5. Niska zaliha (0-2): predikcija minimum prosek kad je na stanju",
         "  6. Prodaja 5+ mesecno: predikcija minimum prosek",
-        "  7. Zaokruzivanje: nagore od 0.1 (predikcija), nadole (prosek)",
+        "  7. Zaokruzivanje: nagore od 0.1 (predikcija), round (prosek)",
         "  8. Largest remainder zaokruzivanje po artiklu"]
     if engine.has_history: info+=[f"  9. Istorijski podaci: {HIST_WEIGHT*100:.0f}% tezina"]
     info+=["",f"=== PORUDZBINA ZA {engine.order_label.upper()} ===","",
