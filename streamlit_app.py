@@ -312,8 +312,8 @@ class PredictionEngine:
             preds[(it['idk'],it['ida'])]=(max(0,comb),full_avg,avg_5m_raw)
         items=[{'k':k,'p':v[0],'a':v[1],'avg5':v[2]} for k,v in preds.items()]; df_p=pd.DataFrame(items)
 
-        # Zaokruzivanje predikcije: uvek nagore (ceil)
-        df_p['pr']=df_p['p'].apply(lambda x: math.ceil(x) if x > 0 else 0)
+        # Zaokruzivanje predikcije: round sa 0.5 pragom
+        df_p['pr']=df_p['p'].apply(lambda x: round(x))
 
         # Prosek: standardno round zaokruzivanje
         df_p['ar']=df_p['a'].apply(lambda x: round(x))
