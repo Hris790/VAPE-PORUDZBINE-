@@ -287,7 +287,7 @@ class PredictionEngine:
             # IZMENJENO: Prag spusten sa 10 na 5
             if ma > 5 and comb < ma:
                 comb = ma
-            avg_5m_raw = float(s[-5:].mean()) if n >= 5 else float(s.mean())
+            avg_5m_raw = float(adj[-5:].mean()) if n >= 5 else float(adj.mean())
             ht=self.hist_total_dict.get((it['idk'],it['ida']),0)
             rt=float(s.sum()); tm=self.total_months_per_art.get(it['ida'],n)
             full_avg=(ht+rt)/max(tm,1)
