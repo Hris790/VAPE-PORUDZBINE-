@@ -245,6 +245,14 @@ class PredictionEngine:
             ht=self.hist_total_dict.get((it['idk'],it['ida']),0)
             rt=float(s.sum()); tm=self.total_months_per_art.get(it['ida'],n)
             full_avg=(ht+rt)/max(tm,1)
+            # Donje ogranicenje: predikcija ispod proseka samo ako prodaja konzistentno pada
+            if comb < full_avg and comb > 0:
+                if n >= 3:
+                    declining = all(adj[i] <= adj[i-1] for i in range(max(1, n-3), n))
+                else:
+                    declining = (n >= 2 and adj[-1] < adj[-2])
+                if not declining:
+                    comb = full_avg
             preds[(it['idk'],it['ida'])]=(max(0,comb),full_avg,avg_5m_raw)
         items=[{'k':k,'p':v[0],'a':v[1],'avg5':v[2]} for k,v in preds.items()]; df_p=pd.DataFrame(items)
 
@@ -676,9 +684,10 @@ def create_excel(engine):
         "  4. Varijansa boost (faktor 0.4, max 70%)",
         "  5. Niska zaliha (0-2): predikcija minimum prosek kad je na stanju",
         "  6. Prodaja 5+ mesecno: predikcija minimum prosek",
-        "  7. Zaokruzivanje: nagore od 0.1 (predikcija), round (prosek)",
-        "  8. Largest remainder zaokruzivanje po artiklu"]
-    if engine.has_history: info+=[f"  9. Istorijski podaci: {HIST_WEIGHT*100:.0f}% tezina"]
+        "  7. Donje ogranicenje: predikcija < prosek samo ako poslednja 3 meseca padaju",
+        "  8. Zaokruzivanje: nagore od 0.1 (predikcija), round (prosek)",
+        "  9. Largest remainder zaokruzivanje po artiklu"]
+    if engine.has_history: info+=[f"  10. Istorijski podaci: {HIST_WEIGHT*100:.0f}% tezina"]
     info+=["",f"=== PORUDZBINA ZA {engine.order_label.upper()} ===","",
         f"P1 (osnovna): max(Pred-Lager, 0)",
         f"P2 (sa dopunom): Za lager<=2: dopuna do 2x prosek 5m; Za lager>2: dopuna do min {engine.min_lager}",
