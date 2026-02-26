@@ -1,21 +1,23 @@
 import streamlit as st
-import io, datetime, numpy as np, pandas as pd
+import io, datetime, math, numpy as np, pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
 from openpyxl.utils import get_column_letter
 
-WMA_WEIGHTS = np.array([0.05, 0.10, 0.15, 0.25, 0.45])
-HIST_WEIGHT = 0.05
+# IZMENJENO: Vece tezine na skorije mesece
+WMA_WEIGHTS = np.array([0.03, 0.07, 0.12, 0.28, 0.50])
+# IZMENJENO: Manji uticaj istorije
+HIST_WEIGHT = 0.03
 
 # =====================================================================
-# PREDICTION ENGINE — NEPROMENJEN
+# PREDICTION ENGINE
 # =====================================================================
 class PredictionEngine:
     def __init__(self, file_bytes, excluded_ids, alpha, beta, min_lager, min_order, mesecni_trosak=0, analitika_meseci=None):
         self.file_bytes = file_bytes; self.excluded = excluded_ids
         self.alpha = alpha; self.beta = beta; self.min_lager = min_lager; self.min_order = min_order
         self.mesecni_trosak = mesecni_trosak
-        self.analitika_meseci = analitika_meseci  # lista [god, mes] za analitiku
+        self.analitika_meseci = analitika_meseci
         self.logs = []; self.adjustments = []; self.has_history = False
         self.has_prices = False
 
@@ -49,7 +51,6 @@ class PredictionEngine:
         self.log(f"Prodaja: {len(self.prodaja)} redova")
         self.startni = pd.read_excel(xls, sheet_name=s_start); self.startni.columns=[c.strip() for c in self.startni.columns]
         self.log(f"Startni: {len(self.startni)} redova")
-        # Check for price columns
         price_cols = ['Redovna cena','Akcijska cena','Finalna cena','Nabavna vrednost','Profit']
         if all(c in self.prodaja.columns for c in price_cols):
             self.has_prices = True; self.log("Cene i profit: DA")
@@ -133,7 +134,6 @@ class PredictionEngine:
                 for _,r in self.trenutni.iterrows():
                     k,a=r[ikc[0]],r[iac[0]]
                     if pd.notna(k) and pd.notna(a): self.trenutni_dict[(int(k),int(a))]=int(r[lc[0]]) if pd.notna(r[lc[0]]) else 0
-        # Price lookups
         self.profit_per_unit = {}
         self.price_info = {}
         if self.has_prices:
@@ -223,9 +223,13 @@ class PredictionEngine:
             else: holt=adj[0]
             w=WMA_WEIGHTS[-n:] if n<=5 else WMA_WEIGHTS; w=w/w.sum()
             wma=np.dot(adj[-len(w):],w) if n>=3 else adj.mean()
-            comb=0.5*holt+0.5*wma
+
+            # IZMENJENO: Favorizuj veci rezultat izmedju Holt i WMA
+            comb = 0.4 * min(holt, wma) + 0.6 * max(holt, wma)
+
             ma=adj.mean()
-            if ma>0 and n>=3: comb*=(1+min((np.std(adj)/ma)*0.3,0.5))
+            # IZMENJENO: Veci varijansa boost (0.4 faktor, max 0.7)
+            if ma>0 and n>=3: comb*=(1+min((np.std(adj)/ma)*0.4,0.7))
             if ha>0 and comb>0: comb=(1-HIST_WEIGHT)*comb+HIST_WEIGHT*ha
             elif ha>0 and comb==0 and s.sum()==0: comb=ha*0.20
             has_recent_sales = (s[-2:].sum() > 0) if n >= 2 else (s.sum() > 0)
@@ -234,7 +238,8 @@ class PredictionEngine:
                 avg_when_stocked = np.mean(stocked_sales) if stocked_sales else 0
                 if avg_when_stocked > 0 and comb < avg_when_stocked:
                     comb = avg_when_stocked
-            if ma > 10 and comb < ma:
+            # IZMENJENO: Prag spusten sa 10 na 5
+            if ma > 5 and comb < ma:
                 comb = ma
             avg_5m_raw = float(s[-5:].mean()) if n >= 5 else float(s.mean())
             ht=self.hist_total_dict.get((it['idk'],it['ida']),0)
@@ -242,7 +247,10 @@ class PredictionEngine:
             full_avg=(ht+rt)/max(tm,1)
             preds[(it['idk'],it['ida'])]=(max(0,comb),full_avg,avg_5m_raw)
         items=[{'k':k,'p':v[0],'a':v[1],'avg5':v[2]} for k,v in preds.items()]; df_p=pd.DataFrame(items)
-        df_p['pr']=df_p['p'].apply(lambda x: round(x) if x>=0.5 else (1 if x>0 else 0))
+
+        # IZMENJENO: Zaokruzivanje predikcije nagore od 0.1
+        df_p['pr']=df_p['p'].apply(lambda x: math.ceil(x) if (x - math.floor(x)) >= 0.1 else math.floor(x))
+
         for ida in df_p['k'].apply(lambda x:x[1]).unique():
             mask=df_p['k'].apply(lambda x:x[1]==ida); sub=df_p[mask]
             tgt=round(sub['p'].sum()); cur=sub['pr'].sum(); d=tgt-cur
@@ -253,7 +261,10 @@ class PredictionEngine:
                 elif d<0:
                     for idx in rem[am&(sub['pr']>0)].sort_values(ascending=True).index[:int(abs(d))]:
                         if df_p.loc[idx,'pr']>0: df_p.loc[idx,'pr']-=1
-        df_p['ar']=df_p['a'].apply(lambda x:round(x))
+
+        # IZMENJENO: Prosek se zaokruzuje nadole (floor)
+        df_p['ar']=df_p['a'].apply(lambda x: math.floor(x))
+
         self.pred_dict={r['k']:(int(r['pr']),int(r['ar']),int(r['pr']-r['ar']),r['avg5']) for _,r in df_p.iterrows()}
         self.log(f"Predikcija: {sum(v[0] for v in self.pred_dict.values())} kom")
 
@@ -294,7 +305,7 @@ class PredictionEngine:
     def _apply_min_order(self):
         self.adjustments=[]
 
-    # ---------- ANALYTICS (NOVO) ----------
+    # ---------- ANALYTICS ----------
     def _compute_analytics(self):
         if not self.has_prices:
             self.df_oos = pd.DataFrame()
@@ -304,13 +315,11 @@ class PredictionEngine:
             return
         df = self.df_result; ml = self.mesec_labels
 
-        # Odredi koji meseci su odabrani za analitiku
         if self.analitika_meseci and len(self.analitika_meseci) > 0:
             a_meseci = self.analitika_meseci
         else:
             a_meseci = self.meseci_order
 
-        # Indeksi odabranih meseci unutar meseci_order
         a_indices = []
         for i, (g, m) in enumerate(self.meseci_order):
             for ag, am in a_meseci:
@@ -322,7 +331,6 @@ class PredictionEngine:
         self.analitika_labels = a_labels
         self.log(f"Analitika period: {', '.join(a_labels)} ({n_a} meseci)")
 
-        # Filter prodaja za analitiku
         a_set = set((int(g), int(m)) for g, m in a_meseci_order)
         prodaja_a = self.prodaja[self.prodaja.apply(lambda r: (int(r['Godina']), int(r['Mesec'])) in a_set, axis=1)]
 
@@ -401,7 +409,6 @@ class PredictionEngine:
             razlika = profit_redovna - profit_akcija
             prihod_akcija = (sub['Finalna cena'] * sub['Prodata Kolicina']).sum()
             prihod_redovna = (sub['Redovna cena'] * sub['Prodata Kolicina']).sum()
-            # Obrt: pocetni lager za prvi odabrani mesec
             first_a_idx = a_indices[0]
             if first_a_idx == 0:
                 start_lager = self.startni[self.startni['id artikla']==ida]['Kolicina'].sum() if 'Kolicina' in self.startni.columns else 0
@@ -465,7 +472,7 @@ def create_excel(engine):
     ord_hdr=PatternFill('solid',fgColor='375623'); sf_hist=PatternFill('solid',fgColor='E2D5F1')
     nf_money='#,##0'
 
-    # ========== SHEET 1: PREGLED PO OBJEKTIMA (NEPROMENJEN) ==========
+    # ========== SHEET 1: PREGLED PO OBJEKTIMA ==========
     SC=5; sub_h=['Pocetno stanje','Promet (ulaz)','Prodaja','Povrat','Korekcija']
     sub_f=[sf_poc,sf_prom,sf_prod,sf_pov,sf_kor]; col_suf=['_Pocetno','_Promet','_Prodaja','_Povrat','_Korekcija']
     ws1=wb.active; ws1.title="Pregled po objektima"
@@ -537,7 +544,7 @@ def create_excel(engine):
     ws1.freeze_panes=f'{get_column_letter(month_start)}3'
     ws1.auto_filter.ref=f"A2:{get_column_letter(ws1.max_column)}{ws1.max_row}"
 
-    # ========== SHEET 2: TOTALI (NEPROMENJEN) ==========
+    # ========== SHEET 2: TOTALI ==========
     ws2=wb.create_sheet("Totali po mesecima")
     for c,h in enumerate(['Mesec','Promet (ulaz)','Prodaja','Stvarni povrat','Korekcija','Neto (Promet-Povrat)'],1):
         cell=ws2.cell(1,c,h); cell.font=hfn; cell.fill=hf; cell.alignment=caw; cell.border=tb
@@ -568,7 +575,7 @@ def create_excel(engine):
     ws2.column_dimensions['A'].width=32; ws2.column_dimensions['B'].width=18
     for c in 'CDEF': ws2.column_dimensions[c].width=18
 
-    # ========== SHEET 3: OOS ANALIZA (NOVO) ==========
+    # ========== SHEET 3: OOS ANALIZA ==========
     if engine.has_prices and len(engine.df_oos) > 0:
         ws_oos = wb.create_sheet("OOS Izgubljeni profit")
         oos_hdr = PatternFill('solid', fgColor='C00000')
@@ -591,7 +598,7 @@ def create_excel(engine):
         ws_oos.freeze_panes='E2'
         ws_oos.auto_filter.ref=f"A1:J{len(engine.df_oos)+1}"
 
-    # ========== SHEET 4: PROFITABILNOST PO OBJEKTIMA (NOVO) ==========
+    # ========== SHEET 4: PROFITABILNOST PO OBJEKTIMA ==========
     if engine.has_prices and len(engine.df_profit_obj) > 0:
         ws_prof = wb.create_sheet("Profitabilnost objekata")
         prof_hdr = PatternFill('solid', fgColor='1F4E79')
@@ -608,7 +615,7 @@ def create_excel(engine):
             for c, v in enumerate(vals, 1):
                 cell = ws_prof.cell(idx, c, v); cell.font=dfn; cell.border=tb; cell.alignment=ca
                 if c >= 4: cell.number_format=nf_money
-                if c == 6:  # Neto profit
+                if c == 6:
                     if v <= 0:
                         cell.fill = bad_fill; cell.font = Font(name='Arial', size=9, bold=True, color='C00000')
                     elif v > 0:
@@ -621,7 +628,7 @@ def create_excel(engine):
         ws_prof.freeze_panes='B2'
         ws_prof.auto_filter.ref=f"A1:{get_column_letter(len(headers))}{len(engine.df_profit_obj)+1}"
 
-    # ========== SHEET 5: ANALIZA AKCIJE (NOVO) ==========
+    # ========== SHEET 5: ANALIZA AKCIJE ==========
     if engine.has_prices and len(engine.df_promo) > 0:
         ws_akc = wb.create_sheet("Analiza akcije")
         akc_hdr = PatternFill('solid', fgColor='BF8F00')
@@ -646,10 +653,10 @@ def create_excel(engine):
             for c, v in enumerate(vals, 1):
                 cell = ws_akc.cell(idx, c, v); cell.font=dfn; cell.border=tb; cell.alignment=ca
                 if c in [4,5,8,9,10,11,12]: cell.number_format=nf_money
-                if c == 14:  # Obrt
+                if c == 14:
                     if v >= 2.0: cell.fill = good_obrt; cell.font = Font(name='Arial',size=9,bold=True,color='006100')
                     elif v < 1.0: cell.fill = bad_obrt; cell.font = Font(name='Arial',size=9,bold=True,color='C00000')
-                if c == 15 and v > 120:  # Dani pokrivanja visoki
+                if c == 15 and v > 120:
                     cell.fill = bad_obrt
         ws_akc.column_dimensions['A'].width=10; ws_akc.column_dimensions['B'].width=45; ws_akc.column_dimensions['C'].width=12
         for cl in 'DEFG': ws_akc.column_dimensions[cl].width=12
@@ -664,12 +671,14 @@ def create_excel(engine):
     info=["OPIS MODELA PREDIKCIJE I PORUDZBINE","",f"=== PREDIKCIJA ZA {engine.pred_label.upper()} ===","",
         "Model predvidja POTENCIJAL PRODAJE.","",
         f"  1. OOS korekcija (prosek iz meseci kad je bilo zaliha)",
-        f"  2. Holt DES (alpha={engine.alpha}, beta={engine.beta}) + WMA (45/25/15/10/5%)",
-        "  3. Varijansa boost + Parcijalni OOS blend",
-        "  4. Niska zaliha (0-2): predikcija minimum prosek kad je na stanju",
-        "  5. Prodaja 10+ mesecno: predikcija minimum prosek",
-        "  6. Largest remainder zaokruzivanje po artiklu"]
-    if engine.has_history: info+=[f"  7. Istorijski podaci: {HIST_WEIGHT*100:.0f}% tezina"]
+        f"  2. Holt DES (alpha={engine.alpha}, beta={engine.beta}) + WMA (50/28/12/7/3%)",
+        "  3. Kombinacija: 60% veci + 40% manji od Holt/WMA",
+        "  4. Varijansa boost (faktor 0.4, max 70%)",
+        "  5. Niska zaliha (0-2): predikcija minimum prosek kad je na stanju",
+        "  6. Prodaja 5+ mesecno: predikcija minimum prosek",
+        "  7. Zaokruzivanje: nagore od 0.1 (predikcija), nadole (prosek)",
+        "  8. Largest remainder zaokruzivanje po artiklu"]
+    if engine.has_history: info+=[f"  9. Istorijski podaci: {HIST_WEIGHT*100:.0f}% tezina"]
     info+=["",f"=== PORUDZBINA ZA {engine.order_label.upper()} ===","",
         f"P1 (osnovna): max(Pred-Lager, 0)",
         f"P2 (sa dopunom): Za lager<=2: dopuna do 2x prosek 5m; Za lager>2: dopuna do min {engine.min_lager}",
@@ -760,7 +769,6 @@ if uploaded:
     file_bytes = uploaded.read()
     st.markdown(f'<div class="success-box">\u2705 Fajl <strong>{uploaded.name}</strong> ucitan ({len(file_bytes)//1024} KB)</div>', unsafe_allow_html=True)
     st.markdown("")
-    # Procitaj mesece iz fajla za filter
     try:
         _xls = pd.ExcelFile(io.BytesIO(file_bytes))
         _sm = {s.strip().lower(): s for s in _xls.sheet_names}
@@ -845,7 +853,6 @@ if uploaded:
                     st.markdown(f'<div class="section-title">\U0001f534 Izgubljeni profit zbog nedostatka zaliha</div>', unsafe_allow_html=True)
                     st.caption(f"\U0001f4c5 Period analize: **{period_str}**")
                     if len(engine.df_oos) > 0:
-                        # Sumarno po artiklu
                         oos_art = engine.df_oos.groupby(['id artikla','Naziv artikla']).agg(
                             Objekata=('ID KOMITENTA','nunique'),
                             Izgubljeno_kom=('Izgubljeno_kom','sum'),
@@ -855,7 +862,6 @@ if uploaded:
                         st.markdown("**Po artiklima:**")
                         st.dataframe(oos_art, use_container_width=True, height=250)
 
-                        # Sumarno po komitentu
                         oos_kom = engine.df_oos.groupby('ID KOMITENTA').agg(
                             Artikala=('id artikla','nunique'),
                             OOS_meseci=('OOS_meseci','sum'),
@@ -865,7 +871,6 @@ if uploaded:
                         st.markdown("**Po objektima (top 20):**")
                         st.dataframe(oos_kom.head(20), use_container_width=True, height=300)
 
-                        # Detalj
                         with st.expander("Detaljan pregled svih OOS kombinacija"):
                             det = engine.df_oos[['ID KOMITENTA','id artikla','Naziv artikla','OOS_meseci','Prosek_kad_ima','Izgubljeno_kom','Izgubljeni_profit','Lager_danas']].copy()
                             det.columns = ['ID Kom.','ID Art.','Naziv','OOS mes.','Prosek','Izg. kom','Izg. profit','Lager']
@@ -881,7 +886,6 @@ if uploaded:
                         st.info(f"Ukupan trosak: **{engine.mesecni_trosak:,.0f} RSD** / {engine.num_komitenti} objekata = **{engine.trosak_po_objektu:,.0f} RSD** po objektu")
 
                     prof = engine.df_profit_obj.copy()
-                    # Neprofitabilni
                     unprofitable = prof[prof['Neto_profit'] <= 0].sort_values('Neto_profit')
                     if len(unprofitable) > 0:
                         st.markdown(f'<div class="warn-box">\u26a0\ufe0f <strong>{len(unprofitable)} neprofitabilnih objekata</strong> — kandidati za izlistavanje</div>', unsafe_allow_html=True)
@@ -889,7 +893,6 @@ if uploaded:
                         up_show.columns = ['ID Kom.','Art.','Prod. kom','Bruto profit','Trosak mkt','Neto profit','Izg. OOS']
                         st.dataframe(up_show, use_container_width=True, height=200)
 
-                    # Svi objekti
                     st.markdown("**Svi objekti (sortirano po neto profitu):**")
                     all_show = prof[['ID KOMITENTA','Artikala','Prodato_kom','Bruto_profit','Trosak_mkt','Neto_profit','Izgubljeno_OOS','Potencijalni_profit']].copy()
                     all_show.columns = ['ID Kom.','Art.','Prod. kom','Bruto profit','Trosak mkt','Neto profit','Izg. OOS','Potencijal']
@@ -926,7 +929,6 @@ if uploaded:
                                            'Akt. obj.','Prod/obj']
                         st.dataframe(pr_show, use_container_width=True, height=350)
 
-                        # Insight
                         best = promo.iloc[0]
                         worst = promo.iloc[-1]
                         st.markdown(f"""
