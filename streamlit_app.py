@@ -301,10 +301,10 @@ class PredictionEngine:
                     declining = (n >= 2 and adj[-1] <= adj[-2])
                 if not declining:
                     comb = full_avg
-            # Sigurnosna mreza: predikcija 0 samo ako nista prodato u poslednja 3 meseca
+            # Sigurnosna mreza: predikcija 0 samo ako nista prodato u poslednjih 5 meseci
             if comb <= 0:
-                last3 = s[-3:] if n >= 3 else s
-                if last3.sum() > 0:
+                last5 = s[-5:] if n >= 5 else s
+                if last5.sum() > 0:
                     comb = 1.0
             preds[(it['idk'],it['ida'])]=(max(0,comb),full_avg,avg_5m_raw)
         items=[{'k':k,'p':v[0],'a':v[1],'avg5':v[2]} for k,v in preds.items()]; df_p=pd.DataFrame(items)
@@ -742,7 +742,7 @@ def create_excel(engine):
         "  5. Niska zaliha (0-2): predikcija minimum prosek kad je na stanju",
         "  6. Prodaja 5+ mesecno: predikcija minimum prosek",
         "  7. Donje ogranicenje: predikcija < prosek samo ako poslednjih 5 meseci pada ili stagnira (<=)",
-        "  8. Sigurnosna mreza: predikcija=0 samo ako nista prodato u poslednja 3 meseca",
+        "  8. Sigurnosna mreza: predikcija=0 samo ako nista prodato u poslednjih 5 meseci",
         "  8. Zaokruzivanje: uvek nagore/ceil (predikcija), round (prosek)",
         "  9. Largest remainder zaokruzivanje po artiklu"]
     if engine.has_history: info+=[f"  10. Istorijski podaci: {HIST_WEIGHT*100:.0f}% tezina"]
