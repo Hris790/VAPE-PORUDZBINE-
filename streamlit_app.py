@@ -292,10 +292,12 @@ class PredictionEngine:
             ht=self.hist_total_dict.get((it['idk'],it['ida']),0)
             rt=float(s.sum()); tm=self.total_months_per_art.get(it['ida'],n)
             full_avg=(ht+rt)/max(tm,1)
-            # Donje ogranicenje: predikcija ispod proseka samo ako prodaja konzistentno pada
+            # Donje ogranicenje: predikcija ispod proseka samo ako prodaja konzistentno pada poslednjih 5 meseci
             if comb < full_avg and comb > 0:
-                if n >= 3:
-                    declining = all(adj[i] <= adj[i-1] for i in range(max(1, n-3), n))
+                if n >= 5:
+                    declining = all(adj[i] < adj[i-1] for i in range(n-4, n))
+                elif n >= 3:
+                    declining = all(adj[i] < adj[i-1] for i in range(1, n))
                 else:
                     declining = (n >= 2 and adj[-1] < adj[-2])
                 if not declining:
@@ -735,7 +737,7 @@ def create_excel(engine):
         "  4. Varijansa boost (faktor 0.4, max 70%)",
         "  5. Niska zaliha (0-2): predikcija minimum prosek kad je na stanju",
         "  6. Prodaja 5+ mesecno: predikcija minimum prosek",
-        "  7. Donje ogranicenje: predikcija < prosek samo ako poslednja 3 meseca padaju",
+        "  7. Donje ogranicenje: predikcija < prosek samo ako poslednjih 5 meseci striktno padaju",
         "  8. Zaokruzivanje: uvek nagore/ceil (predikcija), round (prosek)",
         "  9. Largest remainder zaokruzivanje po artiklu"]
     if engine.has_history: info+=[f"  10. Istorijski podaci: {HIST_WEIGHT*100:.0f}% tezina"]
