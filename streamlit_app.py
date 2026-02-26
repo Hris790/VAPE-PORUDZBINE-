@@ -243,7 +243,6 @@ class PredictionEngine:
                 an = 0
 
             if an > 0:
-                an = normal_sales.mean()
                 # Koriguj sve constrained mesece
                 adj = s.copy().astype(float)
                 for m in range(n):
@@ -321,8 +320,8 @@ class PredictionEngine:
                 if d>0:
                     for idx in rem[am].sort_values(ascending=False).index[:int(d)]: df_p.loc[idx,'pr']+=1
                 elif d<0:
-                    for idx in rem[am&(sub['pr']>0)].sort_values(ascending=True).index[:int(abs(d))]:
-                        if df_p.loc[idx,'pr']>0: df_p.loc[idx,'pr']-=1
+                    for idx in rem[am&(sub['pr']>1)].sort_values(ascending=True).index[:int(abs(d))]:
+                        df_p.loc[idx,'pr']-=1
 
         # Prosek: standardno round zaokruzivanje
         df_p['ar']=df_p['a'].apply(lambda x: round(x))
