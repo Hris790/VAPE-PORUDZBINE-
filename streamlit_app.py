@@ -344,11 +344,13 @@ class PredictionEngine:
             return max(int(row['Predikcija'])-int(row['Lager_danas']),0)
         def p2(row):
             if row['ID KOMITENTA'] in self.excluded: return 0
-            pred=int(row['Predikcija']); lager=int(row['Lager_danas'])
+            pred=int(row['Predikcija']); lager=int(row['Lager_danas']); prosek=int(row['Prosek'])
             osnova=max(pred-lager,0)
-            if lager<=2:
-                target=int(round(2*row['Avg5m']))
+            if lager<=2 and pred>0:
+                target=max(pred, prosek, self.min_order)
                 dopuna=max(target-lager,0)
+            elif lager<=2 and pred==0:
+                dopuna=0
             else:
                 dopuna=max(self.min_lager-lager,0)
             return max(osnova,dopuna)
@@ -740,7 +742,7 @@ def create_excel(engine):
     if engine.has_history: info+=[f"  10. Istorijski podaci: {HIST_WEIGHT*100:.0f}% tezina"]
     info+=["",f"=== PORUDZBINA ZA {engine.order_label.upper()} ===","",
         f"P1 (osnovna): max(Pred-Lager, 0)",
-        f"P2 (sa dopunom): Za lager<=2: dopuna do 2x prosek 5m; Za lager>2: dopuna do min {engine.min_lager}",
+        f"P2 (sa dopunom): Za lager<=2: dopuna do max(predikcija, prosek, min porudzbina={engine.min_order}); Za lager>2: dopuna do min {engine.min_lager}",
         f"Iskljuceni: {', '.join(str(x) for x in sorted(engine.excluded))}"]
     if engine.has_prices:
         info+=["",f"=== ANALITIKA ===","",
@@ -809,7 +811,7 @@ with st.sidebar:
     alpha = st.number_input("Alpha (nivo)", 0.0, 1.0, 0.4, 0.05)
     beta = st.number_input("Beta (trend)", 0.0, 1.0, 0.2, 0.05)
     min_lager = st.number_input("Min lager", 0, 20, 2)
-    min_order = st.number_input("Min porudzbina po objektu", 0, 50, 5)
+    min_order = st.number_input("Min porudzbina po objektu", 0, 50, 2)
     st.markdown("---")
     st.markdown("### \U0001f4b0 Troskovi")
     mesecni_trosak = st.number_input("Ukupan trosak mkt/ulistavanja za ceo period (RSD)", min_value=0, value=0, step=10000, help="Unesi UKUPAN iznos za ceo period — automatski se deli na broj objekata")
