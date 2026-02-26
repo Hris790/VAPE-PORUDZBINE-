@@ -315,17 +315,6 @@ class PredictionEngine:
         # Zaokruzivanje predikcije: uvek nagore (ceil)
         df_p['pr']=df_p['p'].apply(lambda x: math.ceil(x) if x > 0 else 0)
 
-        for ida in df_p['k'].apply(lambda x:x[1]).unique():
-            mask=df_p['k'].apply(lambda x:x[1]==ida); sub=df_p[mask]
-            tgt=round(sub['p'].sum()); cur=sub['pr'].sum(); d=tgt-cur
-            if d!=0:
-                rem=sub['p']-np.floor(sub['p']); am=sub['p']>0
-                if d>0:
-                    for idx in rem[am].sort_values(ascending=False).index[:int(d)]: df_p.loc[idx,'pr']+=1
-                elif d<0:
-                    for idx in rem[am&(sub['pr']>1)].sort_values(ascending=True).index[:int(abs(d))]:
-                        df_p.loc[idx,'pr']-=1
-
         # Prosek: standardno round zaokruzivanje
         df_p['ar']=df_p['a'].apply(lambda x: round(x))
 
@@ -747,7 +736,7 @@ def create_excel(engine):
         "  7. Donje ogranicenje: predikcija < prosek samo ako poslednjih 5 meseci pada ili stagnira (<=)",
         "  8. Sigurnosna mreza: predikcija=0 samo ako nista prodato u poslednjih 5 meseci; ako poslednji mesec >1 onda min taj broj",
         "  8. Zaokruzivanje: uvek nagore/ceil (predikcija), round (prosek)",
-        "  9. Largest remainder zaokruzivanje po artiklu"]
+        ]
     if engine.has_history: info+=[f"  10. Istorijski podaci: {HIST_WEIGHT*100:.0f}% tezina"]
     info+=["",f"=== PORUDZBINA ZA {engine.order_label.upper()} ===","",
         f"P1 (osnovna): max(Pred-Lager, 0)",
