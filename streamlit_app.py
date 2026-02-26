@@ -197,24 +197,61 @@ class PredictionEngine:
         analysis=[]
         for _,k in self.all_keys.iterrows():
             idk,ida=k['ID KOMITENTA'],k['id artikla']; poc=self.startni_dict.get((idk,ida),0)
-            sales,oos,pocs=[],[],[]
+            sales,oos,pocs,end_lagers,promets=[],[],[],[],[]
             for god,mes in self.meseci_order:
-                pv,lv,_=self.prodaja_dict.get((idk,ida,god,mes),(0,0,0)); lv=lv if not pd.isna(lv) else 0
-                sales.append(pv); oos.append(1 if poc==0 else 0); pocs.append(poc); poc=lv
+                pv,lv,tv=self.prodaja_dict.get((idk,ida,god,mes),(0,0,0))
+                lv=lv if not pd.isna(lv) else 0; tv=tv if not pd.isna(tv) else 0
+                sales.append(pv); oos.append(1 if poc==0 else 0); pocs.append(poc)
+                end_lagers.append(lv); promets.append(tv); poc=lv
             ha=self.hist_dict.get((idk,ida),0)
             lager_danas=self.trenutni_dict.get((idk,ida),0)
-            analysis.append({'idk':idk,'ida':ida,'sales':np.array(sales,dtype=float),'oos':np.array(oos),'poc':np.array(pocs,dtype=float),'ha':ha,'lager_danas':lager_danas})
+            analysis.append({'idk':idk,'ida':ida,'sales':np.array(sales,dtype=float),'oos':np.array(oos),
+                'poc':np.array(pocs,dtype=float),'ha':ha,'lager_danas':lager_danas,
+                'end_lagers':np.array(end_lagers,dtype=float),'promets':np.array(promets,dtype=float)})
         preds={}
         for it in analysis:
             s,o,p=it['sales'],it['oos'],it['poc']; n=len(s); ha=it['ha']
             lager_danas=it['lager_danas']
-            noos=s[o==0]
-            if len(noos)>0 and noos.mean()>0:
-                an=noos.mean(); adj=np.where(o==1,an,s)
+            el=it['end_lagers']; tv=it['promets']
+
+            # Odrediti koji meseci su "constrained" (ograniceni lagerom)
+            # constrained = prodaja je bila ogranicena raspolozivom robom
+            constrained = np.zeros(n, dtype=bool)
+            for m in range(n):
+                if p[m]==0 and tv[m]==0:
+                    # Cist OOS - pocetno 0, promet 0 — nista nisu imali
+                    constrained[m] = True
+                elif el[m]==0 and s[m]>0:
+                    # Kraj meseca 0, a nesto je prodato — rasprodali sve
+                    constrained[m] = True
+                elif p[m]==0 and tv[m]>0 and el[m]==0:
+                    # Pocetno 0, dobili u toku meseca, opet rasprodali
+                    constrained[m] = True
+
+            # "Normalni" meseci = nije constrained, imali robu i ostalo je
+            normal_mask = ~constrained & (p > 0)
+            normal_sales = s[normal_mask]
+
+            if len(normal_sales) > 0 and normal_sales.mean() > 0:
+                an = normal_sales.mean()
+                # Koriguj sve constrained mesece
+                adj = s.copy().astype(float)
                 for m in range(n):
-                    if o[m]==0 and p[m]>0 and p[m]<an*0.5: adj[m]=0.5*s[m]+0.5*an
+                    if constrained[m]:
+                        if p[m]==0 and tv[m]==0:
+                            # Cist OOS — zameni prosekom normalnih
+                            adj[m] = an
+                        elif el[m]==0 and s[m]>0:
+                            # Rasprodato — potraznja je bila VECA, zameni prosekom ali min prodaja
+                            adj[m] = max(an, s[m])
+                        else:
+                            adj[m] = an
+                    elif p[m]>0 and p[m]<an*0.5:
+                        # Nizak lager na pocetku, nije OOS ali ogranicava
+                        adj[m] = 0.5*s[m] + 0.5*an
             elif ha>0: adj=np.full(n,ha)
-            else: adj=s.copy()
+            else: adj=s.copy().astype(float)
+
             if n>=2:
                 lev=adj[0]; tr=(adj[-1]-adj[0])/max(n-1,1)
                 for i in range(1,n):
@@ -678,7 +715,11 @@ def create_excel(engine):
     ws3=wb.create_sheet("O modelu"); ws3.column_dimensions['A'].width=100
     info=["OPIS MODELA PREDIKCIJE I PORUDZBINE","",f"=== PREDIKCIJA ZA {engine.pred_label.upper()} ===","",
         "Model predvidja POTENCIJAL PRODAJE.","",
-        f"  1. OOS korekcija (prosek iz meseci kad je bilo zaliha)",
+        f"  1. Constrained sales korekcija:",
+        f"     - Kraj meseca lager=0 i prodaja>0: rasprodato, potraznja veca — zameni prosekom normalnih meseci",
+        f"     - Pocetno=0 i promet=0: cist OOS — zameni prosekom normalnih meseci",
+        f"     - Pocetno=0 i promet>0 i kraj=0: dobili i rasprodali — zameni prosekom",
+        f"     - Normalni meseci = ostalo robe na kraju (lager>0)",
         f"  2. Holt DES (alpha={engine.alpha}, beta={engine.beta}) + WMA (50/28/12/7/3%)",
         "  3. Kombinacija: 60% veci + 40% manji od Holt/WMA",
         "  4. Varijansa boost (faktor 0.4, max 70%)",
