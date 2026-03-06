@@ -3,13 +3,6 @@ import io, datetime, math, numpy as np, pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
 from openpyxl.utils import get_column_letter
-from reportlab.lib.pagesizes import A4
-from reportlab.lib import colors as rl_colors
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib.units import cm
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable, Table, TableStyle
-from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY, TA_RIGHT
-from reportlab.platypus import Flowable
 
 WMA_WEIGHTS = np.array([0.03, 0.07, 0.12, 0.28, 0.50])
 HIST_WEIGHT = 0.03
@@ -716,363 +709,376 @@ def create_excel(engine):
 
 
 
-# ── PDF Report boje ─────────────────────────────────────────────────────────
-_C_PLAVA   = rl_colors.HexColor('#0D2B55')
-_C_PLAVA2  = rl_colors.HexColor('#1A4A8A')
-_C_AKCENT  = rl_colors.HexColor('#2E86C1')
-_C_ZELENA  = rl_colors.HexColor('#1E8449')
-_C_CRVENA  = rl_colors.HexColor('#C0392B')
-_C_NARAND  = rl_colors.HexColor('#D35400')
-_C_TAMNA   = rl_colors.HexColor('#1C1C1C')
-_C_SIVA    = rl_colors.HexColor('#555555')
-_C_SIVA_L  = rl_colors.HexColor('#F4F6F8')
-_C_SIVA_LL = rl_colors.HexColor('#FAFBFC')
-_C_BORDER  = rl_colors.HexColor('#DCE3EC')
-_C_BELA    = rl_colors.white
-
-
-class KPIRow(Flowable):
-    """Red sa 4 KPI kartice"""
-    def __init__(self, items, width):
-        Flowable.__init__(self)
-        self.items = items  # [(label, value, sub, color), ...]
-        self.width = width
-        self.height = 2.2*cm
-
-    def draw(self):
-        c = self.canv
-        n = len(self.items)
-        card_w = self.width / n
-        gap = 8
-        for i, (label, value, sub, col) in enumerate(self.items):
-            x = i * card_w
-            cw = card_w - gap
-            ch = self.height
-
-            # Kartica pozadina
-            c.setFillColor(___C_SIVA_LL)
-            c.setStrokeColor(_C_BORDER)
-            c.setLineWidth(0.5)
-            c.roundRect(x, 0, cw, ch, 6, fill=1, stroke=1)
-
-            # Leva bordura u boji
-            c.setFillColor(col)
-            c.roundRect(x, 0, 4, ch, 2, fill=1, stroke=0)
-
-            # Label
-            c.setFillColor(_C_SIVA)
-            c.setFont('Helvetica', 7.5)
-            c.drawString(x + 12, ch - 14, label.upper())
-
-            # Value
-            c.setFillColor(col)
-            c.setFont('Helvetica-Bold', 14)
-            c.drawString(x + 12, ch - 32, value)
-
-            # Sub
-            if sub:
-                c.setFillColor(_C_SIVA)
-                c.setFont('Helvetica', 7)
-                c.drawString(x + 12, 7, sub)
-
-
-class BarChart(Flowable):
-    """Horizontalni bar chart za mesecni trend"""
-    def __init__(self, labels, values, width, height, title):
-        Flowable.__init__(self)
-        self.labels = labels
-        self.values = values
-        self.width = width
-        self.height = height
-        self.title = title
-
-    def draw(self):
-        c = self.canv
-        pad_l = 2.8*cm
-        pad_r = 1.5*cm
-        pad_t = 0.5*cm
-        pad_b = 0.3*cm
-        n = len(self.values)
-        chart_w = self.width - pad_l - pad_r
-        chart_h = self.height - pad_t - pad_b
-
-        bar_area_h = chart_h / n
-        bar_h = bar_area_h * 0.55
-
-        max_v = max(self.values)
-
-        for i, (label, val) in enumerate(zip(self.labels, self.values)):
-            y = pad_b + (n - 1 - i) * bar_area_h + (bar_area_h - bar_h) / 2
-            bar_w = (val / max_v) * chart_w
-
-            # Pozadinski track
-            c.setFillColor(_C_BORDER)
-            c.roundRect(pad_l, y, chart_w, bar_h, 3, fill=1, stroke=0)
-
-            # Boja: pada = toplija, raste = hladnija
-            ratio = i / max(n - 1, 1)
-            r = int(30 + ratio * 175)
-            g = int(134 - ratio * 80)
-            b = int(180 - ratio * 100)
-            bar_color = colors.Color(r/255, g/255, b/255)
-
-            # Bar
-            c.setFillColor(bar_color)
-            c.roundRect(pad_l, y, bar_w, bar_h, 3, fill=1, stroke=0)
-
-            # Label levo
-            c.setFillColor(_C_TAMNA)
-            c.setFont('Helvetica-Bold', 8)
-            c.drawRightString(pad_l - 6, y + bar_h/2 - 4, label)
-
-            # Vrednost desno od bara
-            c.setFillColor(_C_TAMNA)
-            c.setFont('Helvetica', 8)
-            val_str = f"{fmt(val)} RSD"
-            c.drawString(pad_l + bar_w + 5, y + bar_h/2 - 4, val_str)
-
-
-class DonutChart(Flowable):
-    """Donut chart za profitabilnost"""
-    def __init__(self, n_pos, n_neg, width, height):
-        Flowable.__init__(self)
-        self.n_pos = n_pos
-        self.n_neg = n_neg
-        self.width = width
-        self.height = height
-
-    def draw(self):
-        c = self.canv
-        cx = self.width * 0.38
-        cy = self.height / 2
-        r_outer = min(self.height * 0.42, 1.6*cm)
-        r_inner = r_outer * 0.58
-
-        total = self.n_pos + self.n_neg
-        angle_pos = 360 * self.n_pos / total
-        angle_neg = 360 - angle_pos
-
-        # Pozitivan segment (zeleni) - od 90 stepeni u smeru kazaljke
-        start = 90
-        end = 90 - angle_pos
-        c.setFillColor(_C_ZELENA)
-        c.setStrokeColor(_C_BELA)
-        c.setLineWidth(1.5)
-        self._draw_segment(c, cx, cy, r_outer, r_inner, start, end)
-
-        # Negativan segment (crveni)
-        start2 = end
-        end2 = 90 - 360
-        c.setFillColor(_C_CRVENA)
-        self._draw_segment(c, cx, cy, r_outer, r_inner, start2, end2)
-
-        # Centar tekst
-        c.setFillColor(_C_TAMNA)
-        c.setFont('Helvetica-Bold', 11)
-        c.drawCentredString(cx, cy + 4, f"{self.n_pos}")
-        c.setFont('Helvetica', 7)
-        c.setFillColor(_C_SIVA)
-        c.drawCentredString(cx, cy - 7, "profitabilnih")
-
-        # Legenda desno
-        lx = cx + r_outer + 14
-        ly = cy + 18
-
-        c.setFillColor(_C_ZELENA)
-        c.roundRect(lx, ly, 10, 10, 2, fill=1, stroke=0)
-        c.setFillColor(_C_TAMNA)
-        c.setFont('Helvetica-Bold', 8)
-        c.drawString(lx + 14, ly + 1, f"{self.n_pos} profitabilnih")
-        c.setFont('Helvetica', 7)
-        c.setFillColor(_C_SIVA)
-        c.drawString(lx + 14, ly - 9, f"({self.n_pos/total*100:.0f}% mreze)")
-
-        ly2 = cy - 8
-        c.setFillColor(_C_CRVENA)
-        c.roundRect(lx, ly2, 10, 10, 2, fill=1, stroke=0)
-        c.setFillColor(_C_TAMNA)
-        c.setFont('Helvetica-Bold', 8)
-        c.drawString(lx + 14, ly2 + 1, f"{self.n_neg} neprofitabilnih")
-        c.setFont('Helvetica', 7)
-        c.setFillColor(_C_SIVA)
-        c.drawString(lx + 14, ly2 - 9, f"({self.n_neg/total*100:.0f}% mreze)")
-
-    def _draw_segment(self, c, cx, cy, r_out, r_in, start_deg, end_deg):
-        from reportlab.graphics.shapes import Path
-        import math
-        steps = 60
-        start_r = math.radians(start_deg)
-        end_r   = math.radians(end_deg)
-        if end_r > start_r:
-            end_r -= 2 * math.pi
-
-        p = c.beginPath()
-        # outer arc
-        angle = start_r
-        step = (end_r - start_r) / steps
-        p.moveTo(cx + r_out * math.cos(angle), cy + r_out * math.sin(angle))
-        for _ in range(steps):
-            angle += step
-            p.lineTo(cx + r_out * math.cos(angle), cy + r_out * math.sin(angle))
-        # inner arc reverse
-        for _ in range(steps):
-            angle -= step
-            p.lineTo(cx + r_in * math.cos(angle), cy + r_in * math.sin(angle))
-        p.close()
-        c.drawPath(p, fill=1, stroke=1)
-
-
-class ScenarioBar(Flowable):
-    """Horizontalne trake za scenario poredjenje"""
-    def __init__(self, items, width, height):
-        Flowable.__init__(self)
-        self.items = items  # [(label, value, color, is_total)]
-        self.width = width
-        self.height = height
-
-    def draw(self):
-        c = self.canv
-        max_v = max(abs(v) for _, v, _, _ in self.items if not _)
-        total_v = max(abs(v) for _, v, _, is_t in self.items if is_t)
-        bar_h = 18
-        gap = 8
-        pad_l = 4.5*cm
-        pad_r = 3.5*cm
-
-        for i, (label, value, col, is_total) in enumerate(self.items):
-            y = self.height - (i + 1) * (bar_h + gap)
-            chart_w = self.width - pad_l - pad_r
-            ref = total_v if is_total else max_v
-            bw = (abs(value) / ref) * chart_w if ref > 0 else 0
-
-            if is_total:
-                # Totalni red - drugaciji stil
-                c.setFillColor(colors.HexColor('#EBF5FB'))
-                c.roundRect(pad_l - 4, y - 3, chart_w + 8, bar_h + 6, 4, fill=1, stroke=0)
-                c.setStrokeColor(col)
-                c.setLineWidth(1.5)
-                c.roundRect(pad_l - 4, y - 3, chart_w + 8, bar_h + 6, 4, fill=0, stroke=1)
-
-            # Bar
-            c.setFillColor(col)
-            c.setStrokeColor(_C_BELA)
-            c.setLineWidth(0)
-            c.roundRect(pad_l, y, bw, bar_h, 3, fill=1, stroke=0)
-
-            # Label levo
-            font = 'Helvetica-Bold' if is_total else 'Helvetica'
-            c.setFont(font, 8 if not is_total else 9)
-            c.setFillColor(_C_TAMNA)
-            c.drawRightString(pad_l - 8, y + bar_h/2 - 4, label)
-
-            # Vrednost desno
-            c.setFont('Helvetica-Bold', 8 if not is_total else 9)
-            c.setFillColor(col if not is_total else _C_PLAVA)
-            prefix = "= " if is_total else "+ "
-            if label == "Trenutni neto profit":
-                prefix = ""
-            c.drawString(pad_l + bw + 8, y + bar_h/2 - 4, f"{prefix}{fmt(value)} RSD")
-
-
-class SectionHeader(Flowable):
-    """Zaglavlje sekcije sa brojem"""
-    def __init__(self, number, title, width):
-        Flowable.__init__(self)
-        self.number = number
-        self.title = title
-        self.width = width
-        self.height = 1*cm
-
-    def draw(self):
-        c = self.canv
-        # Plava krug sa brojem
-        c.setFillColor(_C_PLAVA)
-        c.circle(10, self.height/2, 10, fill=1, stroke=0)
-        c.setFillColor(_C_BELA)
-        c.setFont('Helvetica-Bold', 9)
-        c.drawCentredString(10, self.height/2 - 3.5, str(self.number))
-
-        # Naslov
-        c.setFillColor(_C_PLAVA)
-        c.setFont('Helvetica-Bold', 13)
-        c.drawString(26, self.height/2 - 5, self.title)
-
-        # Linija ispod
-        c.setStrokeColor(_C_BORDER)
-        c.setLineWidth(0.8)
-        c.line(0, 0, self.width, 0)
-
-
-# ── Stilovi ────────────────────────────────────────────────────────
-def S(name, size=9.5, color=_C_TAMNA, bold=False, align=TA_JUSTIFY, sb=0, sa=5, leading=None):
-    fn = 'Helvetica-Bold' if bold else 'Helvetica'
-    return ParagraphStyle(name, fontName=fn, fontSize=size, textColor=color,
-                          alignment=align, spaceBefore=sb, spaceAfter=sa,
-                          leading=leading or size * 1.5)
-
-body_s  = S('b')
-bold_s  = S('bo', bold=True)
-ok_s    = S('ok', color=_C_ZELENA, bold=True, sa=3)
-warn_s  = S('w',  color=_C_CRVENA, bold=True, sa=3)
-cap_s   = S('c',  size=7.5, color=_C_SIVA, align=TA_CENTER)
-right_s = S('r',  size=8, color=_C_SIVA, align=TA_RIGHT, sa=0)
-
-
-# ── GRADNJA DOKUMENTA ─────────────────────────────────────────────
-class PDFReport:
-    def __init__(self):
-        self.story = []
-
-    def add(self, el):
-        self.story.append(el)
-
-    def sp(self, h=0.25):
-        self.story.append(Spacer(1, h*cm))
-
-    def build(self):
-        doc = SimpleDocTemplate(
-            '/mnt/user-data/outputs/AMAN_Izvestaj_v4.pdf',
-            pagesize=A4,
-            rightMargin=2.2*cm, leftMargin=2.2*cm,
-            topMargin=2.8*cm, bottomMargin=1.8*cm
-        )
-        doc.build(self.story, onFirstPage=self._header_footer,
-                  onLaterPages=self._header_footer)
-
-    def _header_footer(self, canv, doc):
-        canv.saveState()
-        W_page, H_page = A4
-        # Header linija
-        canv.setStrokeColor(_C_PLAVA)
-        canv.setLineWidth(3)
-        canv.line(2.2*cm, H_page - 1.1*cm, W_page - 2.2*cm, H_page - 1.1*cm)
-        # Kompanija levo
-        canv.setFillColor(_C_PLAVA)
-        canv.setFont('Helvetica-Bold', 10)
-        canv.drawString(2.2*cm, H_page - 0.85*cm, 'AMAN d.o.o.')
-        # Period desno
-        canv.setFillColor(_C_SIVA)
-        canv.setFont('Helvetica', 8)
-        canv.drawRightString(W_page - 2.2*cm, H_page - 0.85*cm, 'Sep 2025 — Feb 2026')
-        # Footer
-        canv.setStrokeColor(_C_BORDER)
-        canv.setLineWidth(0.5)
-        canv.line(2.2*cm, 1.3*cm, W_page - 2.2*cm, 1.3*cm)
-        canv.setFillColor(_C_SIVA)
-        canv.setFont('Helvetica', 7)
-        canv.drawString(2.2*cm, 0.9*cm, 'Interno — AMAN d.o.o. | Mart 2026.')
-        canv.drawRightString(W_page - 2.2*cm, 0.9*cm, f'Strana {doc.page}')
-        canv.restoreState()
-
-
-
-
 def create_pdf(engine):
     """Generise PDF izvestaj o profitabilnosti na osnovu engine podataka."""
     import math
 
     if not engine.has_prices or len(engine.df_profit_obj) == 0:
         return None
+    # ── Lazy reportlab import ──────────────────────────────────────
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors as rl_colors
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.lib.units import cm
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable, Table, TableStyle, Flowable
+        from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY, TA_RIGHT
+        import math
+    except ImportError:
+        return None
+
+    # ── PDF Report boje ─────────────────────────────────────────────────────────
+    _C_PLAVA   = rl_colors.HexColor('#0D2B55')
+    _C_PLAVA2  = rl_colors.HexColor('#1A4A8A')
+    _C_AKCENT  = rl_colors.HexColor('#2E86C1')
+    _C_ZELENA  = rl_colors.HexColor('#1E8449')
+    _C_CRVENA  = rl_colors.HexColor('#C0392B')
+    _C_NARAND  = rl_colors.HexColor('#D35400')
+    _C_TAMNA   = rl_colors.HexColor('#1C1C1C')
+    _C_SIVA    = rl_colors.HexColor('#555555')
+    _C_SIVA_L  = rl_colors.HexColor('#F4F6F8')
+    _C_SIVA_LL = rl_colors.HexColor('#FAFBFC')
+    _C_BORDER  = rl_colors.HexColor('#DCE3EC')
+    _C_BELA    = rl_colors.white
+
+
+    class KPIRow(Flowable):
+        """Red sa 4 KPI kartice"""
+        def __init__(self, items, width):
+            Flowable.__init__(self)
+            self.items = items  # [(label, value, sub, color), ...]
+            self.width = width
+            self.height = 2.2*cm
+
+        def draw(self):
+            c = self.canv
+            n = len(self.items)
+            card_w = self.width / n
+            gap = 8
+            for i, (label, value, sub, col) in enumerate(self.items):
+                x = i * card_w
+                cw = card_w - gap
+                ch = self.height
+
+                # Kartica pozadina
+                c.setFillColor(___C_SIVA_LL)
+                c.setStrokeColor(_C_BORDER)
+                c.setLineWidth(0.5)
+                c.roundRect(x, 0, cw, ch, 6, fill=1, stroke=1)
+
+                # Leva bordura u boji
+                c.setFillColor(col)
+                c.roundRect(x, 0, 4, ch, 2, fill=1, stroke=0)
+
+                # Label
+                c.setFillColor(_C_SIVA)
+                c.setFont('Helvetica', 7.5)
+                c.drawString(x + 12, ch - 14, label.upper())
+
+                # Value
+                c.setFillColor(col)
+                c.setFont('Helvetica-Bold', 14)
+                c.drawString(x + 12, ch - 32, value)
+
+                # Sub
+                if sub:
+                    c.setFillColor(_C_SIVA)
+                    c.setFont('Helvetica', 7)
+                    c.drawString(x + 12, 7, sub)
+
+
+    class BarChart(Flowable):
+        """Horizontalni bar chart za mesecni trend"""
+        def __init__(self, labels, values, width, height, title):
+            Flowable.__init__(self)
+            self.labels = labels
+            self.values = values
+            self.width = width
+            self.height = height
+            self.title = title
+
+        def draw(self):
+            c = self.canv
+            pad_l = 2.8*cm
+            pad_r = 1.5*cm
+            pad_t = 0.5*cm
+            pad_b = 0.3*cm
+            n = len(self.values)
+            chart_w = self.width - pad_l - pad_r
+            chart_h = self.height - pad_t - pad_b
+
+            bar_area_h = chart_h / n
+            bar_h = bar_area_h * 0.55
+
+            max_v = max(self.values)
+
+            for i, (label, val) in enumerate(zip(self.labels, self.values)):
+                y = pad_b + (n - 1 - i) * bar_area_h + (bar_area_h - bar_h) / 2
+                bar_w = (val / max_v) * chart_w
+
+                # Pozadinski track
+                c.setFillColor(_C_BORDER)
+                c.roundRect(pad_l, y, chart_w, bar_h, 3, fill=1, stroke=0)
+
+                # Boja: pada = toplija, raste = hladnija
+                ratio = i / max(n - 1, 1)
+                r = int(30 + ratio * 175)
+                g = int(134 - ratio * 80)
+                b = int(180 - ratio * 100)
+                bar_color = colors.Color(r/255, g/255, b/255)
+
+                # Bar
+                c.setFillColor(bar_color)
+                c.roundRect(pad_l, y, bar_w, bar_h, 3, fill=1, stroke=0)
+
+                # Label levo
+                c.setFillColor(_C_TAMNA)
+                c.setFont('Helvetica-Bold', 8)
+                c.drawRightString(pad_l - 6, y + bar_h/2 - 4, label)
+
+                # Vrednost desno od bara
+                c.setFillColor(_C_TAMNA)
+                c.setFont('Helvetica', 8)
+                val_str = f"{fmt(val)} RSD"
+                c.drawString(pad_l + bar_w + 5, y + bar_h/2 - 4, val_str)
+
+
+    class DonutChart(Flowable):
+        """Donut chart za profitabilnost"""
+        def __init__(self, n_pos, n_neg, width, height):
+            Flowable.__init__(self)
+            self.n_pos = n_pos
+            self.n_neg = n_neg
+            self.width = width
+            self.height = height
+
+        def draw(self):
+            c = self.canv
+            cx = self.width * 0.38
+            cy = self.height / 2
+            r_outer = min(self.height * 0.42, 1.6*cm)
+            r_inner = r_outer * 0.58
+
+            total = self.n_pos + self.n_neg
+            angle_pos = 360 * self.n_pos / total
+            angle_neg = 360 - angle_pos
+
+            # Pozitivan segment (zeleni) - od 90 stepeni u smeru kazaljke
+            start = 90
+            end = 90 - angle_pos
+            c.setFillColor(_C_ZELENA)
+            c.setStrokeColor(_C_BELA)
+            c.setLineWidth(1.5)
+            self._draw_segment(c, cx, cy, r_outer, r_inner, start, end)
+
+            # Negativan segment (crveni)
+            start2 = end
+            end2 = 90 - 360
+            c.setFillColor(_C_CRVENA)
+            self._draw_segment(c, cx, cy, r_outer, r_inner, start2, end2)
+
+            # Centar tekst
+            c.setFillColor(_C_TAMNA)
+            c.setFont('Helvetica-Bold', 11)
+            c.drawCentredString(cx, cy + 4, f"{self.n_pos}")
+            c.setFont('Helvetica', 7)
+            c.setFillColor(_C_SIVA)
+            c.drawCentredString(cx, cy - 7, "profitabilnih")
+
+            # Legenda desno
+            lx = cx + r_outer + 14
+            ly = cy + 18
+
+            c.setFillColor(_C_ZELENA)
+            c.roundRect(lx, ly, 10, 10, 2, fill=1, stroke=0)
+            c.setFillColor(_C_TAMNA)
+            c.setFont('Helvetica-Bold', 8)
+            c.drawString(lx + 14, ly + 1, f"{self.n_pos} profitabilnih")
+            c.setFont('Helvetica', 7)
+            c.setFillColor(_C_SIVA)
+            c.drawString(lx + 14, ly - 9, f"({self.n_pos/total*100:.0f}% mreze)")
+
+            ly2 = cy - 8
+            c.setFillColor(_C_CRVENA)
+            c.roundRect(lx, ly2, 10, 10, 2, fill=1, stroke=0)
+            c.setFillColor(_C_TAMNA)
+            c.setFont('Helvetica-Bold', 8)
+            c.drawString(lx + 14, ly2 + 1, f"{self.n_neg} neprofitabilnih")
+            c.setFont('Helvetica', 7)
+            c.setFillColor(_C_SIVA)
+            c.drawString(lx + 14, ly2 - 9, f"({self.n_neg/total*100:.0f}% mreze)")
+
+        def _draw_segment(self, c, cx, cy, r_out, r_in, start_deg, end_deg):
+            from reportlab.graphics.shapes import Path
+            import math
+            steps = 60
+            start_r = math.radians(start_deg)
+            end_r   = math.radians(end_deg)
+            if end_r > start_r:
+                end_r -= 2 * math.pi
+
+            p = c.beginPath()
+            # outer arc
+            angle = start_r
+            step = (end_r - start_r) / steps
+            p.moveTo(cx + r_out * math.cos(angle), cy + r_out * math.sin(angle))
+            for _ in range(steps):
+                angle += step
+                p.lineTo(cx + r_out * math.cos(angle), cy + r_out * math.sin(angle))
+            # inner arc reverse
+            for _ in range(steps):
+                angle -= step
+                p.lineTo(cx + r_in * math.cos(angle), cy + r_in * math.sin(angle))
+            p.close()
+            c.drawPath(p, fill=1, stroke=1)
+
+
+    class ScenarioBar(Flowable):
+        """Horizontalne trake za scenario poredjenje"""
+        def __init__(self, items, width, height):
+            Flowable.__init__(self)
+            self.items = items  # [(label, value, color, is_total)]
+            self.width = width
+            self.height = height
+
+        def draw(self):
+            c = self.canv
+            max_v = max(abs(v) for _, v, _, _ in self.items if not _)
+            total_v = max(abs(v) for _, v, _, is_t in self.items if is_t)
+            bar_h = 18
+            gap = 8
+            pad_l = 4.5*cm
+            pad_r = 3.5*cm
+
+            for i, (label, value, col, is_total) in enumerate(self.items):
+                y = self.height - (i + 1) * (bar_h + gap)
+                chart_w = self.width - pad_l - pad_r
+                ref = total_v if is_total else max_v
+                bw = (abs(value) / ref) * chart_w if ref > 0 else 0
+
+                if is_total:
+                    # Totalni red - drugaciji stil
+                    c.setFillColor(colors.HexColor('#EBF5FB'))
+                    c.roundRect(pad_l - 4, y - 3, chart_w + 8, bar_h + 6, 4, fill=1, stroke=0)
+                    c.setStrokeColor(col)
+                    c.setLineWidth(1.5)
+                    c.roundRect(pad_l - 4, y - 3, chart_w + 8, bar_h + 6, 4, fill=0, stroke=1)
+
+                # Bar
+                c.setFillColor(col)
+                c.setStrokeColor(_C_BELA)
+                c.setLineWidth(0)
+                c.roundRect(pad_l, y, bw, bar_h, 3, fill=1, stroke=0)
+
+                # Label levo
+                font = 'Helvetica-Bold' if is_total else 'Helvetica'
+                c.setFont(font, 8 if not is_total else 9)
+                c.setFillColor(_C_TAMNA)
+                c.drawRightString(pad_l - 8, y + bar_h/2 - 4, label)
+
+                # Vrednost desno
+                c.setFont('Helvetica-Bold', 8 if not is_total else 9)
+                c.setFillColor(col if not is_total else _C_PLAVA)
+                prefix = "= " if is_total else "+ "
+                if label == "Trenutni neto profit":
+                    prefix = ""
+                c.drawString(pad_l + bw + 8, y + bar_h/2 - 4, f"{prefix}{fmt(value)} RSD")
+
+
+    class SectionHeader(Flowable):
+        """Zaglavlje sekcije sa brojem"""
+        def __init__(self, number, title, width):
+            Flowable.__init__(self)
+            self.number = number
+            self.title = title
+            self.width = width
+            self.height = 1*cm
+
+        def draw(self):
+            c = self.canv
+            # Plava krug sa brojem
+            c.setFillColor(_C_PLAVA)
+            c.circle(10, self.height/2, 10, fill=1, stroke=0)
+            c.setFillColor(_C_BELA)
+            c.setFont('Helvetica-Bold', 9)
+            c.drawCentredString(10, self.height/2 - 3.5, str(self.number))
+
+            # Naslov
+            c.setFillColor(_C_PLAVA)
+            c.setFont('Helvetica-Bold', 13)
+            c.drawString(26, self.height/2 - 5, self.title)
+
+            # Linija ispod
+            c.setStrokeColor(_C_BORDER)
+            c.setLineWidth(0.8)
+            c.line(0, 0, self.width, 0)
+
+
+    # ── Stilovi ────────────────────────────────────────────────────────
+    def S(name, size=9.5, color=_C_TAMNA, bold=False, align=TA_JUSTIFY, sb=0, sa=5, leading=None):
+        fn = 'Helvetica-Bold' if bold else 'Helvetica'
+        return ParagraphStyle(name, fontName=fn, fontSize=size, textColor=color,
+                              alignment=align, spaceBefore=sb, spaceAfter=sa,
+                              leading=leading or size * 1.5)
+
+    body_s  = S('b')
+    bold_s  = S('bo', bold=True)
+    ok_s    = S('ok', color=_C_ZELENA, bold=True, sa=3)
+    warn_s  = S('w',  color=_C_CRVENA, bold=True, sa=3)
+    cap_s   = S('c',  size=7.5, color=_C_SIVA, align=TA_CENTER)
+    right_s = S('r',  size=8, color=_C_SIVA, align=TA_RIGHT, sa=0)
+
+
+    # ── GRADNJA DOKUMENTA ─────────────────────────────────────────────
+    class PDFReport:
+        def __init__(self):
+            self.story = []
+
+        def add(self, el):
+            self.story.append(el)
+
+        def sp(self, h=0.25):
+            self.story.append(Spacer(1, h*cm))
+
+        def build(self):
+            doc = SimpleDocTemplate(
+                '/mnt/user-data/outputs/AMAN_Izvestaj_v4.pdf',
+                pagesize=A4,
+                rightMargin=2.2*cm, leftMargin=2.2*cm,
+                topMargin=2.8*cm, bottomMargin=1.8*cm
+            )
+            doc.build(self.story, onFirstPage=self._header_footer,
+                      onLaterPages=self._header_footer)
+
+        def _header_footer(self, canv, doc):
+            canv.saveState()
+            W_page, H_page = A4
+            # Header linija
+            canv.setStrokeColor(_C_PLAVA)
+            canv.setLineWidth(3)
+            canv.line(2.2*cm, H_page - 1.1*cm, W_page - 2.2*cm, H_page - 1.1*cm)
+            # Kompanija levo
+            canv.setFillColor(_C_PLAVA)
+            canv.setFont('Helvetica-Bold', 10)
+            canv.drawString(2.2*cm, H_page - 0.85*cm, 'AMAN d.o.o.')
+            # Period desno
+            canv.setFillColor(_C_SIVA)
+            canv.setFont('Helvetica', 8)
+            canv.drawRightString(W_page - 2.2*cm, H_page - 0.85*cm, 'Sep 2025 — Feb 2026')
+            # Footer
+            canv.setStrokeColor(_C_BORDER)
+            canv.setLineWidth(0.5)
+            canv.line(2.2*cm, 1.3*cm, W_page - 2.2*cm, 1.3*cm)
+            canv.setFillColor(_C_SIVA)
+            canv.setFont('Helvetica', 7)
+            canv.drawString(2.2*cm, 0.9*cm, 'Interno — AMAN d.o.o. | Mart 2026.')
+            canv.drawRightString(W_page - 2.2*cm, 0.9*cm, f'Strana {doc.page}')
+            canv.restoreState()
+
+
+
+
+
 
     prof = engine.df_profit_obj.copy()
     # Izvuci kolone
@@ -1202,7 +1208,6 @@ def create_pdf(engine):
     r.sp(0.2)
 
     # Split layout: tekst levo, donut desno
-    from reportlab.platypus import Table, TableStyle
     tbl_data = [[
         Paragraph(
             f'Od <b>{n_obj} objekata</b>, <b>{n_neg} je neto negativno</b>. '
