@@ -391,22 +391,28 @@ class PredictionEngine:
             avg_stocked = np.mean(non_oos_sales) if non_oos_sales else 0
             oos_count = sum(month_oos)
             if oos_count > 0 and avg_stocked > 0:
-                # za svaki OOS mesec uzimamo pravi ppu za taj mesec
-                lost_profit = sum(
-                    avg_stocked * get_ppu(ida, month_gm[j][0], month_gm[j][1])
-                    for j in range(len(month_sales)) if month_oos[j]
-                )
-                lost_units = avg_stocked * oos_count
-                ppu_avg = lost_profit / lost_units if lost_units > 0 else 0
-                oos_rows.append({
+                row = {
                     'ID KOMITENTA': idk, 'id artikla': ida,
                     'Naziv artikla': k['Naziv artikla'], 'Grupa': k['Grupa'],
-                    'OOS_meseci': oos_count, 'Prosek_kad_ima': round(avg_stocked, 1),
-                    'Izgubljeno_kom': round(lost_units, 1),
-                    'Profit_po_kom': round(ppu_avg, 2),
-                    'Izgubljeni_profit': round(lost_profit, 0),
+                    'Prosek_kad_ima': round(avg_stocked, 1),
                     'Lager_danas': self.trenutni_dict.get((idk, ida), 0)
-                })
+                }
+                total_lost = 0
+                for j in range(len(month_sales)):
+                    god_j, mes_j = month_gm[j]
+                    lb_j = a_labels[j]
+                    if month_oos[j]:
+                        ppu_j = get_ppu(ida, god_j, mes_j)
+                        izgub_j = round(avg_stocked * ppu_j, 0)
+                        row[f'OOS_{lb_j}'] = 1
+                        row[f'Izgub_{lb_j}'] = izgub_j
+                        total_lost += izgub_j
+                    else:
+                        row[f'OOS_{lb_j}'] = 0
+                        row[f'Izgub_{lb_j}'] = 0
+                row['OOS_meseci'] = oos_count
+                row['Izgubljeni_profit'] = round(total_lost, 0)
+                oos_rows.append(row)
         self.df_oos = pd.DataFrame(oos_rows)
         if len(self.df_oos) > 0:
             self.df_oos = self.df_oos.sort_values('Izgubljeni_profit', ascending=False)
@@ -628,24 +634,44 @@ def create_excel(engine):
     if engine.has_prices and len(engine.df_oos) > 0:
         ws_oos = wb.create_sheet("OOS Izgubljeni profit")
         oos_hdr = PatternFill('solid', fgColor='C00000')
-        oos_headers = ['ID Komitenta','ID Artikla','Naziv','Grupa','OOS meseci','Prosek kad ima','Izgubljeno kom','Profit/kom','Izgubljeni profit (RSD)','Lager danas']
-        for c, h in enumerate(oos_headers, 1):
-            cell = ws_oos.cell(1, c, h); cell.font=Font(bold=True,color='FFFFFF',name='Arial',size=10); cell.fill=oos_hdr; cell.alignment=caw; cell.border=tb
+        oos_fill = PatternFill('solid', fgColor='FCE4EC')
+        a_labels_oos = engine.analitika_labels if engine.analitika_labels else engine.mesec_labels
+        # Fiksne kolone + po jedna OOS/Izgub za svaki mesec + total
+        fixed_h = ['ID Komitenta','ID Artikla','Naziv','Grupa','Prosek kad ima','Lager danas']
+        mes_h = []
+        for lb in a_labels_oos: mes_h += [f'OOS {lb}', f'Izgub {lb} (RSD)']
+        all_h = fixed_h + mes_h + ['OOS meseci ukupno','Izgubljeni profit (RSD)']
+        for c, h in enumerate(all_h, 1):
+            cell = ws_oos.cell(1, c, h)
+            cell.font=Font(bold=True,color='FFFFFF',name='Arial',size=9)
+            cell.fill=oos_hdr; cell.alignment=caw; cell.border=tb
         for idx, (_, row) in enumerate(engine.df_oos.iterrows(), 2):
             vals = [row['ID KOMITENTA'], row['id artikla'], row['Naziv artikla'], row['Grupa'],
-                    row['OOS_meseci'], row['Prosek_kad_ima'], row['Izgubljeno_kom'],
-                    row['Profit_po_kom'], row['Izgubljeni_profit'], row['Lager_danas']]
+                    row.get('Prosek_kad_ima',0), row.get('Lager_danas',0)]
+            for lb in a_labels_oos:
+                vals.append(int(row.get(f'OOS_{lb}', 0)))
+                vals.append(row.get(f'Izgub_{lb}', 0))
+            vals += [row.get('OOS_meseci',0), row.get('Izgubljeni_profit',0)]
             for c, v in enumerate(vals, 1):
                 cell = ws_oos.cell(idx, c, v); cell.font=dfn; cell.border=tb; cell.alignment=ca
-                if c == 9: cell.number_format=nf_money
-                if c == 10 and v == 0:
-                    cell.fill = PatternFill('solid', fgColor='FCE4EC')
-                    cell.font = Font(name='Arial', size=9, bold=True, color='C00000')
-        ws_oos.column_dimensions['A'].width=13; ws_oos.column_dimensions['B'].width=10; ws_oos.column_dimensions['C'].width=45
-        ws_oos.column_dimensions['D'].width=12
-        for cl in 'EFGHIJ': ws_oos.column_dimensions[cl].width=15
+                # OOS=1 -> crvena celija, Izgub kolone -> format money
+                col_name = all_h[c-1]
+                if col_name.startswith('OOS ') and v == 1:
+                    cell.fill = oos_fill; cell.font = Font(name='Arial',size=9,bold=True,color='C00000')
+                if col_name.startswith('Izgub ') or col_name == 'Izgubljeni profit (RSD)':
+                    cell.number_format = nf_money
+                if col_name == 'Lager danas' and v == 0:
+                    cell.fill = oos_fill; cell.font = Font(name='Arial',size=9,bold=True,color='C00000')
+        ws_oos.column_dimensions['A'].width=13; ws_oos.column_dimensions['B'].width=10
+        ws_oos.column_dimensions['C'].width=45; ws_oos.column_dimensions['D'].width=12
+        ws_oos.column_dimensions['E'].width=14; ws_oos.column_dimensions['F'].width=12
+        for i in range(len(a_labels_oos)*2):
+            ws_oos.column_dimensions[get_column_letter(7+i)].width=13
+        last_col = 7 + len(a_labels_oos)*2
+        ws_oos.column_dimensions[get_column_letter(last_col)].width=14
+        ws_oos.column_dimensions[get_column_letter(last_col+1)].width=18
         ws_oos.freeze_panes='E2'
-        ws_oos.auto_filter.ref=f"A1:J{len(engine.df_oos)+1}"
+        ws_oos.auto_filter.ref=f"A1:{get_column_letter(len(all_h))}{len(engine.df_oos)+1}"
 
     if engine.has_prices and len(engine.df_profit_obj) > 0:
         ws_prof = wb.create_sheet("Profitabilnost objekata")
@@ -913,12 +939,13 @@ if uploaded:
                     st.markdown(f'<div class="section-title">\U0001f534 Izgubljeni profit zbog nedostatka zaliha</div>', unsafe_allow_html=True)
                     st.caption(f"\U0001f4c5 Period analize: **{period_str}**")
                     if len(engine.df_oos) > 0:
+                        a_labels_oos = engine.analitika_labels if engine.analitika_labels else engine.mesec_labels
                         oos_art = engine.df_oos.groupby(['id artikla','Naziv artikla']).agg(
                             Objekata=('ID KOMITENTA','nunique'),
-                            Izgubljeno_kom=('Izgubljeno_kom','sum'),
+                            OOS_meseci=('OOS_meseci','sum'),
                             Izgubljeni_profit=('Izgubljeni_profit','sum')
                         ).reset_index().sort_values('Izgubljeni_profit', ascending=False)
-                        oos_art.columns = ['ID Art.','Naziv','Objekata','Izg. kom','Izg. profit (RSD)']
+                        oos_art.columns = ['ID Art.','Naziv','Objekata','OOS meseci','Izg. profit (RSD)']
                         st.markdown("**Po artiklima:**")
                         st.dataframe(oos_art, use_container_width=True, height=250)
                         oos_kom = engine.df_oos.groupby('ID KOMITENTA').agg(
@@ -929,9 +956,11 @@ if uploaded:
                         oos_kom.columns = ['ID Kom.','Artikala','OOS meseci','Izg. profit (RSD)']
                         st.markdown("**Po objektima (top 20):**")
                         st.dataframe(oos_kom.head(20), use_container_width=True, height=300)
-                        with st.expander("Detaljan pregled svih OOS kombinacija"):
-                            det = engine.df_oos[['ID KOMITENTA','id artikla','Naziv artikla','OOS_meseci','Prosek_kad_ima','Izgubljeno_kom','Izgubljeni_profit','Lager_danas']].copy()
-                            det.columns = ['ID Kom.','ID Art.','Naziv','OOS mes.','Prosek','Izg. kom','Izg. profit','Lager']
+                        with st.expander("Detaljan pregled po mesecima"):
+                            det_cols = ['ID KOMITENTA','id artikla','Naziv artikla','Grupa','Prosek_kad_ima','Lager_danas']
+                            for lb in a_labels_oos: det_cols += [f'OOS_{lb}', f'Izgub_{lb}']
+                            det_cols += ['OOS_meseci','Izgubljeni_profit']
+                            det = engine.df_oos[[c for c in det_cols if c in engine.df_oos.columns]].copy()
                             st.dataframe(det, use_container_width=True, height=400)
                     else:
                         st.success("Nema OOS problema!")
