@@ -57,7 +57,19 @@ class PredictionEngine:
             self.trenutni = pd.read_excel(xls, sheet_name=s_tl); self.trenutni.columns=[c.strip() for c in self.trenutni.columns]
             self.log(f"Trenutni lager: {len(self.trenutni)} redova")
         self.hist_df = pd.DataFrame()
-        if s_hist:
+        self.has_history = False
+        # Auto-detekcija rezima:
+        # Ako prodaja sheet vec ima mesece pre septembra 2025 — kompletan istorijat je tu,
+        # ignorisi "prodaja pre septembra" sheet (has_history ostaje False).
+        # Ako ne — ucitaj istorijski sheet kao i ranije.
+        _meseci_u_prodaji = self.prodaja[['Godina','Mesec']].drop_duplicates().values.tolist()
+        _ima_pre_sept = any(
+            (int(g) < 2025) or (int(g) == 2025 and int(m) < 9)
+            for g, m in _meseci_u_prodaji
+        )
+        if _ima_pre_sept:
+            self.log("Rezim: KOMPLETAN ISTORIJAT u prodaja sheetu — istorijski sheet se ignorise")
+        elif s_hist:
             self.hist_df = pd.read_excel(xls, sheet_name=s_hist); self.hist_df.columns=[c.strip() for c in self.hist_df.columns]
             self.has_history = True; self.log(f"Istorija: {len(self.hist_df)} redova")
         self.meseci_order = sorted(self.prodaja[['Godina','Mesec']].drop_duplicates().values.tolist())
@@ -961,6 +973,8 @@ else:
     st.markdown("""<div style="text-align:center;padding:60px 20px;color:#aaa;">
         <div style="font-size:48px;margin-bottom:12px;">\U0001f4c2</div>
         <div style="font-size:16px;color:#888;">Ucitaj Excel fajl da pocnes</div>
-        <div style="font-size:12px;color:#bbb;margin-top:8px;">Sheetovi: prodaja, startni lager, povrat, trenutni lager, prodaja pre septembra</div>
+        <div style="font-size:12px;color:#bbb;margin-top:8px;">Sheetovi: prodaja, startni lager, povrat, trenutni lager</div>
         <div style="font-size:12px;color:#bbb;">Opciono: kolone Redovna cena, Akcijska cena, Finalna cena, Nabavna vrednost, Profit</div>
+        <div style="font-size:12px;color:#bbb;">Rezim A: prodaja od sept 2025+ i poseban sheet "prodaja pre septembra"</div>
+        <div style="font-size:12px;color:#bbb;">Rezim B: prodaja sa kompletnim istorijatom (pre-sept sheet se automatski ignorise)</div>
     </div>""", unsafe_allow_html=True)
