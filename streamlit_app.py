@@ -5,12 +5,57 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
 from openpyxl.utils import get_column_letter
 
-import streamlit as st
-import streamlit.components.v1 as components
-import io, datetime, math, numpy as np, pandas as pd
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
-from openpyxl.utils import get_column_letter
+# --- PASSWORD ZASTITA ---
+APP_PASSWORD = "vape2024"
+
+def check_password():
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+
+    if st.session_state.authenticated:
+        return True
+
+    st.markdown("""
+    <style>
+    .login-wrap { max-width: 380px; margin: 80px auto; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    components.html("""
+<!DOCTYPE html><html><head>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@800&family=DM+Sans:wght@400;600&display=swap" rel="stylesheet">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'DM Sans', sans-serif; background: transparent; display: flex; justify-content: center; padding: 40px 0; }
+.card { background: #f8f8f6; border-radius: 20px; padding: 44px 48px; border: 1px solid #e2e2de;
+    box-shadow: 0 2px 24px rgba(0,0,0,0.07); width: 380px; text-align: center; }
+.logo { font-family: 'Syne', sans-serif; font-size: 28px; font-weight: 800; color: #0f1f35; margin-bottom: 4px; }
+.logo span { color: #1e3a5f; }
+.sub { font-size: 12px; color: #bbb; margin-bottom: 32px; }
+.lock { font-size: 36px; margin-bottom: 16px; }
+</style></head>
+<body><div class="card">
+    <div class="lock">🔒</div>
+    <div class="logo">VAPE <span>Analitika</span></div>
+    <div class="sub">Unesite šifru za pristup</div>
+</div></body></html>
+    """, height=220)
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        pwd = st.text_input("Šifra", type="password", placeholder="Unesite šifru...", label_visibility="collapsed")
+        btn = st.button("Prijavi se", use_container_width=True)
+        if btn:
+            if pwd == APP_PASSWORD:
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("Pogrešna šifra")
+    return False
+
+if not check_password():
+    st.stop()
+# --- KRAJ PASSWORD ZASTITE ---
 
 WMA_WEIGHTS = np.array([0.03, 0.07, 0.12, 0.28, 0.50])
 HIST_WEIGHT = 0.03
