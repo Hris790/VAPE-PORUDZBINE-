@@ -1274,27 +1274,6 @@ Ostaju samo objekti koji su u plusu.</p>
                             mali_str = ", ".join(mali_okruzi)
                             st.markdown(f'<div style="font-size:12px;color:#f97316;padding:8px 4px;">* Okruzi sa manje od 5 profitabilnih objekata ({mali_str}): Ne preporučuje se angazovanje komercijalistu isključivo za ove okruge — broj preostalih objekata premali je da bi opravdao redovne obilaske.</div>', unsafe_allow_html=True)
 
-                    unprofitable = prof[prof['Neto_profit'] <= 0].sort_values('Neto_profit')
-                    if len(unprofitable) > 0:
-                        with st.expander(f"⚠️ {len(unprofitable)} neprofitabilnih objekata — kandidati za izlistavanje"):
-                            up_show = unprofitable[['ID KOMITENTA','Artikala','Prodato_kom','Bruto_profit','Trosak_mkt','Neto_profit','Izgubljeno_OOS','Potencijalni_profit']].copy()
-                            up_show.columns = ['ID Kom.','Art.','Prod. kom','Bruto profit','Trosak mkt','Neto profit','Izg. OOS','Potencijal']
-                            st.dataframe(up_show, use_container_width=True, height=250)
-
-                    # Download profitabilnih objekata
-                    profitabilni = prof[prof['Neto_profit'] > 0].sort_values('Neto_profit', ascending=False)
-                    if len(profitabilni) > 0:
-                        import io as _io
-                        prof_buf = _io.BytesIO()
-                        prof_show = profitabilni[['ID KOMITENTA','Artikala','Prodato_kom','Bruto_profit','Trosak_mkt','Neto_profit','Izgubljeno_OOS','Potencijalni_profit']].copy()
-                        prof_show.columns = ['ID Kom.','Art.','Prod. kom','Bruto profit','Trosak mkt','Neto profit','Izg. OOS','Potencijal']
-                        with pd.ExcelWriter(prof_buf, engine='openpyxl') as _w:
-                            prof_show.to_excel(_w, index=False, sheet_name='Profitabilni objekti')
-                        prof_buf.seek(0)
-                        st.download_button(f"⬇️ Preuzmi listu profitabilnih objekata ({len(profitabilni)})",
-                            data=prof_buf, file_name=f"profitabilni_objekti_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
                     st.markdown("<div style='margin:20px 0 4px 0;'></div>", unsafe_allow_html=True)
 
                     # --- OOS sekcija ---
@@ -1472,6 +1451,143 @@ Ostaju samo objekti koji su u plusu.</p>
                         {_red(f"Razlika — potencijal koji još nije ostvaren", razlika, "#8b5cf6")}
                     </div>"""
                     st.markdown(scenario_html, unsafe_allow_html=True)
+
+                    # --- TABELA PO OKRUZIMA + SCENARIO A/B ---
+                    if engine.region_map:
+                        st.markdown("<div style='margin:28px 0 6px 0;'></div>", unsafe_allow_html=True)
+                        st.markdown('<div class="section-title">🗺️ Profitabilnost po okruzima</div>', unsafe_allow_html=True)
+
+                        prof_reg = prof.copy()
+                        prof_reg['Region'] = prof_reg['ID KOMITENTA'].map(engine.region_map).fillna('Ostalo')
+                        prof_reg['Profitabilan'] = prof_reg['Neto_profit'] > 0
+
+                        reg_grp = prof_reg.groupby('Region').agg(
+                            Ukupno=('ID KOMITENTA','count'),
+                            Ostaje=('Profitabilan','sum'),
+                        ).reset_index()
+                        reg_grp['Zatvara'] = reg_grp['Ukupno'] - reg_grp['Ostaje']
+                        reg_grp = reg_grp.sort_values('Ukupno', ascending=False).reset_index(drop=True)
+                        mali_okruzi_df = reg_grp[reg_grp['Ostaje'] < 5]
+                        mali_okruzi = mali_okruzi_df['Region'].tolist()
+
+                        rows_html = ""
+                        for _, r in reg_grp.iterrows():
+                            okrug = r['Region']
+                            ukupno = int(r['Ukupno'])
+                            ostaje = int(r['Ostaje'])
+                            zatvara = int(r['Zatvara'])
+                            mali = " *" if okrug in mali_okruzi else ""
+                            mali_color = "#f97316" if mali else "#111"
+                            pct_o = ostaje / max(ukupno, 1) * 100
+                            pct_z = zatvara / max(ukupno, 1) * 100
+                            bar = f"""<div style="display:flex;width:120px;height:14px;border-radius:3px;overflow:hidden;">
+                                <div style="width:{pct_o:.0f}%;background:#10b981;"></div>
+                                <div style="width:{pct_z:.0f}%;background:#ef4444;"></div>
+                            </div>"""
+                            rows_html += f"""<tr style="border-bottom:1px solid #f3f4f6;">
+                                <td style="padding:7px 10px;font-size:13px;color:{mali_color};font-weight:600;">{okrug}{mali}</td>
+                                <td style="padding:7px 10px;font-size:13px;font-weight:700;text-align:center;">{ukupno}</td>
+                                <td style="padding:7px 10px;font-size:13px;text-align:center;">
+                                    <span style="color:#10b981;font-weight:700;">{ostaje}</span>
+                                    <span style="color:#999;"> / </span>
+                                    <span style="color:#ef4444;font-weight:700;">{zatvara}</span>
+                                </td>
+                                <td style="padding:7px 16px;">{bar}</td>
+                            </tr>"""
+
+                        uk_ukupno = int(reg_grp['Ukupno'].sum())
+                        uk_ostaje = int(reg_grp['Ostaje'].sum())
+                        uk_zatvara = int(reg_grp['Zatvara'].sum())
+                        rows_html += f"""<tr style="border-top:2px solid #e5e7eb;background:#f9fafb;">
+                            <td style="padding:9px 10px;font-size:13px;font-weight:700;">UKUPNO</td>
+                            <td style="padding:9px 10px;font-size:13px;font-weight:700;text-align:center;">{uk_ukupno}</td>
+                            <td style="padding:9px 10px;font-size:13px;text-align:center;">
+                                <span style="color:#10b981;font-weight:700;">{uk_ostaje}</span>
+                                <span style="color:#999;"> / </span>
+                                <span style="color:#ef4444;font-weight:700;">{uk_zatvara}</span>
+                            </td>
+                            <td></td>
+                        </tr>"""
+
+                        header_html = """<tr style="background:#f9fafb;border-bottom:2px solid #e5e7eb;">
+                            <th style="padding:9px 10px;font-size:11px;color:#888;font-weight:600;text-align:left;text-transform:uppercase;letter-spacing:.4px;">Okrug</th>
+                            <th style="padding:9px 10px;font-size:11px;color:#888;font-weight:600;text-align:center;text-transform:uppercase;letter-spacing:.4px;">Ukupno obj.</th>
+                            <th style="padding:9px 10px;font-size:11px;color:#888;font-weight:600;text-align:center;text-transform:uppercase;letter-spacing:.4px;">✓ Ostaje / ✗ Zatvara</th>
+                            <th style="padding:9px 10px;font-size:11px;color:#888;font-weight:600;text-transform:uppercase;letter-spacing:.4px;"></th>
+                        </tr>"""
+
+                        tbl_height = len(reg_grp) * 34 + 80
+                        components.html(f"""<!DOCTYPE html><html><body style="margin:0;padding:0;font-family:sans-serif;background:white;">
+                        <table style="width:100%;border-collapse:collapse;">
+                            <thead>{header_html}</thead>
+                            <tbody>{rows_html}</tbody>
+                        </table>
+                        </body></html>""", height=tbl_height)
+
+                        if mali_okruzi:
+                            mali_str = ", ".join(mali_okruzi)
+                            st.markdown(f'<div style="font-size:12px;color:#f97316;padding:6px 4px;">* Okruzi sa manje od 5 profitabilnih objekata ({mali_str}): Ne preporučuje se angazovanje komercijalistu isključivo za ove okruge — broj preostalih objekata premali je da bi opravdao redovne obilaske.</div>', unsafe_allow_html=True)
+
+                        # --- Scenario A i B po okruzima ---
+                        if len(mali_okruzi_df) > 0:
+                            st.markdown("<div style='margin:20px 0 6px 0;'></div>", unsafe_allow_html=True)
+
+                            # Objekti u malim okruzima koji su profitabilni
+                            prof_reg_mali = prof_reg[prof_reg['Region'].isin(mali_okruzi) & (prof_reg['Neto_profit'] > 0)]
+                            n_mali_prof = len(prof_reg_mali)
+                            neto_mali_prof = int(prof_reg_mali['Neto_profit'].sum())
+                            usteda_mali_trosak = int(n_mali_prof * engine.trosak_po_objektu)
+
+                            # Scenario A = postojeci scenario (bez malih)
+                            scA_potencijal = ukupni_potencijal  # vec izracunat gore
+
+                            # Scenario B = Scenario A + zatvaranje profitabilnih iz malih okruga
+                            scB_potencijal = scA_potencijal + usteda_mali_trosak - neto_mali_prof
+
+                            period_label = period_str2
+
+                            def _sc_red(label, val, color="#555", bold=False):
+                                sign = "+" if val >= 0 else ""
+                                fw = "700" if bold else "400"
+                                return f"""<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #f3f4f6;">
+                                    <span style="font-size:13px;color:#555;">{label}</span>
+                                    <span style="font-size:13px;font-weight:{fw};color:{color};">{sign}{val:,} RSD</span>
+                                </div>"""
+
+                            def _sc_total(label, val, color="#10b981"):
+                                return f"""<div style="display:flex;justify-content:space-between;padding:9px 0;border-top:2px solid #e5e7eb;margin-top:4px;">
+                                    <span style="font-size:14px;font-weight:700;color:#111;">{label}</span>
+                                    <span style="font-size:14px;font-weight:700;color:{color};">= {val:,} RSD</span>
+                                </div>"""
+
+                            sc_html = f"""<div style="font-family:sans-serif;background:white;border-radius:12px;
+                                padding:20px 24px;box-shadow:0 2px 8px rgba(0,0,0,0.07);">
+                                <div style="font-size:12px;font-weight:600;color:#8b5cf6;text-transform:uppercase;
+                                    letter-spacing:.5px;margin-bottom:14px;">
+                                    Uticaj zatvaranja objekata u malim okruzima ({period_label})
+                                </div>
+                                <p style="font-size:13px;color:#666;margin-bottom:14px;">
+                                    Zatvaranjem {n_mali_prof} profitabilnih objekata u {len(mali_okruzi)} malih okruga
+                                    štedimo trošak, ali gubimo deo zarade. Poređenje dva scenarija:
+                                </p>
+
+                                <div style="font-size:12px;font-weight:600;color:#3b82f6;margin:10px 0 6px 0;">
+                                    Scenario A: Zatvaramo samo {n_pravi_neg2} neprofitabilnih + OOS eliminacija
+                                </div>
+                                {_sc_red(f"Neto profit pozitivnih objekata ({n_mes}m)", neto_pozitivnih, "#10b981", False)}
+                                {_sc_red(f"Ušteda: zatvaranje {n_pravi_neg2} neprofitabilnih ({n_mes}m)", usteda_trosak2 + usteda_gubitak2, "#10b981", False)}
+                                {_sc_red(f"Povraćaj OOS izgubljene zarade ({n_mes}m)", oos_ukupno2, "#10b981", False)}
+                                {_sc_total(f"POTENCIJAL SCENARIO A", scA_potencijal)}
+
+                                <div style="font-size:12px;font-weight:600;color:#f97316;margin:16px 0 6px 0;">
+                                    Scenario B: Scenario A + zatvaramo i {n_mali_prof} obj. iz malih okruga
+                                </div>
+                                {_sc_red(f"Potencijal Scenario A", scA_potencijal, "#10b981", False)}
+                                {_sc_red(f"Ušteda troška: {n_mali_prof} obj. × {engine.trosak_po_objektu:,.0f} RSD × {n_mes} mes", usteda_mali_trosak, "#10b981", False)}
+                                {_sc_red(f"Izgubljen profit zatvorenih {n_mali_prof} obj. ({n_mes}m)", -neto_mali_prof, "#ef4444", False)}
+                                {_sc_total(f"POTENCIJAL SCENARIO B", scB_potencijal, "#10b981" if scB_potencijal >= scA_potencijal else "#f97316")}
+                            </div>"""
+                            components.html(f'<!DOCTYPE html><html><body style="margin:0;padding:0;">{sc_html}</body></html>', height=420)
 
                 with tab4:
                     period_str3 = ", ".join(engine.analitika_labels) if engine.analitika_labels else "svi meseci"
