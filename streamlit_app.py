@@ -1059,7 +1059,61 @@ if uploaded:
                     usteda_gubitak = abs(pravi_neg['Neto_profit'].sum()) if n_pravi_neg > 0 else 0
                     usteda_mes = (usteda_trosak + usteda_gubitak) / max(n_mes, 1)
 
-                    # Analiticki tekst
+                    # Analiticki tekst + donut chart
+                    n_profitabilni = ukupno_obj - n_neto_neg
+                    pct_prof = n_profitabilni / max(ukupno_obj, 1)
+                    pct_oos_neg_v = n_oos_neg / max(ukupno_obj, 1)
+                    pct_pravi_v = n_pravi_neg / max(ukupno_obj, 1)
+
+                    # SVG donut chart
+                    import math
+                    cx, cy, r_out, r_in = 110, 110, 90, 60
+                    def _arc_path(cx, cy, r, start_deg, end_deg):
+                        s = math.radians(start_deg - 90)
+                        e = math.radians(end_deg - 90)
+                        large = 1 if (end_deg - start_deg) > 180 else 0
+                        x1,y1 = cx+r*math.cos(s), cy+r*math.sin(s)
+                        x2,y2 = cx+r*math.cos(e), cy+r*math.sin(e)
+                        return f"M {x1:.1f} {y1:.1f} A {r} {r} 0 {large} 1 {x2:.1f} {y2:.1f}"
+                    def _donut_seg(cx, cy, ro, ri, start_deg, end_deg, color):
+                        if end_deg - start_deg < 0.5: return ""
+                        oa = _arc_path(cx, cy, ro, start_deg, end_deg)
+                        s2 = math.radians(end_deg - 90); s1 = math.radians(start_deg - 90)
+                        x_ie, y_ie = cx+ri*math.cos(s2), cy+ri*math.sin(s2)
+                        x_is, y_is = cx+ri*math.cos(s1), cy+ri*math.sin(s1)
+                        large = 1 if (end_deg - start_deg) > 180 else 0
+                        x2o,y2o = cx+ro*math.cos(s2), cy+ro*math.sin(s2)
+                        x1o,y1o = cx+ro*math.cos(s1), cy+ro*math.sin(s1)
+                        return f'<path d="{oa} L {x_ie:.1f} {y_ie:.1f} A {ri} {ri} 0 {large} 0 {x_is:.1f} {y_is:.1f} Z" fill="{color}"/>'
+
+                    deg_prof = pct_prof * 360
+                    deg_oos = pct_oos_neg_v * 360
+                    deg_pravi = pct_pravi_v * 360
+                    seg1 = _donut_seg(cx, cy, r_out, r_in, 0, deg_prof, "#10b981")
+                    seg2 = _donut_seg(cx, cy, r_out, r_in, deg_prof, deg_prof+deg_pravi, "#ef4444")
+                    seg3 = _donut_seg(cx, cy, r_out, r_in, deg_prof+deg_pravi, deg_prof+deg_pravi+deg_oos, "#f97316")
+
+                    donut_svg = f"""<svg width="220" height="220" xmlns="http://www.w3.org/2000/svg">
+                        {seg1}{seg2}{seg3}
+                        <circle cx="{cx}" cy="{cy}" r="{r_in}" fill="white"/>
+                        <text x="{cx}" y="{cy-8}" text-anchor="middle" font-size="26" font-weight="700" fill="#111" font-family="sans-serif">{n_profitabilni}</text>
+                        <text x="{cx}" y="{cy+14}" text-anchor="middle" font-size="12" fill="#888" font-family="sans-serif">profitabilnih</text>
+                    </svg>
+                    <div style="margin-top:8px;font-size:12px;font-family:sans-serif;">
+                        <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;">
+                            <span style="width:12px;height:12px;background:#10b981;border-radius:2px;display:inline-block;flex-shrink:0;"></span>
+                            <span style="color:#555;"><strong>{n_profitabilni} profitabilnih</strong> ({round(pct_prof*100)}% mreže)</span>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;">
+                            <span style="width:12px;height:12px;background:#ef4444;border-radius:2px;display:inline-block;flex-shrink:0;"></span>
+                            <span style="color:#555;"><strong>{n_pravi_neg} neprofitabilnih</strong> ({round(pct_pravi_v*100)}% mreže)</span>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:6px;">
+                            <span style="width:12px;height:12px;background:#f97316;border-radius:2px;display:inline-block;flex-shrink:0;"></span>
+                            <span style="color:#555;"><strong>{n_oos_neg} neto-neg. OOS</strong> potencijal</span>
+                        </div>
+                    </div>"""
+
                     tekst = f"""
 <div style="background:white;border-radius:12px;padding:20px 24px;box-shadow:0 2px 8px rgba(0,0,0,0.06);margin-bottom:16px;font-size:14px;line-height:1.8;color:#333;">
 <p>Od <strong>{ukupno_obj} objekata</strong>, <strong>{n_neto_neg}</strong> je neto negativno.
@@ -1076,7 +1130,13 @@ Trošak po objektu je <strong>{trosak_po_obj:,.0f} RSD</strong> za {n_mes} {'mes
 <strong>{usteda_gubitak:,.0f} RSD</strong> ({usteda_gubitak/max(n_mes,1):,.0f} RSD/mes) na negativnim objektima.
 Ostaju samo objekti koji su u plusu.</p>
 </div>"""
-                    st.markdown(tekst, unsafe_allow_html=True)
+                    col_tekst, col_donut = st.columns([3, 1])
+                    with col_tekst:
+                        st.markdown(tekst, unsafe_allow_html=True)
+                    with col_donut:
+                        components.html(f"""<!DOCTYPE html><html><body style="margin:0;padding:12px 8px;font-family:sans-serif;background:transparent;">
+                            {donut_svg}
+                        </body></html>""", height=310)
 
                     # --- Grafikon: profitabilni vs neprofitabilni po mesecima ---
                     a_labels_trend2 = engine.analitika_labels if engine.analitika_labels else engine.mesec_labels
