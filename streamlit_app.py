@@ -921,7 +921,7 @@ if uploaded:
                     st.markdown(oos_html, unsafe_allow_html=True)
 
             if engine.has_prices:
-                tab1, tab2, tab3, tab4, tab5 = st.tabs(["\U0001f4e6 Porudzbina", "\U0001f4c9 OOS Analiza", "\U0001f4b0 Profitabilnost", "\U0001f3af Analiza Akcije", "\U0001f4cb Log"])
+                tab1, tab2, tab4, tab5 = st.tabs(["\U0001f4e6 Porudzbina", "\U0001f4b0 Profitabilnost objekata & OOS", "\U0001f3af Analiza Akcije", "\U0001f4cb Log"])
             else:
                 tab1, tab5 = st.tabs(["\U0001f4e6 Porudzbina", "\U0001f4cb Log"])
 
@@ -938,9 +938,126 @@ if uploaded:
 
             if engine.has_prices:
                 with tab2:
-                    period_str = ", ".join(engine.analitika_labels) if engine.analitika_labels else "svi meseci"
-                    st.markdown(f'<div class="section-title">\U0001f534 Izgubljeni profit zbog nedostatka zaliha</div>', unsafe_allow_html=True)
-                    st.caption(f"\U0001f4c5 Period analize: **{period_str}**")
+                    period_str2 = ", ".join(engine.analitika_labels) if engine.analitika_labels else "svi meseci"
+                    n_mes = len(engine.analitika_labels) if engine.analitika_labels else len(engine.mesec_labels)
+                    n_obj = engine.num_komitenti
+
+                    # --- Izracunaj ukupne vrednosti za summary kartice ---
+                    prof = engine.df_profit_obj.copy()
+                    total_bruto = int(prof['Bruto_profit'].sum())
+                    total_neto = int(prof['Neto_profit'].sum())
+                    total_trosak = int(prof['Trosak_mkt'].sum())
+                    total_oos_izgubljen = int(engine.df_oos['Izgubljeni_profit'].sum()) if len(engine.df_oos) > 0 else 0
+                    mes_trosak = total_trosak / max(n_mes, 1)
+                    mes_bruto = total_bruto / max(n_mes, 1)
+                    mes_neto = total_neto / max(n_mes, 1)
+                    mes_oos = total_oos_izgubljen / max(n_mes, 1)
+
+                    st.caption(f"\U0001f4c5 Period analize: **{period_str2}** · {n_obj} objekata · {n_mes} meseci")
+
+                    # --- 4 summary kartice ---
+                    ka, kb, kc, kd = st.columns(4)
+                    def _kard(col, label, total, mes, color, prefix=""):
+                        col.markdown(f"""
+                        <div style="background:white;border-radius:12px;padding:16px 18px;
+                            border-left:4px solid {color};box-shadow:0 2px 8px rgba(0,0,0,0.07);height:100%;">
+                            <div style="font-size:10px;color:#999;font-weight:600;letter-spacing:.5px;text-transform:uppercase;margin-bottom:6px;">{label}</div>
+                            <div style="font-size:22px;font-weight:700;color:{color};">{prefix}{total:,.0f} RSD</div>
+                            <div style="font-size:11px;color:#aaa;margin-top:3px;">{prefix}{mes:,.0f} RSD / mesec</div>
+                        </div>""", unsafe_allow_html=True)
+                    _kard(ka, f"Ukupan trosak · {n_mes} meseci", total_trosak, mes_trosak, "#f59e0b")
+                    _kard(kb, f"Bruto profit · {n_mes} meseci", total_bruto, mes_bruto, "#10b981")
+                    _kard(kc, f"Neto profit · {n_mes} meseci", total_neto, mes_neto, "#3b82f6" if total_neto > 0 else "#ef4444")
+                    _kard(kd, f"OOS izgubljen · {n_mes} meseci", total_oos_izgubljen, mes_oos, "#ef4444", prefix="-")
+
+                    st.markdown("<div style='margin:20px 0 4px 0;'></div>", unsafe_allow_html=True)
+
+                    # --- Mesecni trendovi: bruto i neto profit ---
+                    # Sakupi mesecne podatke iz df_profit_obj
+                    a_labels_trend = engine.analitika_labels if engine.analitika_labels else engine.mesec_labels
+                    a_meseci_trend = engine.analitika_meseci if (engine.analitika_meseci and len(engine.analitika_meseci) > 0) else engine.meseci_order
+
+                    bruto_po_mes = []
+                    neto_po_mes = []
+                    for i, lb in enumerate(a_labels_trend):
+                        col_neto = f'Neto_{lb}'
+                        if col_neto in prof.columns:
+                            neto_val = prof[col_neto].sum()
+                            # bruto = neto + trosak po mesecu
+                            bruto_val = neto_val + total_trosak / max(n_mes, 1) * n_obj
+                        else:
+                            neto_val = 0; bruto_val = 0
+                        bruto_po_mes.append((lb, bruto_val))
+                        neto_po_mes.append((lb, neto_val))
+
+                    def _trend_recenica(podaci, naziv):
+                        vals = [v for _, v in podaci]
+                        if len(vals) < 2: return ""
+                        prvi_lb, prvi_v = podaci[0]
+                        posl_lb, posl_v = podaci[-1]
+                        if prvi_v == 0: return ""
+                        promena_pct = ((posl_v - prvi_v) / abs(prvi_v)) * 100
+                        smer = "porastao" if promena_pct > 0 else "pao"
+                        boja = "#10b981" if promena_pct > 0 else "#ef4444"
+                        return f'<span style="color:{boja};font-weight:600;">{naziv} je {smer} za {abs(promena_pct):.0f}%</span> — od <b>{prvi_v:,.0f} RSD</b> ({prvi_lb}) do <b>{posl_v:,.0f} RSD</b> ({posl_lb}).'
+
+                    def _bar_chart_html(podaci, max_val, color_pos, color_neg):
+                        bars = ""
+                        for lb, val in podaci:
+                            pct = abs(val) / max_val * 100 if max_val > 0 else 0
+                            pct = min(pct, 100)
+                            color = color_pos if val >= 0 else color_neg
+                            val_fmt = f"{val:,.0f} RSD"
+                            bars += f"""
+                            <div style="display:flex;align-items:center;margin-bottom:5px;gap:8px;">
+                                <div style="width:52px;font-size:11px;color:#888;text-align:right;flex-shrink:0;">{lb}</div>
+                                <div style="flex:1;background:#f3f4f6;border-radius:3px;height:18px;position:relative;">
+                                    <div style="width:{pct:.1f}%;background:{color};height:100%;border-radius:3px;transition:width .3s;"></div>
+                                </div>
+                                <div style="width:110px;font-size:11px;color:#555;font-weight:600;flex-shrink:0;">{val_fmt}</div>
+                            </div>"""
+                        return f'<div style="padding:4px 0;">{bars}</div>'
+
+                    max_bruto = max(abs(v) for _, v in bruto_po_mes) if bruto_po_mes else 1
+                    max_neto = max(abs(v) for _, v in neto_po_mes) if neto_po_mes else 1
+
+                    col_bruto, col_neto = st.columns(2)
+
+                    with col_bruto:
+                        st.markdown('<div class="section-title">📈 Mesečni trend bruto profita</div>', unsafe_allow_html=True)
+                        rec_b = _trend_recenica(bruto_po_mes, "Bruto profit")
+                        if rec_b: st.markdown(f'<p style="font-size:13px;color:#555;margin-bottom:10px;">{rec_b}</p>', unsafe_allow_html=True)
+                        chart_b = _bar_chart_html(bruto_po_mes, max_bruto, "#10b981", "#ef4444")
+                        st.markdown(f'<div style="background:white;border-radius:12px;padding:16px;box-shadow:0 2px 8px rgba(0,0,0,0.06);">{chart_b}</div>', unsafe_allow_html=True)
+
+                    with col_neto:
+                        st.markdown('<div class="section-title">📉 Mesečni trend neto profita</div>', unsafe_allow_html=True)
+                        rec_n = _trend_recenica(neto_po_mes, "Neto profit")
+                        if rec_n: st.markdown(f'<p style="font-size:13px;color:#555;margin-bottom:10px;">{rec_n}</p>', unsafe_allow_html=True)
+                        chart_n = _bar_chart_html(neto_po_mes, max_neto, "#3b82f6", "#ef4444")
+                        st.markdown(f'<div style="background:white;border-radius:12px;padding:16px;box-shadow:0 2px 8px rgba(0,0,0,0.06);">{chart_n}</div>', unsafe_allow_html=True)
+
+                    st.markdown("<div style='margin:20px 0 4px 0;'></div>", unsafe_allow_html=True)
+
+                    # --- Profitabilnost po objektima ---
+                    st.markdown('<div class="section-title">🏪 Profitabilnost po objektima</div>', unsafe_allow_html=True)
+                    if engine.mesecni_trosak > 0:
+                        trosak_mes_obj = engine.trosak_po_objektu / max(n_mes, 1)
+                        st.info(f"Ukupan trosak za period: **{engine.mesecni_trosak:,.0f} RSD** / {n_obj} objekata = **{engine.trosak_po_objektu:,.0f} RSD** po objektu | Mesecno po objektu: **{trosak_mes_obj:,.0f} RSD**")
+                    unprofitable = prof[prof['Neto_profit'] <= 0].sort_values('Neto_profit')
+                    if len(unprofitable) > 0:
+                        st.markdown(f'<div class="warn-box">⚠️ <strong>{len(unprofitable)} neprofitabilnih objekata</strong> — kandidati za izlistavanje</div>', unsafe_allow_html=True)
+                        up_show = unprofitable[['ID KOMITENTA','Artikala','Prodato_kom','Bruto_profit','Trosak_mkt','Neto_profit','Izgubljeno_OOS']].copy()
+                        up_show.columns = ['ID Kom.','Art.','Prod. kom','Bruto profit','Trosak mkt','Neto profit','Izg. OOS']
+                        st.dataframe(up_show, use_container_width=True, height=180)
+                    all_show = prof[['ID KOMITENTA','Artikala','Prodato_kom','Bruto_profit','Trosak_mkt','Neto_profit','Izgubljeno_OOS','Potencijalni_profit']].copy()
+                    all_show.columns = ['ID Kom.','Art.','Prod. kom','Bruto profit','Trosak mkt','Neto profit','Izg. OOS','Potencijal']
+                    st.dataframe(all_show, use_container_width=True, height=350)
+
+                    st.markdown("<div style='margin:20px 0 4px 0;'></div>", unsafe_allow_html=True)
+
+                    # --- OOS sekcija ---
+                    st.markdown('<div class="section-title">🔴 OOS — Izgubljeni profit zbog nedostatka zaliha</div>', unsafe_allow_html=True)
                     if len(engine.df_oos) > 0:
                         a_labels_oos = engine.analitika_labels if engine.analitika_labels else engine.mesec_labels
                         oos_art = engine.df_oos.groupby(['id artikla','Naziv artikla']).agg(
@@ -949,44 +1066,27 @@ if uploaded:
                             Izgubljeni_profit=('Izgubljeni_profit','sum')
                         ).reset_index().sort_values('Izgubljeni_profit', ascending=False)
                         oos_art.columns = ['ID Art.','Naziv','Objekata','OOS meseci','Izg. profit (RSD)']
-                        st.markdown("**Po artiklima:**")
-                        st.dataframe(oos_art, use_container_width=True, height=250)
-                        oos_kom = engine.df_oos.groupby('ID KOMITENTA').agg(
-                            Artikala=('id artikla','nunique'),
-                            OOS_meseci=('OOS_meseci','sum'),
-                            Izgubljeni_profit=('Izgubljeni_profit','sum')
-                        ).reset_index().sort_values('Izgubljeni_profit', ascending=False)
-                        oos_kom.columns = ['ID Kom.','Artikala','OOS meseci','Izg. profit (RSD)']
-                        st.markdown("**Po objektima (top 20):**")
-                        st.dataframe(oos_kom.head(20), use_container_width=True, height=300)
+                        col_oa, col_ok = st.columns(2)
+                        with col_oa:
+                            st.markdown("**Po artiklima:**")
+                            st.dataframe(oos_art, use_container_width=True, height=250)
+                        with col_ok:
+                            oos_kom = engine.df_oos.groupby('ID KOMITENTA').agg(
+                                Artikala=('id artikla','nunique'),
+                                OOS_meseci=('OOS_meseci','sum'),
+                                Izgubljeni_profit=('Izgubljeni_profit','sum')
+                            ).reset_index().sort_values('Izgubljeni_profit', ascending=False)
+                            oos_kom.columns = ['ID Kom.','Artikala','OOS meseci','Izg. profit (RSD)']
+                            st.markdown("**Po objektima (top 20):**")
+                            st.dataframe(oos_kom.head(20), use_container_width=True, height=250)
                         with st.expander("Detaljan pregled po mesecima"):
                             det_cols = ['ID KOMITENTA','id artikla','Naziv artikla','Grupa','Prosek_kad_ima','Lager_danas']
                             for lb in a_labels_oos: det_cols += [f'OOS_{lb}', f'Izgub_{lb}']
                             det_cols += ['OOS_meseci','Izgubljeni_profit']
                             det = engine.df_oos[[c for c in det_cols if c in engine.df_oos.columns]].copy()
-                            st.dataframe(det, use_container_width=True, height=400)
+                            st.dataframe(det, use_container_width=True, height=350)
                     else:
                         st.success("Nema OOS problema!")
-
-                with tab3:
-                    period_str2 = ", ".join(engine.analitika_labels) if engine.analitika_labels else "svi meseci"
-                    st.markdown('<div class="section-title">\U0001f4b0 Profitabilnost po objektima</div>', unsafe_allow_html=True)
-                    st.caption(f"\U0001f4c5 Period analize: **{period_str2}**")
-                    if engine.mesecni_trosak > 0:
-                        n_a = len(engine.analitika_labels) if engine.analitika_labels else len(engine.mesec_labels)
-                        trosak_mes = engine.trosak_po_objektu / max(n_a, 1)
-                        st.info(f"Ukupan trosak za period: **{engine.mesecni_trosak:,.0f} RSD** / {engine.num_komitenti} objekata = **{engine.trosak_po_objektu:,.0f} RSD** po objektu | Mesecno po objektu: **{trosak_mes:,.0f} RSD**")
-                    prof = engine.df_profit_obj.copy()
-                    unprofitable = prof[prof['Neto_profit'] <= 0].sort_values('Neto_profit')
-                    if len(unprofitable) > 0:
-                        st.markdown(f'<div class="warn-box">\u26a0\ufe0f <strong>{len(unprofitable)} neprofitabilnih objekata</strong> — kandidati za izlistavanje</div>', unsafe_allow_html=True)
-                        up_show = unprofitable[['ID KOMITENTA','Artikala','Prodato_kom','Bruto_profit','Trosak_mkt','Neto_profit','Izgubljeno_OOS']].copy()
-                        up_show.columns = ['ID Kom.','Art.','Prod. kom','Bruto profit','Trosak mkt','Neto profit','Izg. OOS']
-                        st.dataframe(up_show, use_container_width=True, height=200)
-                    st.markdown("**Svi objekti (sortirano po neto profitu):**")
-                    all_show = prof[['ID KOMITENTA','Artikala','Prodato_kom','Bruto_profit','Trosak_mkt','Neto_profit','Izgubljeno_OOS','Potencijalni_profit']].copy()
-                    all_show.columns = ['ID Kom.','Art.','Prod. kom','Bruto profit','Trosak mkt','Neto profit','Izg. OOS','Potencijal']
-                    st.dataframe(all_show, use_container_width=True, height=400)
 
                 with tab4:
                     period_str3 = ", ".join(engine.analitika_labels) if engine.analitika_labels else "svi meseci"
