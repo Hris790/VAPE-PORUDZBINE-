@@ -361,6 +361,11 @@ class PredictionEngine:
             for ag, am in a_meseci:
                 if int(g) == int(ag) and int(m) == int(am):
                     a_indices.append(i); break
+
+        # Zastita: ako nema poklapanja, koristi sve mesece
+        if not a_indices:
+            a_indices = list(range(len(self.meseci_order)))
+
         a_labels = [ml[i] for i in a_indices]
         a_meseci_order = [self.meseci_order[i] for i in a_indices]
         n_a = len(a_indices)
@@ -880,6 +885,9 @@ if uploaded:
             _labels = [f"{_mn.get(int(m),'?')} {int(g)}" for g,m in _meseci]
             st.markdown("**\U0001f4c5 Period za analizu** (OOS, Profitabilnost, Akcija — ne utice na predikciju):")
             selected_labels = st.multiselect("Odaberi mesece", _labels, default=_labels, help="Predikcija uvek koristi sve mesece. Ovaj filter se odnosi samo na analitiku.")
+            if not selected_labels:
+                st.warning("⚠️ Mora biti odabran bar jedan mesec za analizu. Automatski je odabran poslednji mesec.")
+                selected_labels = [_labels[-1]] if _labels else []
             selected_meseci = [_meseci[i] for i, lb in enumerate(_labels) if lb in selected_labels]
         else:
             selected_labels = []; selected_meseci = []
@@ -1126,10 +1134,20 @@ Ostaju samo objekti koji su u plusu.</p>
                             up_show = unprofitable[['ID KOMITENTA','Artikala','Prodato_kom','Bruto_profit','Trosak_mkt','Neto_profit','Izgubljeno_OOS','Potencijalni_profit']].copy()
                             up_show.columns = ['ID Kom.','Art.','Prod. kom','Bruto profit','Trosak mkt','Neto profit','Izg. OOS','Potencijal']
                             st.dataframe(up_show, use_container_width=True, height=250)
-                    with st.expander("📋 Svi objekti (sortirano po neto profitu)"):
-                        all_show = prof[['ID KOMITENTA','Artikala','Prodato_kom','Bruto_profit','Trosak_mkt','Neto_profit','Izgubljeno_OOS','Potencijalni_profit']].copy()
-                        all_show.columns = ['ID Kom.','Art.','Prod. kom','Bruto profit','Trosak mkt','Neto profit','Izg. OOS','Potencijal']
-                        st.dataframe(all_show, use_container_width=True, height=350)
+
+                    # Download profitabilnih objekata
+                    profitabilni = prof[prof['Neto_profit'] > 0].sort_values('Neto_profit', ascending=False)
+                    if len(profitabilni) > 0:
+                        import io as _io
+                        prof_buf = _io.BytesIO()
+                        prof_show = profitabilni[['ID KOMITENTA','Artikala','Prodato_kom','Bruto_profit','Trosak_mkt','Neto_profit','Izgubljeno_OOS','Potencijalni_profit']].copy()
+                        prof_show.columns = ['ID Kom.','Art.','Prod. kom','Bruto profit','Trosak mkt','Neto profit','Izg. OOS','Potencijal']
+                        with pd.ExcelWriter(prof_buf, engine='openpyxl') as _w:
+                            prof_show.to_excel(_w, index=False, sheet_name='Profitabilni objekti')
+                        prof_buf.seek(0)
+                        st.download_button(f"⬇️ Preuzmi listu profitabilnih objekata ({len(profitabilni)})",
+                            data=prof_buf, file_name=f"profitabilni_objekti_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
                     st.markdown("<div style='margin:20px 0 4px 0;'></div>", unsafe_allow_html=True)
 
@@ -1234,7 +1252,7 @@ Ostaju samo objekti koji su u plusu.</p>
                             {bars5}
                         </body></html>""", height=len(oos_art)*42+20)
 
-                        # --- Tabele u expanderima ---
+                        # --- Samo artikli expander ---
                         with st.expander("📋 Svi artikli po izgubljenom profitu"):
                             oos_art_all = engine.df_oos.groupby(['id artikla','Naziv artikla']).agg(
                                 Objekata=('ID KOMITENTA','nunique'),
@@ -1243,22 +1261,71 @@ Ostaju samo objekti koji su u plusu.</p>
                             ).reset_index().sort_values('Izgubljeni_profit', ascending=False)
                             oos_art_all.columns = ['ID Art.','Naziv','Objekata','OOS meseci','Izg. profit (RSD)']
                             st.dataframe(oos_art_all, use_container_width=True, height=300)
-                        with st.expander("📋 Objekti po izgubljenom profitu (top 20)"):
-                            oos_kom = engine.df_oos.groupby('ID KOMITENTA').agg(
-                                Artikala=('id artikla','nunique'),
-                                OOS_meseci=('OOS_meseci','sum'),
-                                Izgubljeni_profit=('Izgubljeni_profit','sum')
-                            ).reset_index().sort_values('Izgubljeni_profit', ascending=False)
-                            oos_kom.columns = ['ID Kom.','Artikala','OOS meseci','Izg. profit (RSD)']
-                            st.dataframe(oos_kom.head(20), use_container_width=True, height=300)
-                        with st.expander("🔍 Detaljan pregled po mesecima"):
-                            det_cols = ['ID KOMITENTA','id artikla','Naziv artikla','Grupa','Prosek_kad_ima','Lager_danas']
-                            for lb in a_labels_oos: det_cols += [f'OOS_{lb}', f'Izgub_{lb}']
-                            det_cols += ['OOS_meseci','Izgubljeni_profit']
-                            det = engine.df_oos[[c for c in det_cols if c in engine.df_oos.columns]].copy()
-                            st.dataframe(det, use_container_width=True, height=350)
                     else:
                         st.success("Nema OOS problema!")
+
+                    # --- SCENARIO: Optimalna mreza ---
+                    st.markdown("<div style='margin:24px 0 4px 0;'></div>", unsafe_allow_html=True)
+                    st.markdown('<div class="section-title">⚡ Scenario: Optimalna mreža</div>', unsafe_allow_html=True)
+
+                    # Izracunaj za odabrani period
+                    prof2 = engine.df_profit_obj.copy()
+                    oos_ukupno2 = int(engine.df_oos['Izgubljeni_profit'].sum()) if len(engine.df_oos) > 0 else 0
+
+                    # Pozitivni objekti (potencijal > 0)
+                    pozitivni = prof2[prof2['Potencijalni_profit'] > 0]
+                    neto_pozitivnih = int(pozitivni['Neto_profit'].sum())
+
+                    # Pravi neprofitabilni (negativni i po potencijalu)
+                    pravi_neg2 = prof2[(prof2['Neto_profit'] <= 0) & (prof2['Potencijalni_profit'] <= 0)]
+                    n_pravi_neg2 = len(pravi_neg2)
+                    usteda_trosak2 = int(n_pravi_neg2 * engine.trosak_po_objektu)
+                    usteda_gubitak2 = int(abs(pravi_neg2['Neto_profit'].sum()))
+
+                    ukupni_potencijal = neto_pozitivnih + usteda_trosak2 + usteda_gubitak2 + oos_ukupno2
+                    stvarni_neto = int(prof2['Neto_profit'].sum())
+                    razlika = ukupni_potencijal - stvarni_neto
+
+                    period_sc = period_str2
+
+                    def _red(label, val, color="#10b981", bold_val=True):
+                        val_str = f"+{val:,} RSD" if val >= 0 else f"{val:,} RSD"
+                        v_style = f"font-weight:{'700' if bold_val else '400'};color:{color};"
+                        return f"""<div style="display:flex;justify-content:space-between;align-items:center;
+                            padding:8px 0;border-bottom:1px solid #f3f4f6;">
+                            <span style="font-size:13px;color:#555;">{label}</span>
+                            <span style="{v_style}font-size:13px;">{val_str}</span>
+                        </div>"""
+
+                    def _red_bold(label, val, color="#111"):
+                        val_str = f"= {val:,} RSD"
+                        return f"""<div style="display:flex;justify-content:space-between;align-items:center;
+                            padding:10px 0;border-top:2px solid #e5e7eb;margin-top:4px;">
+                            <span style="font-size:14px;font-weight:700;color:#111;">{label}</span>
+                            <span style="font-size:14px;font-weight:700;color:{color};">{val_str}</span>
+                        </div>"""
+
+                    scenario_html = f"""
+                    <div style="background:white;border-radius:12px;padding:20px 24px;
+                        box-shadow:0 2px 8px rgba(0,0,0,0.07);font-family:sans-serif;">
+                        <div style="font-size:12px;font-weight:600;color:#8b5cf6;margin-bottom:12px;
+                            text-transform:uppercase;letter-spacing:.5px;">
+                            Period: {period_sc} ({n_mes} meseci)
+                        </div>
+                        <p style="font-size:13px;color:#666;margin-bottom:14px;">
+                            Ako se istovremeno zatvore neprofitabilni objekti i eliminiše OOS, mreža ide sa
+                            <strong>{stvarni_neto:,} RSD</strong> neto profita na
+                            <strong style="color:#10b981;">+{ukupni_potencijal:,} RSD</strong> za {n_mes} meseci.
+                        </p>
+                        {_red(f"Neto profit pozitivnih objekata (potencijal > 0)", neto_pozitivnih, "#10b981")}
+                        {_red(f"Ušteda: zatvaranje {n_pravi_neg2} neprofitabilnih obj.", usteda_trosak2 + usteda_gubitak2, "#10b981")}
+                        {_red(f"Povraćaj izgub. zarade (OOS eliminacija)", oos_ukupno2, "#10b981")}
+                        {_red_bold(f"UKUPNI POTENCIJAL ({n_mes} meseci)", ukupni_potencijal, "#10b981")}
+                        <div style="height:8px;"></div>
+                        {_red(f"Stvarni neto profit ({n_mes} meseci)", stvarni_neto, "#555", False)}
+                        {_red(f"Razlika — potencijal koji još nije ostvaren", razlika, "#8b5cf6")}
+                    </div>"""
+                    st.markdown(scenario_html, unsafe_allow_html=True)
 
                 with tab4:
                     period_str3 = ", ".join(engine.analitika_labels) if engine.analitika_labels else "svi meseci"
