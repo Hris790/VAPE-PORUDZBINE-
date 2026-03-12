@@ -1000,23 +1000,47 @@ if uploaded:
 
                 import numpy as _np2
 
-                def _trend_score(vals):
-                    if len(vals) < 3: return 0
-                    x = _np2.arange(len(vals), dtype=float)
-                    slope = float(_np2.polyfit(x, vals, 1)[0])
-                    avg = float(_np2.mean(vals)) if float(_np2.mean(vals)) > 0 else 1.0
-                    return slope / avg
+                def _is_rastuci(vals5, dozvoljeni_sum=1):
+                    # Broji koliko puta vrednost NIJE veca od prethodne
+                    padovi = sum(1 for i in range(1, len(vals5)) if vals5[i] < vals5[i-1])
+                    # Mora biti uzlazno sa max 1 sum mesecom, i zadnji mesec veci od prvog
+                    return padovi <= dozvoljeni_sum and vals5[-1] > vals5[0] and sum(vals5) >= 10
 
-                trend_data = []
+                def _is_padajuci(vals5, dozvoljeni_sum=1):
+                    rasti = sum(1 for i in range(1, len(vals5)) if vals5[i] > vals5[i-1])
+                    return rasti <= dozvoljeni_sum and vals5[-1] < vals5[0] and sum(vals5) >= 10
+
+                def _rast_pct(vals5):
+                    # Rast od prvog do zadnjeg meseca u periodu
+                    first = vals5[0] if vals5[0] > 0 else 1
+                    return (vals5[-1] - vals5[0]) / first * 100
+
+                rastuci_list = []
+                padajuci_list = []
+
                 for kid, mes_vals in kom_mes.items():
-                    vals = [mes_vals.get(lb, 0) for lb in ml]
-                    if sum(vals) == 0: continue
-                    ts = _trend_score(vals)
-                    trend_data.append({
-                        'ID': kid, 'Ukupno': sum(vals), 'Trend': ts,
-                        'Vals': vals, 'Poslednja3_avg': sum(vals[-3:]) / max(len(vals[-3:]), 1),
-                    })
-                trend_df = pd.DataFrame(trend_data) if trend_data else pd.DataFrame(columns=['ID','Ukupno','Trend','Vals','Poslednja3_avg'])
+                    vals_all = [mes_vals.get(lb, 0) for lb in ml]
+                    # Gledamo zadnjih 5 meseci
+                    vals5 = vals_all[-5:] if len(vals_all) >= 5 else vals_all
+                    if len(vals5) < 3: continue
+                    if _is_rastuci(vals5):
+                        rastuci_list.append({
+                            'ID': kid, 'Ukupno': sum(vals_all),
+                            'Vals': vals_all, 'Vals5': vals5,
+                            'Rast': _rast_pct(vals5),
+                            'Zadnji': vals5[-1], 'Prvi': vals5[0],
+                        })
+                    elif _is_padajuci(vals5):
+                        padajuci_list.append({
+                            'ID': kid, 'Ukupno': sum(vals_all),
+                            'Vals': vals_all, 'Vals5': vals5,
+                            'Pad': _rast_pct(vals5),
+                            'Zadnji': vals5[-1], 'Prvi': vals5[0],
+                        })
+
+                rastuci_list = sorted(rastuci_list, key=lambda x: x['Rast'], reverse=True)[:10]
+                padajuci_list = sorted(padajuci_list, key=lambda x: x['Pad'])[:10]
+                trend_df = pd.DataFrame(rastuci_list) if rastuci_list else pd.DataFrame()
 
                 def _spark(vals, color):
                     if not vals or max(vals) == 0: return ''
@@ -1047,20 +1071,20 @@ if uploaded:
                 col_rast, col_pad = st.columns(2)
 
                 with col_rast:
-                    if len(trend_df) > 0:
-                        rastuci = trend_df[trend_df['Trend'] > 0].sort_values('Trend', ascending=False).head(10)
-                        rows_r = [[f'<b>{int(r["ID"])}</b>', _spark(r['Vals'], '#10b981'), f'{int(r["Ukupno"]):,}', f'<span style="color:#10b981;font-weight:700;">+{r["Trend"]*100:.1f}%/mes</span>'] for _, r in rastuci.iterrows()]
-                    else:
-                        rows_r = []
-                    _render_section("Rastući trendovi", "📈", rows_r, ["Komitent", "Trend", "Ukupno kom", "Rast/mes"])
+                    rows_r = []
+                    for r in rastuci_list:
+                        spark = _spark(r['Vals5'], '#10b981')
+                        rast_str = f'<span style="color:#10b981;font-weight:700;">+{r["Rast"]:.0f}% ({int(r["Prvi"])}→{int(r["Zadnji"])} kom)</span>'
+                        rows_r.append([f'<b>{int(r["ID"])}</b>', spark, f'{int(r["Ukupno"]):,}', rast_str])
+                    _render_section("Rastući trendovi — zadnjih 5 meseci", "📈", rows_r, ["Komitent", "Kriva", "Ukupno kom", "Rast (prvi→zadnji)"])
 
                 with col_pad:
-                    if len(trend_df) > 0:
-                        padajuci = trend_df[trend_df['Trend'] < 0].sort_values('Trend', ascending=True).head(10)
-                        rows_p = [[f'<b>{int(r["ID"])}</b>', _spark(r['Vals'], '#ef4444'), f'{int(r["Ukupno"]):,}', f'<span style="color:#ef4444;font-weight:700;">{r["Trend"]*100:.1f}%/mes</span>'] for _, r in padajuci.iterrows()]
-                    else:
-                        rows_p = []
-                    _render_section("Padajući trendovi", "📉", rows_p, ["Komitent", "Trend", "Ukupno kom", "Pad/mes"])
+                    rows_p = []
+                    for r in padajuci_list:
+                        spark = _spark(r['Vals5'], '#ef4444')
+                        pad_str = f'<span style="color:#ef4444;font-weight:700;">{r["Pad"]:.0f}% ({int(r["Prvi"])}→{int(r["Zadnji"])} kom)</span>'
+                        rows_p.append([f'<b>{int(r["ID"])}</b>', spark, f'{int(r["Ukupno"]):,}', pad_str])
+                    _render_section("Padajući trendovi — zadnjih 5 meseci", "📉", rows_p, ["Komitent", "Kriva", "Ukupno kom", "Pad (prvi→zadnji)"])
 
                 st.markdown("<div style='margin:20px 0 4px 0;'></div>", unsafe_allow_html=True)
 
