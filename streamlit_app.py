@@ -314,6 +314,30 @@ class PredictionEngine:
         self.df_result['Porudzbina_1']=self.df_result.apply(p1,axis=1).astype(int)
         self.df_result['Porudzbina_2']=self.df_result.apply(p2,axis=1).astype(int)
 
+        # --- FINALNA PROVERA: porudzbina_2 + lager ne sme biti <= prodaja poslednjeg meseca ---
+        last_label = self.mesec_labels[-1]
+
+        def extra_buffer(prodaja_poslednji):
+            if prodaja_poslednji <= 0: return 0
+            elif prodaja_poslednji <= 5: return 2
+            elif prodaja_poslednji <= 10: return 3
+            elif prodaja_poslednji <= 15: return 4
+            else: return 5
+
+        def finalna_provera(row):
+            if row['ID KOMITENTA'] in self.excluded: return int(row['Porudzbina_2'])
+            p2_val = int(row['Porudzbina_2'])
+            lager = int(row['Lager_danas'])
+            prodaja_poslednji = int(row.get(f'{last_label}_Prodaja', 0))
+            if (p2_val + lager) <= prodaja_poslednji:
+                dodatak = extra_buffer(prodaja_poslednji)
+                return p2_val + dodatak
+            return p2_val
+
+        self.df_result['Porudzbina_2'] = self.df_result.apply(finalna_provera, axis=1).astype(int)
+        n_korigovano = (self.df_result['Porudzbina_2'] > self.df_result.apply(p2, axis=1)).sum()
+        self.log(f"Finalna provera P2: {n_korigovano} kombinacija korigovano (porudzbina+lager <= prodaja poslednjeg meseca)")
+
     def _apply_min_order(self):
         self.adjustments=[]
 
@@ -345,9 +369,6 @@ class PredictionEngine:
         a_set = set((int(g), int(m)) for g, m in a_meseci_order)
         prodaja_a = self.prodaja[self.prodaja.apply(lambda r: (int(r['Godina']), int(r['Mesec'])) in a_set, axis=1)]
 
-        # --- POMOCNI RECNIK: ppu po (ida, godina, mesec) ---
-        # Za svaki artikal i mesec, profit/kom = ukupan Profit / ukupno Prodata Kolicina
-        # (agregat svih objekata za taj mesec, jer cena je ista za sve)
         ppu_mesec = {}
         if self.has_prices:
             for (ida_v, god_v, mes_v), grp in self.prodaja.groupby(['id artikla','Godina','Mesec']):
@@ -359,8 +380,6 @@ class PredictionEngine:
                     ppu_mesec[(int(ida_v), int(god_v), int(mes_v))] = r0['Finalna cena'] / 1.2 / 1.2 - r0['Nabavna vrednost']
 
         def get_ppu(ida_v, god_v, mes_v):
-            """Vraca profit/kom za artikal u datom mesecu.
-            Ako nema podataka, trazi najblizi mesec (unazad pa unapred)."""
             key = (int(ida_v), int(god_v), int(mes_v))
             if key in ppu_mesec:
                 return ppu_mesec[key]
@@ -371,7 +390,6 @@ class PredictionEngine:
             best = min(art_keys, key=lambda x: abs(x[1] * 12 + x[2] - target))
             return ppu_mesec[best]
 
-        # --- OOS ANALIZA ---
         oos_rows = []
         for _, k in self.all_keys.iterrows():
             idk, ida = k['ID KOMITENTA'], k['id artikla']
@@ -418,8 +436,6 @@ class PredictionEngine:
             self.df_oos = self.df_oos.sort_values('Izgubljeni_profit', ascending=False)
             self.log(f"OOS analiza: {len(self.df_oos)} kombinacija, izgubljeno {self.df_oos['Izgubljeni_profit'].sum():,.0f} RSD")
 
-        # --- PROFITABILNOST PO OBJEKTIMA ---
-        # IZMENJENO: trosak_mes_po_obj = ukupan trosak po objektu / broj meseci analitike
         trosak_mes_po_obj = self.trosak_po_objektu / max(n_a, 1) if self.trosak_po_objektu > 0 else 0
 
         profit_rows = []
@@ -427,22 +443,16 @@ class PredictionEngine:
             sub = prodaja_a[prodaja_a['ID KOMITENTA'] == idk]
             total_prod = int(sub['Prodata Kolicina'].sum())
             total_profit = sub['Profit'].sum()
-            # IZMENJENO: broji artikle koji su evidentirani (imaju bilo kakav promet), ne samo prodati
             n_art = self.all_keys[self.all_keys['ID KOMITENTA'] == idk]['id artikla'].nunique()
-
-            # Bruto profit po mesecima
             mes_data = {}
             for _, r in sub.iterrows():
                 key = f"{int(r['Godina'])}/{int(r['Mesec'])}"
                 mes_data[key] = mes_data.get(key, 0) + r['Profit']
-
-            # IZMENJENO: od svakog meseca oduzmi mesecni trosak po objektu -> neto po mesecu
             for key in mes_data:
                 mes_data[key] = mes_data[key] - trosak_mes_po_obj
-
             oos_sub = self.df_oos[self.df_oos['ID KOMITENTA'] == idk] if len(self.df_oos) > 0 else pd.DataFrame()
             lost = oos_sub['Izgubljeni_profit'].sum() if len(oos_sub) > 0 else 0
-            trosak_total = self.trosak_po_objektu  # ukupan trosak za ceo period
+            trosak_total = self.trosak_po_objektu
             neto = total_profit - trosak_total
             profit_rows.append({
                 'ID KOMITENTA': int(idk), 'Artikala': n_art,
@@ -451,12 +461,10 @@ class PredictionEngine:
                 'Neto_profit': round(neto, 0),
                 'Izgubljeno_OOS': round(lost, 0),
                 'Potencijalni_profit': round(neto + lost, 0),
-                # IZMENJENO: kolone se zovu Neto_ umesto Profit_ jer sadrze neto (bruto - mes. trosak)
                 **{f'Neto_{a_labels[j]}': round(mes_data.get(f"{int(a_meseci_order[j][0])}/{int(a_meseci_order[j][1])}", -trosak_mes_po_obj), 0) for j in range(n_a)}
             })
         self.df_profit_obj = pd.DataFrame(profit_rows).sort_values('Neto_profit', ascending=True)
 
-        # --- ANALIZA AKCIJE ---
         promo_rows = []
         for ida in self.prodaja['id artikla'].unique():
             pi = self.price_info.get(int(ida), {})
@@ -636,7 +644,6 @@ def create_excel(engine):
         oos_hdr = PatternFill('solid', fgColor='C00000')
         oos_fill = PatternFill('solid', fgColor='FCE4EC')
         a_labels_oos = engine.analitika_labels if engine.analitika_labels else engine.mesec_labels
-        # Fiksne kolone + po jedna OOS/Izgub za svaki mesec + total
         fixed_h = ['ID Komitenta','ID Artikla','Naziv','Grupa','Prosek kad ima','Lager danas']
         mes_h = []
         for lb in a_labels_oos: mes_h += [f'OOS {lb}', f'Izgub {lb} (RSD)']
@@ -654,7 +661,6 @@ def create_excel(engine):
             vals += [row.get('OOS_meseci',0), row.get('Izgubljeni_profit',0)]
             for c, v in enumerate(vals, 1):
                 cell = ws_oos.cell(idx, c, v); cell.font=dfn; cell.border=tb; cell.alignment=ca
-                # OOS=1 -> crvena celija, Izgub kolone -> format money
                 col_name = all_h[c-1]
                 if col_name.startswith('OOS ') and v == 1:
                     cell.fill = oos_fill; cell.font = Font(name='Arial',size=9,bold=True,color='C00000')
@@ -678,7 +684,6 @@ def create_excel(engine):
         prof_hdr = PatternFill('solid', fgColor='1F4E79')
         bad_fill = PatternFill('solid', fgColor='FCE4EC')
         good_fill = PatternFill('solid', fgColor='E2EFDA')
-        # IZMENJENO: kolone se zovu "Neto Sep", "Neto Okt" itd. umesto "Profit Sep"
         headers = ['ID Komitenta','Artikala','Prodato kom','Bruto profit (RSD)','Trosak mkt (RSD)','Neto profit (RSD)','Izgubljeno OOS (RSD)','Potencijal (RSD)']
         for lb in (engine.analitika_labels if engine.analitika_labels else ml): headers.append(f'Neto {lb}')
         for c, h in enumerate(headers, 1):
@@ -686,7 +691,6 @@ def create_excel(engine):
         for idx, (_, row) in enumerate(engine.df_profit_obj.iterrows(), 2):
             vals = [row['ID KOMITENTA'], row['Artikala'], row['Prodato_kom'], row['Bruto_profit'],
                     row['Trosak_mkt'], row['Neto_profit'], row['Izgubljeno_OOS'], row['Potencijalni_profit']]
-            # IZMENJENO: citamo Neto_ kolone umesto Profit_
             for lb in (engine.analitika_labels if engine.analitika_labels else ml): vals.append(row.get(f'Neto_{lb}', 0))
             for c, v in enumerate(vals, 1):
                 cell = ws_prof.cell(idx, c, v); cell.font=dfn; cell.border=tb; cell.alignment=ca
@@ -694,7 +698,6 @@ def create_excel(engine):
                 if c == 6:
                     if v <= 0: cell.fill = bad_fill; cell.font = Font(name='Arial', size=9, bold=True, color='C00000')
                     elif v > 0: cell.fill = good_fill
-                # IZMENJENO: mesecne neto kolone - crveno ako negativno, zeleno ako pozitivno
                 if c >= 9:
                     if v < 0: cell.font = Font(name='Arial', size=9, color='C00000')
                     elif v > 0: cell.font = Font(name='Arial', size=9, color='006100')
@@ -763,6 +766,7 @@ def create_excel(engine):
     info+=["",f"=== PORUDZBINA ZA {engine.order_label.upper()} ===","",
         f"P1 (osnovna): max(Pred-Lager, 0)",
         f"P2 (sa dopunom): Za lager<=2: dopuna do max(predikcija, prosek, min porudzbina={engine.min_order}); Za lager>2: dopuna do min {engine.min_lager}",
+        f"P2 finalna provera: ako (P2+lager) <= prodaja_poslednjeg_meseca, dodaje se buffer (1-5 kom: +2, 6-10: +3, 11-15: +4, 16+: +5)",
         f"Iskljuceni: {', '.join(str(x) for x in sorted(engine.excluded))}"]
     if engine.has_prices:
         info+=["",f"=== ANALITIKA ===","",
@@ -779,7 +783,6 @@ def create_excel(engine):
         else: cell.font=Font(name='Arial',size=10)
 
     buf=io.BytesIO(); wb.save(buf); buf.seek(0); return buf
-
 
 
 DEFAULT_EXCLUDED = "1023, 1027, 1034, 1043, 1057, 1060, 1061, 1076, 1315, 1347, 1349, 1359"
