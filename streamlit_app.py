@@ -983,6 +983,114 @@ if uploaded:
                 show.columns = names
                 st.dataframe(show, use_container_width=True, height=400)
 
+                st.markdown("<div style='margin:24px 0 4px 0;'></div>", unsafe_allow_html=True)
+
+                # --- Pripremi podatke po komitentima po mesecima ---
+                ml = engine.mesec_labels
+                df_r = engine.df_result.copy()
+
+                kom_mes = {}
+                for lb in ml:
+                    col_lb = f'{lb}_Prodaja'
+                    if col_lb in df_r.columns:
+                        grp = df_r.groupby('ID KOMITENTA')[col_lb].sum()
+                        for kid, v in grp.items():
+                            if kid not in kom_mes: kom_mes[kid] = {}
+                            kom_mes[kid][lb] = int(v)
+
+                import numpy as _np2
+
+                def _trend_score(vals):
+                    if len(vals) < 3: return 0
+                    x = _np2.arange(len(vals), dtype=float)
+                    slope = float(_np2.polyfit(x, vals, 1)[0])
+                    avg = float(_np2.mean(vals)) if float(_np2.mean(vals)) > 0 else 1.0
+                    return slope / avg
+
+                trend_data = []
+                for kid, mes_vals in kom_mes.items():
+                    vals = [mes_vals.get(lb, 0) for lb in ml]
+                    if sum(vals) == 0: continue
+                    ts = _trend_score(vals)
+                    trend_data.append({
+                        'ID': kid, 'Ukupno': sum(vals), 'Trend': ts,
+                        'Vals': vals, 'Poslednja3_avg': sum(vals[-3:]) / max(len(vals[-3:]), 1),
+                    })
+                trend_df = pd.DataFrame(trend_data) if trend_data else pd.DataFrame(columns=['ID','Ukupno','Trend','Vals','Poslednja3_avg'])
+
+                def _spark(vals, color):
+                    if not vals or max(vals) == 0: return ''
+                    mx = max(vals); w, h = 80, 26; n = len(vals)
+                    pts = [f"{int(i/max(n-1,1)*w)},{h-int(v/mx*(h-4))-2}" for i,v in enumerate(vals)]
+                    lx, ly = pts[-1].split(',')
+                    return f'<svg width="{w}" height="{h}" style="display:block;"><polyline points="{" ".join(pts)}" fill="none" stroke="{color}" stroke-width="2"/><circle cx="{lx}" cy="{ly}" r="3" fill="{color}"/></svg>'
+
+                def _render_section(title, icon, rows, col_names):
+                    if not rows:
+                        st.markdown(f'<div style="color:#aaa;font-size:13px;padding:20px 0;">Nema podataka</div>', unsafe_allow_html=True)
+                        return
+                    st.markdown(f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;"><span style="font-size:18px;">{icon}</span><span style="font-size:14px;font-weight:700;color:#111;">{title}</span></div>', unsafe_allow_html=True)
+                    n_cols = len(col_names)
+                    hdr = "".join(f'<th style="padding:7px 10px;font-size:10px;color:#888;font-weight:600;text-transform:uppercase;letter-spacing:.3px;text-align:{("left" if i<=1 else "right")};">{c}</th>' for i,c in enumerate(col_names))
+                    body = ""
+                    for i, row in enumerate(rows):
+                        bg = "#fafafa" if i%2==0 else "white"
+                        cells = "".join(f'<td style="padding:7px 10px;font-size:12px;text-align:{("left" if j<=1 else "right")};">{row[j]}</td>' for j in range(n_cols))
+                        body += f'<tr style="background:{bg};border-bottom:1px solid #f3f4f6;">{cells}</tr>'
+                    h_px = len(rows)*36 + 46
+                    components.html(f'''<!DOCTYPE html><html><body style="margin:0;padding:0;font-family:sans-serif;background:white;">
+                    <table style="width:100%;border-collapse:collapse;">
+                        <thead><tr style="background:#f9fafb;border-bottom:2px solid #e5e7eb;">{hdr}</tr></thead>
+                        <tbody>{body}</tbody>
+                    </table></body></html>''', height=h_px)
+
+                col_rast, col_pad = st.columns(2)
+
+                with col_rast:
+                    if len(trend_df) > 0:
+                        rastuci = trend_df[trend_df['Trend'] > 0].sort_values('Trend', ascending=False).head(10)
+                        rows_r = [[f'<b>{int(r["ID"])}</b>', _spark(r['Vals'], '#10b981'), f'{int(r["Ukupno"]):,}', f'<span style="color:#10b981;font-weight:700;">+{r["Trend"]*100:.1f}%/mes</span>'] for _, r in rastuci.iterrows()]
+                    else:
+                        rows_r = []
+                    _render_section("Rastući trendovi", "📈", rows_r, ["Komitent", "Trend", "Ukupno kom", "Rast/mes"])
+
+                with col_pad:
+                    if len(trend_df) > 0:
+                        padajuci = trend_df[trend_df['Trend'] < 0].sort_values('Trend', ascending=True).head(10)
+                        rows_p = [[f'<b>{int(r["ID"])}</b>', _spark(r['Vals'], '#ef4444'), f'{int(r["Ukupno"]):,}', f'<span style="color:#ef4444;font-weight:700;">{r["Trend"]*100:.1f}%/mes</span>'] for _, r in padajuci.iterrows()]
+                    else:
+                        rows_p = []
+                    _render_section("Padajući trendovi", "📉", rows_p, ["Komitent", "Trend", "Ukupno kom", "Pad/mes"])
+
+                st.markdown("<div style='margin:20px 0 4px 0;'></div>", unsafe_allow_html=True)
+
+                col_oos2, col_spa = st.columns(2)
+
+                with col_oos2:
+                    if engine.has_prices and len(engine.df_oos) > 0:
+                        oos_k = engine.df_oos.copy()
+                        if 'Lager_danas' in oos_k.columns:
+                            oos_k = oos_k[oos_k['Lager_danas'] == 0]
+                        oos_top = oos_k.groupby('ID KOMITENTA').agg(Izgubljeno=('Izgubljeni_profit','sum'), Artikala=('id artikla','nunique')).reset_index().sort_values('Izgubljeno', ascending=False).head(10)
+                        rows_oos = [[f'<b>{int(r["ID KOMITENTA"])}</b>', str(int(r['Artikala'])), f'<span style="color:#ef4444;font-weight:700;">{int(r["Izgubljeno"]):,} RSD</span>'] for _, r in oos_top.iterrows()]
+                    else:
+                        rows_oos = []
+                    _render_section("OOS — Lager 0, najveći potencijal", "🔴", rows_oos, ["Komitent", "Art. bez robe", "Izgubljen profit"])
+
+                with col_spa:
+                    spavaci = []
+                    for kid, mes_vals in kom_mes.items():
+                        vals = [mes_vals.get(lb, 0) for lb in ml]
+                        if len(vals) < 3: continue
+                        neakt = 0
+                        for v in reversed(vals):
+                            if v == 0: neakt += 1
+                            else: break
+                        if neakt >= 2 and sum(vals[:-neakt]) > 0:
+                            spavaci.append([f'<b>{int(kid)}</b>', _spark(vals, '#f97316'), f'{max(vals[:-neakt]):,}', f'<span style="color:#f97316;font-weight:700;">{neakt} mes.</span>'])
+                    spavaci_sorted = sorted(spavaci, key=lambda x: int(x[2].replace(",","")), reverse=True)[:10]
+                    _render_section("Spavači — prestali da kupuju", "💤", spavaci_sorted, ["Komitent", "Trend", "Peak/mes", "Neaktivan"])
+
             if engine.has_prices:
                 with tab2:
                     period_str2 = ", ".join(engine.analitika_labels) if engine.analitika_labels else "svi meseci"
