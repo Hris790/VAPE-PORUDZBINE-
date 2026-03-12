@@ -1031,18 +1031,104 @@ if uploaded:
 
                     # --- Profitabilnost po objektima ---
                     st.markdown('<div class="section-title">🏪 Profitabilnost po objektima</div>', unsafe_allow_html=True)
-                    if engine.mesecni_trosak > 0:
-                        trosak_mes_obj = engine.trosak_po_objektu / max(n_mes, 1)
-                        st.info(f"Ukupan trosak za period: **{engine.mesecni_trosak:,.0f} RSD** / {n_obj} objekata = **{engine.trosak_po_objektu:,.0f} RSD** po objektu | Mesecno po objektu: **{trosak_mes_obj:,.0f} RSD**")
+
+                    # Izracunaj kljucne brojeve
+                    ukupno_obj = len(prof)
+                    neto_neg = prof[prof['Neto_profit'] <= 0]
+                    n_neto_neg = len(neto_neg)
+                    # OOS-negativni: neto_profit <= 0 ali potencijal > 0
+                    oos_neg = prof[(prof['Neto_profit'] <= 0) & (prof['Potencijalni_profit'] > 0)]
+                    n_oos_neg = len(oos_neg)
+                    # Pravi neprofitabilni: negativni i po potencijalu
+                    pravi_neg = prof[(prof['Neto_profit'] <= 0) & (prof['Potencijalni_profit'] <= 0)]
+                    n_pravi_neg = len(pravi_neg)
+                    pct_pravi = round(n_pravi_neg / max(ukupno_obj, 1) * 100)
+                    trosak_po_obj = engine.trosak_po_objektu
+                    trosak_mes_obj = trosak_po_obj / max(n_mes, 1)
+                    usteda_trosak = n_pravi_neg * trosak_po_obj
+                    usteda_gubitak = abs(pravi_neg['Neto_profit'].sum()) if n_pravi_neg > 0 else 0
+                    usteda_mes = (usteda_trosak + usteda_gubitak) / max(n_mes, 1)
+
+                    # Analiticki tekst
+                    tekst = f"""
+<div style="background:white;border-radius:12px;padding:20px 24px;box-shadow:0 2px 8px rgba(0,0,0,0.06);margin-bottom:16px;font-size:14px;line-height:1.8;color:#333;">
+<p>Od <strong>{ukupno_obj} objekata</strong>, <strong>{n_neto_neg}</strong> je neto negativno.
+Medjutim, <strong>{n_oos_neg}</strong> od njih ima negativan neto isključivo zbog OOS-a — kada se uračuna izgubljena zarada,
+njihov potencijal je pozitivan. Ovi objekti nisu problem, samo nisu imali robu.</p>
+
+<p>Pravih neprofitabilnih je <strong>{n_pravi_neg}</strong> ({pct_pravi}% ukupne mreže) — negativni čak i po potencijalu.
+Trošak po objektu je <strong>{trosak_po_obj:,.0f} RSD</strong> za {n_mes} {'mesec' if n_mes==1 else 'meseci'} /
+<strong>{trosak_mes_obj:,.0f} RSD</strong> mesečno.</p>
+
+<p>Zatvaranjem <strong>{n_pravi_neg} pravih neprofitabilnih</strong> skidamo trošak
+<strong>{n_pravi_neg} × {trosak_po_obj:,.0f} RSD = {usteda_trosak:,.0f} RSD</strong>
+({usteda_trosak/max(n_mes,1):,.0f} RSD/mes) i prestajemo da gubimo
+<strong>{usteda_gubitak:,.0f} RSD</strong> ({usteda_gubitak/max(n_mes,1):,.0f} RSD/mes) na negativnim objektima.
+Ostaju samo objekti koji su u plusu.</p>
+</div>"""
+                    st.markdown(tekst, unsafe_allow_html=True)
+
+                    # --- Grafikon: profitabilni vs neprofitabilni po mesecima ---
+                    a_labels_trend2 = engine.analitika_labels if engine.analitika_labels else engine.mesec_labels
+                    a_meseci_trend2 = engine.analitika_meseci if (engine.analitika_meseci and len(engine.analitika_meseci) > 0) else engine.meseci_order
+
+                    chart_mes_data = []
+                    for i, (lb, (g, m)) in enumerate(zip(a_labels_trend2, a_meseci_trend2)):
+                        col_neto_lb = f'Neto_{lb}'
+                        if col_neto_lb in prof.columns:
+                            n_prof_mes = (prof[col_neto_lb] > 0).sum()
+                            n_nepr_mes = (prof[col_neto_lb] <= 0).sum()
+                        else:
+                            n_prof_mes = 0; n_nepr_mes = 0
+                        chart_mes_data.append((lb, n_prof_mes, n_nepr_mes))
+
+                    if chart_mes_data:
+                        max_obj_mes = max(a + b for _, a, b in chart_mes_data) if chart_mes_data else 1
+                        bar_w = max(40, min(70, 600 // max(len(chart_mes_data), 1)))
+                        bars_html = ""
+                        for lb, np_v, nn_v in chart_mes_data:
+                            h_p = int(np_v / max(max_obj_mes, 1) * 120)
+                            h_n = int(nn_v / max(max_obj_mes, 1) * 120)
+                            bars_html += f"""
+                            <div style="display:flex;flex-direction:column;align-items:center;gap:2px;">
+                                <div style="display:flex;align-items:flex-end;gap:3px;height:130px;">
+                                    <div style="width:{bar_w//2}px;height:{h_p}px;background:#10b981;border-radius:3px 3px 0 0;position:relative;" title="{np_v} profitabilnih">
+                                        <span style="position:absolute;top:-18px;left:50%;transform:translateX(-50%);font-size:10px;font-weight:700;color:#10b981;">{np_v}</span>
+                                    </div>
+                                    <div style="width:{bar_w//2}px;height:{h_n}px;background:#ef4444;border-radius:3px 3px 0 0;position:relative;" title="{nn_v} neprofitabilnih">
+                                        <span style="position:absolute;top:-18px;left:50%;transform:translateX(-50%);font-size:10px;font-weight:700;color:#ef4444;">{nn_v}</span>
+                                    </div>
+                                </div>
+                                <div style="font-size:10px;color:#888;margin-top:4px;text-align:center;">{lb}</div>
+                            </div>"""
+
+                        legenda = """
+                        <div style="display:flex;gap:16px;margin-bottom:10px;">
+                            <span style="display:flex;align-items:center;gap:5px;font-size:12px;color:#555;">
+                                <span style="width:12px;height:12px;background:#10b981;border-radius:2px;display:inline-block;"></span> Profitabilni
+                            </span>
+                            <span style="display:flex;align-items:center;gap:5px;font-size:12px;color:#555;">
+                                <span style="width:12px;height:12px;background:#ef4444;border-radius:2px;display:inline-block;"></span> Neprofitabilni
+                            </span>
+                        </div>"""
+                        st.markdown(f"""
+                        <div style="background:white;border-radius:12px;padding:20px 24px;box-shadow:0 2px 8px rgba(0,0,0,0.06);margin-bottom:16px;">
+                            {legenda}
+                            <div style="display:flex;gap:8px;align-items:flex-end;overflow-x:auto;padding-bottom:4px;">
+                                {bars_html}
+                            </div>
+                        </div>""", unsafe_allow_html=True)
+
                     unprofitable = prof[prof['Neto_profit'] <= 0].sort_values('Neto_profit')
                     if len(unprofitable) > 0:
-                        st.markdown(f'<div class="warn-box">⚠️ <strong>{len(unprofitable)} neprofitabilnih objekata</strong> — kandidati za izlistavanje</div>', unsafe_allow_html=True)
-                        up_show = unprofitable[['ID KOMITENTA','Artikala','Prodato_kom','Bruto_profit','Trosak_mkt','Neto_profit','Izgubljeno_OOS']].copy()
-                        up_show.columns = ['ID Kom.','Art.','Prod. kom','Bruto profit','Trosak mkt','Neto profit','Izg. OOS']
-                        st.dataframe(up_show, use_container_width=True, height=180)
-                    all_show = prof[['ID KOMITENTA','Artikala','Prodato_kom','Bruto_profit','Trosak_mkt','Neto_profit','Izgubljeno_OOS','Potencijalni_profit']].copy()
-                    all_show.columns = ['ID Kom.','Art.','Prod. kom','Bruto profit','Trosak mkt','Neto profit','Izg. OOS','Potencijal']
-                    st.dataframe(all_show, use_container_width=True, height=350)
+                        with st.expander(f"⚠️ {len(unprofitable)} neprofitabilnih objekata — kandidati za izlistavanje"):
+                            up_show = unprofitable[['ID KOMITENTA','Artikala','Prodato_kom','Bruto_profit','Trosak_mkt','Neto_profit','Izgubljeno_OOS','Potencijalni_profit']].copy()
+                            up_show.columns = ['ID Kom.','Art.','Prod. kom','Bruto profit','Trosak mkt','Neto profit','Izg. OOS','Potencijal']
+                            st.dataframe(up_show, use_container_width=True, height=250)
+                    with st.expander("📋 Svi objekti (sortirano po neto profitu)"):
+                        all_show = prof[['ID KOMITENTA','Artikala','Prodato_kom','Bruto_profit','Trosak_mkt','Neto_profit','Izgubljeno_OOS','Potencijalni_profit']].copy()
+                        all_show.columns = ['ID Kom.','Art.','Prod. kom','Bruto profit','Trosak mkt','Neto profit','Izg. OOS','Potencijal']
+                        st.dataframe(all_show, use_container_width=True, height=350)
 
                     st.markdown("<div style='margin:20px 0 4px 0;'></div>", unsafe_allow_html=True)
 
