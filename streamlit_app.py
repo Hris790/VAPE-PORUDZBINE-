@@ -957,9 +957,9 @@ if uploaded:
 
 
             if engine.has_prices:
-                tab1, tab2, tab4, tab5 = st.tabs(["\U0001f4e6 Porudzbina", "\U0001f4b0 Profitabilnost objekata & OOS", "\U0001f3af Analiza Akcije", "\U0001f4cb Log"])
+                tab1, tab2 = st.tabs(["\U0001f4e6 Porudžbina", "\U0001f4b0 Profitabilnost objekata & OOS"])
             else:
-                tab1, tab5 = st.tabs(["\U0001f4e6 Porudzbina", "\U0001f4cb Log"])
+                tab1, = st.tabs(["\U0001f4e6 Porudžbina"])
 
             with tab1:
                 # --- Summary kartice ---
@@ -1049,71 +1049,116 @@ if uploaded:
                     lx, ly = pts[-1].split(',')
                     return f'<svg width="{w}" height="{h}" style="display:block;"><polyline points="{" ".join(pts)}" fill="none" stroke="{color}" stroke-width="2"/><circle cx="{lx}" cy="{ly}" r="3" fill="{color}"/></svg>'
 
-                def _render_section(title, icon, rows, col_names):
-                    if not rows:
-                        st.markdown(f'<div style="color:#aaa;font-size:13px;padding:20px 0;">Nema podataka</div>', unsafe_allow_html=True)
+                def _render_trend_section(title, icon, color, items, is_rast):
+                    label_color = "#10b981" if is_rast else "#ef4444"
+                    label_bg = "#f0fdf4" if is_rast else "#fef2f2"
+                    if not items:
+                        components.html(f"""<!DOCTYPE html><html><body style="margin:0;padding:4px 0;font-family:'DM Sans',sans-serif;">
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+                            <span style="font-size:17px;">{icon}</span>
+                            <span style="font-size:13px;font-weight:700;color:#111;">{title}</span>
+                        </div>
+                        <div style="color:#aaa;font-size:13px;padding:12px 0;">Nema podataka za prikaz</div>
+                        </body></html>""", height=80)
                         return
-                    st.markdown(f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;"><span style="font-size:18px;">{icon}</span><span style="font-size:14px;font-weight:700;color:#111;">{title}</span></div>', unsafe_allow_html=True)
-                    n_cols = len(col_names)
-                    hdr = "".join(f'<th style="padding:7px 10px;font-size:10px;color:#888;font-weight:600;text-transform:uppercase;letter-spacing:.3px;text-align:{("left" if i<=1 else "right")};">{c}</th>' for i,c in enumerate(col_names))
-                    body = ""
-                    for i, row in enumerate(rows):
-                        bg = "#fafafa" if i%2==0 else "white"
-                        cells = "".join(f'<td style="padding:7px 10px;font-size:12px;text-align:{("left" if j<=1 else "right")};">{row[j]}</td>' for j in range(n_cols))
-                        body += f'<tr style="background:{bg};border-bottom:1px solid #f3f4f6;">{cells}</tr>'
-                    h_px = len(rows)*36 + 46
-                    components.html(f'''<!DOCTYPE html><html><body style="margin:0;padding:0;font-family:sans-serif;background:white;">
-                    <table style="width:100%;border-collapse:collapse;">
-                        <thead><tr style="background:#f9fafb;border-bottom:2px solid #e5e7eb;">{hdr}</tr></thead>
-                        <tbody>{body}</tbody>
-                    </table></body></html>''', height=h_px)
+                    rows_html = ""
+                    for r in items:
+                        vals5 = r['Vals5']
+                        mx = max(vals5) if max(vals5) > 0 else 1
+                        bars = "".join(
+                            f'<div style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;gap:0;">                            <div style="height:{int(v/mx*28)}px;background:{"linear-gradient(180deg,#10b981,#6ee7b7)" if is_rast else "linear-gradient(180deg,#ef4444,#fca5a5)"};border-radius:2px 2px 0 0;min-height:2px;"></div></div>'
+                            for v in vals5
+                        )
+                        sign = "+" if is_rast else ""
+                        pct = r['Rast'] if is_rast else r['Pad']
+                        rows_html += f"""<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #f3f4f6;">
+                            <div style="font-family:'DM Mono',monospace;font-size:14px;font-weight:500;color:#111;width:46px;flex-shrink:0;">{int(r["ID"])}</div>
+                            <div style="display:flex;align-items:flex-end;gap:2px;height:32px;width:90px;flex-shrink:0;">{bars}</div>
+                            <div style="flex:1;font-size:11px;color:#aaa;">{int(r["Ukupno"]):,} kom</div>
+                            <div style="font-size:12px;font-weight:700;color:{label_color};white-space:nowrap;">{sign}{pct:.0f}% &nbsp;<span style="font-weight:400;color:#bbb;font-size:11px;">({int(r["Prvi"])}→{int(r["Zadnji"])})</span></div>
+                        </div>"""
+                    h_px = len(items) * 48 + 56
+                    components.html(f"""<!DOCTYPE html><html>
+                    <head><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet"></head>
+                    <body style="margin:0;padding:4px 0;font-family:'DM Sans',sans-serif;background:white;">
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+                            <span style="font-size:17px;">{icon}</span>
+                            <span style="font-size:13px;font-weight:700;color:#111;">{title}</span>
+                            <span style="font-size:10px;font-weight:700;color:{label_color};background:{label_bg};border-radius:20px;padding:2px 8px;">zadnjih 5 mes.</span>
+                        </div>
+                        <div style="font-size:9px;color:#ccc;display:flex;gap:10px;margin-bottom:4px;">
+                            <span style="width:46px;"></span>
+                            <span style="width:90px;text-align:center;text-transform:uppercase;letter-spacing:.5px;">trend</span>
+                            <span style="flex:1;text-transform:uppercase;letter-spacing:.5px;">ukupno</span>
+                            <span style="text-transform:uppercase;letter-spacing:.5px;">rast (prvi→zadnji)</span>
+                        </div>
+                        {rows_html}
+                    </body></html>""", height=h_px)
+
+                def _render_oos_section(items, max_val):
+                    if not items:
+                        components.html('''<!DOCTYPE html><html><body style="margin:0;padding:4px 0;font-family:sans-serif;">
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+                            <span style="font-size:17px;">🔴</span>
+                            <span style="font-size:13px;font-weight:700;color:#111;">OOS — Lager 0, najveći potencijal</span>
+                        </div>
+                        <div style="color:#aaa;font-size:13px;">Nema OOS podataka</div>
+                        </body></html>''', height=80)
+                        return
+                    rows_html = ""
+                    for r in items:
+                        pct = int(r['Izgubljeno'] / max_val * 100)
+                        rows_html += f"""<div style="padding:9px 0;border-bottom:1px solid #f9f9f9;">
+                            <div style="display:flex;align-items:center;gap:10px;margin-bottom:5px;">
+                                <div style="font-family:'DM Mono',monospace;font-size:14px;font-weight:500;color:#111;width:46px;flex-shrink:0;">{int(r["ID KOMITENTA"])}</div>
+                                <div style="font-size:10px;font-weight:700;color:#ef4444;background:#fef2f2;border-radius:4px;padding:2px 7px;">{int(r["Artikala"])} artikala bez robe</div>
+                                <div style="margin-left:auto;font-family:'DM Mono',monospace;font-size:13px;font-weight:700;color:#ef4444;">{int(r["Izgubljeno"]):,} RSD</div>
+                            </div>
+                            <div style="height:5px;background:#fee2e2;border-radius:99px;overflow:hidden;">
+                                <div style="width:{pct}%;height:100%;background:linear-gradient(90deg,#dc2626,#f87171);border-radius:99px;"></div>
+                            </div>
+                        </div>"""
+                    h_px = len(items) * 54 + 56
+                    components.html(f"""<!DOCTYPE html><html>
+                    <head><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet"></head>
+                    <body style="margin:0;padding:4px 0;font-family:'DM Sans',sans-serif;background:white;">
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+                            <span style="font-size:17px;">🔴</span>
+                            <span style="font-size:13px;font-weight:700;color:#111;">OOS — Lager 0, najveći potencijal</span>
+                            <span style="font-size:10px;font-weight:700;color:#ef4444;background:#fef2f2;border-radius:20px;padding:2px 8px;">top 10</span>
+                        </div>
+                        <div style="font-size:9px;color:#ccc;display:flex;gap:10px;margin-bottom:4px;align-items:center;">
+                            <span style="width:46px;"></span>
+                            <span style="flex:1;text-transform:uppercase;letter-spacing:.5px;"></span>
+                            <span style="text-transform:uppercase;letter-spacing:.5px;">izgubljen profit</span>
+                        </div>
+                        {rows_html}
+                    </body></html>""", height=h_px)
 
                 col_rast, col_pad = st.columns(2)
-
                 with col_rast:
-                    rows_r = []
-                    for r in rastuci_list:
-                        spark = _spark(r['Vals5'], '#10b981')
-                        rast_str = f'<span style="color:#10b981;font-weight:700;">+{r["Rast"]:.0f}% ({int(r["Prvi"])}→{int(r["Zadnji"])} kom)</span>'
-                        rows_r.append([f'<b>{int(r["ID"])}</b>', spark, f'{int(r["Ukupno"]):,}', rast_str])
-                    _render_section("Rastući trendovi — zadnjih 5 meseci", "📈", rows_r, ["Komitent", "Kriva", "Ukupno kom", "Rast (prvi→zadnji)"])
-
+                    _render_trend_section("Rastući trendovi", "📈", "#10b981", rastuci_list, True)
                 with col_pad:
-                    rows_p = []
-                    for r in padajuci_list:
-                        spark = _spark(r['Vals5'], '#ef4444')
-                        pad_str = f'<span style="color:#ef4444;font-weight:700;">{r["Pad"]:.0f}% ({int(r["Prvi"])}→{int(r["Zadnji"])} kom)</span>'
-                        rows_p.append([f'<b>{int(r["ID"])}</b>', spark, f'{int(r["Ukupno"]):,}', pad_str])
-                    _render_section("Padajući trendovi — zadnjih 5 meseci", "📉", rows_p, ["Komitent", "Kriva", "Ukupno kom", "Pad (prvi→zadnji)"])
+                    _render_trend_section("Padajući trendovi", "📉", "#ef4444", padajuci_list, False)
 
                 st.markdown("<div style='margin:20px 0 4px 0;'></div>", unsafe_allow_html=True)
 
-                col_oos2, col_spa = st.columns(2)
+                if engine.has_prices and len(engine.df_oos) > 0:
+                    oos_k = engine.df_oos.copy()
+                    if 'Lager_danas' in oos_k.columns:
+                        oos_k = oos_k[oos_k['Lager_danas'] == 0]
+                    oos_top = oos_k.groupby('ID KOMITENTA').agg(
+                        Izgubljeno=('Izgubljeni_profit','sum'),
+                        Artikala=('id artikla','nunique')
+                    ).reset_index().sort_values('Izgubljeno', ascending=False).head(10)
+                    oos_items = oos_top.to_dict('records')
+                    oos_max = int(oos_top['Izgubljeno'].max()) if len(oos_top) > 0 else 1
+                else:
+                    oos_items = []; oos_max = 1
 
+                col_oos2, col_empty = st.columns(2)
                 with col_oos2:
-                    if engine.has_prices and len(engine.df_oos) > 0:
-                        oos_k = engine.df_oos.copy()
-                        if 'Lager_danas' in oos_k.columns:
-                            oos_k = oos_k[oos_k['Lager_danas'] == 0]
-                        oos_top = oos_k.groupby('ID KOMITENTA').agg(Izgubljeno=('Izgubljeni_profit','sum'), Artikala=('id artikla','nunique')).reset_index().sort_values('Izgubljeno', ascending=False).head(10)
-                        rows_oos = [[f'<b>{int(r["ID KOMITENTA"])}</b>', str(int(r['Artikala'])), f'<span style="color:#ef4444;font-weight:700;">{int(r["Izgubljeno"]):,} RSD</span>'] for _, r in oos_top.iterrows()]
-                    else:
-                        rows_oos = []
-                    _render_section("OOS — Lager 0, najveći potencijal", "🔴", rows_oos, ["Komitent", "Art. bez robe", "Izgubljen profit"])
-
-                with col_spa:
-                    spavaci = []
-                    for kid, mes_vals in kom_mes.items():
-                        vals = [mes_vals.get(lb, 0) for lb in ml]
-                        if len(vals) < 3: continue
-                        neakt = 0
-                        for v in reversed(vals):
-                            if v == 0: neakt += 1
-                            else: break
-                        if neakt >= 2 and sum(vals[:-neakt]) > 0:
-                            spavaci.append([f'<b>{int(kid)}</b>', _spark(vals, '#f97316'), f'{max(vals[:-neakt]):,}', f'<span style="color:#f97316;font-weight:700;">{neakt} mes.</span>'])
-                    spavaci_sorted = sorted(spavaci, key=lambda x: int(x[2].replace(",","")), reverse=True)[:10]
-                    _render_section("Spavači — prestali da kupuju", "💤", spavaci_sorted, ["Komitent", "Trend", "Peak/mes", "Neaktivan"])
+                    _render_oos_section(oos_items, oos_max)
 
             if engine.has_prices:
                 with tab2:
@@ -1679,44 +1724,6 @@ Ostaju samo objekti koji su u plusu.</p>
                             </div>"""
                             components.html(f'<!DOCTYPE html><html><body style="margin:0;padding:0;">{sc_html}</body></html>', height=420)
 
-                with tab4:
-                    period_str3 = ", ".join(engine.analitika_labels) if engine.analitika_labels else "svi meseci"
-                    st.markdown('<div class="section-title">\U0001f3af Efekat akcijske cene & Obrt lagera</div>', unsafe_allow_html=True)
-                    st.caption(f"\U0001f4c5 Period analize: **{period_str3}**")
-                    if len(engine.df_promo) > 0:
-                        promo = engine.df_promo
-                        total_akcija = int(promo['Profit_akcija'].sum())
-                        total_cena = int(promo['Cena_akcije'].sum())
-                        total_prihod_akc = int(promo['Prihod_akcija'].sum())
-                        total_prihod_red = int(promo['Prihod_redovna'].sum())
-                        avg_obrt = promo['Obrt_x'].mean()
-                        cc1, cc2, cc3, cc4 = st.columns(4)
-                        cc1.markdown(f'<div class="metric-card"><div class="metric-value-green">{total_prihod_akc:,}</div><div class="metric-label">Prihod na akciji (RSD)</div></div>', unsafe_allow_html=True)
-                        cc2.markdown(f'<div class="metric-card"><div class="metric-value-green">{total_akcija:,}</div><div class="metric-label">Profit na akciji (RSD)</div></div>', unsafe_allow_html=True)
-                        cc3.markdown(f'<div class="metric-card"><div class="metric-value-red">-{total_cena:,}</div><div class="metric-label">Cena akcije (RSD)</div></div>', unsafe_allow_html=True)
-                        cc4.markdown(f'<div class="metric-card"><div class="metric-value">{avg_obrt:.1f}x</div><div class="metric-label">Prosecni obrt lagera</div></div>', unsafe_allow_html=True)
-                        st.markdown("")
-                        st.markdown("**Pregled po artiklima** (sortirano po obrtu lagera):")
-                        pr_show = promo[['id artikla','Naziv','Grupa','Popust_%','Prodato_kom',
-                                         'Prihod_akcija','Profit_akcija','Cena_akcije',
-                                         'Avg_lager','Obrt_x','Dani_pokrivanja',
-                                         'Obj_aktivnih','Prod_po_obj']].copy()
-                        pr_show.columns = ['ID Art.','Naziv','Grupa','Popust %','Prod. kom',
-                                           'Prihod akcija','Profit akcija','Cena akcije',
-                                           'Pros. lager','Obrt (x)','Dani pokr.',
-                                           'Akt. obj.','Prod/obj']
-                        st.dataframe(pr_show, use_container_width=True, height=350)
-                        best = promo.iloc[0]; worst = promo.iloc[-1]
-                        st.markdown(f"""
-**Uvidi:**
-- Najbolji obrt: **{best['Naziv'][:40]}** — {best['Obrt_x']}x obrt, {int(best['Dani_pokrivanja'])} dana pokrivanja, {best['Prod_po_obj']} kom/obj
-- Najslabiji obrt: **{worst['Naziv'][:40]}** — {worst['Obrt_x']}x obrt, {int(worst['Dani_pokrivanja'])} dana pokrivanja, {worst['Prod_po_obj']} kom/obj
-- Akcija je kostala **{total_cena:,} RSD** u izgubljenom profitu (razlika akcijska vs redovna cena)
-- Prihod bi na redovnoj ceni bio **{total_prihod_red:,} RSD** umesto {total_prihod_akc:,} RSD
-""")
-
-            with tab5:
-                for msg in engine.logs: st.text(msg)
 
             st.markdown("---")
             excel_buf = create_excel(engine)
