@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import io, datetime, math, numpy as np, pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
@@ -448,21 +449,25 @@ class PredictionEngine:
             for _, r in sub.iterrows():
                 key = f"{int(r['Godina'])}/{int(r['Mesec'])}"
                 mes_data[key] = mes_data.get(key, 0) + r['Profit']
-            for key in mes_data:
-                mes_data[key] = mes_data[key] - trosak_mes_po_obj
+            mes_data_neto = {k: v - trosak_mes_po_obj for k, v in mes_data.items()}
             oos_sub = self.df_oos[self.df_oos['ID KOMITENTA'] == idk] if len(self.df_oos) > 0 else pd.DataFrame()
             lost = oos_sub['Izgubljeni_profit'].sum() if len(oos_sub) > 0 else 0
             trosak_total = self.trosak_po_objektu
             neto = total_profit - trosak_total
-            profit_rows.append({
+            row_dict = {
                 'ID KOMITENTA': int(idk), 'Artikala': n_art,
                 'Prodato_kom': total_prod, 'Bruto_profit': round(total_profit, 0),
                 'Trosak_mkt': round(trosak_total, 0),
                 'Neto_profit': round(neto, 0),
                 'Izgubljeno_OOS': round(lost, 0),
                 'Potencijalni_profit': round(neto + lost, 0),
-                **{f'Neto_{a_labels[j]}': round(mes_data.get(f"{int(a_meseci_order[j][0])}/{int(a_meseci_order[j][1])}", -trosak_mes_po_obj), 0) for j in range(n_a)}
-            })
+            }
+            for j in range(n_a):
+                key_j = f"{int(a_meseci_order[j][0])}/{int(a_meseci_order[j][1])}"
+                row_dict[f'Neto_{a_labels[j]}'] = round(mes_data_neto.get(key_j, -trosak_mes_po_obj), 0)
+                row_dict[f'Bruto_{a_labels[j]}'] = round(mes_data.get(key_j, 0), 0)
+            profit_rows.append(row_dict)
+        self.trosak_mes_po_obj = trosak_mes_po_obj
         self.df_profit_obj = pd.DataFrame(profit_rows).sort_values('Neto_profit', ascending=True)
 
         promo_rows = []
@@ -970,13 +975,10 @@ if uploaded:
                     bruto_po_mes = []
                     neto_po_mes = []
                     for i, lb in enumerate(a_labels_trend):
+                        col_bruto = f'Bruto_{lb}'
                         col_neto = f'Neto_{lb}'
-                        if col_neto in prof.columns:
-                            neto_val = prof[col_neto].sum()
-                            # bruto = neto + trosak po mesecu
-                            bruto_val = neto_val + total_trosak / max(n_mes, 1) * n_obj
-                        else:
-                            neto_val = 0; bruto_val = 0
+                        bruto_val = prof[col_bruto].sum() if col_bruto in prof.columns else 0
+                        neto_val = prof[col_neto].sum() if col_neto in prof.columns else 0
                         bruto_po_mes.append((lb, bruto_val))
                         neto_po_mes.append((lb, neto_val))
 
@@ -1016,16 +1018,16 @@ if uploaded:
                     with col_bruto:
                         st.markdown('<div class="section-title">📈 Mesečni trend bruto profita</div>', unsafe_allow_html=True)
                         rec_b = _trend_recenica(bruto_po_mes, "Bruto profit")
-                        if rec_b: st.markdown(f'<p style="font-size:13px;color:#555;margin-bottom:10px;">{rec_b}</p>', unsafe_allow_html=True)
+                        if rec_b: st.markdown(f'<p style="font-size:13px;color:#555;margin-bottom:6px;">{rec_b}</p>', unsafe_allow_html=True)
                         chart_b = _bar_chart_html(bruto_po_mes, max_bruto, "#10b981", "#ef4444")
-                        st.markdown(f'<div style="background:white;border-radius:12px;padding:16px;box-shadow:0 2px 8px rgba(0,0,0,0.06);">{chart_b}</div>', unsafe_allow_html=True)
+                        components.html(f'<!DOCTYPE html><html><body style="margin:0;padding:8px 12px;font-family:sans-serif;">{chart_b}</body></html>', height=len(bruto_po_mes)*28+20)
 
                     with col_neto:
                         st.markdown('<div class="section-title">📉 Mesečni trend neto profita</div>', unsafe_allow_html=True)
                         rec_n = _trend_recenica(neto_po_mes, "Neto profit")
-                        if rec_n: st.markdown(f'<p style="font-size:13px;color:#555;margin-bottom:10px;">{rec_n}</p>', unsafe_allow_html=True)
+                        if rec_n: st.markdown(f'<p style="font-size:13px;color:#555;margin-bottom:6px;">{rec_n}</p>', unsafe_allow_html=True)
                         chart_n = _bar_chart_html(neto_po_mes, max_neto, "#3b82f6", "#ef4444")
-                        st.markdown(f'<div style="background:white;border-radius:12px;padding:16px;box-shadow:0 2px 8px rgba(0,0,0,0.06);">{chart_n}</div>', unsafe_allow_html=True)
+                        components.html(f'<!DOCTYPE html><html><body style="margin:0;padding:8px 12px;font-family:sans-serif;">{chart_n}</body></html>', height=len(neto_po_mes)*28+20)
 
                     st.markdown("<div style='margin:20px 0 4px 0;'></div>", unsafe_allow_html=True)
 
@@ -1084,40 +1086,39 @@ Ostaju samo objekti koji su u plusu.</p>
 
                     if chart_mes_data:
                         max_obj_mes = max(a + b for _, a, b in chart_mes_data) if chart_mes_data else 1
-                        bar_w = max(40, min(70, 600 // max(len(chart_mes_data), 1)))
+                        bar_w = max(30, min(60, 700 // max(len(chart_mes_data), 1)))
                         bars_html = ""
                         for lb, np_v, nn_v in chart_mes_data:
-                            h_p = int(np_v / max(max_obj_mes, 1) * 120)
-                            h_n = int(nn_v / max(max_obj_mes, 1) * 120)
+                            h_p = int(np_v / max(max_obj_mes, 1) * 140)
+                            h_n = int(nn_v / max(max_obj_mes, 1) * 140)
                             bars_html += f"""
                             <div style="display:flex;flex-direction:column;align-items:center;gap:2px;">
-                                <div style="display:flex;align-items:flex-end;gap:3px;height:130px;">
-                                    <div style="width:{bar_w//2}px;height:{h_p}px;background:#10b981;border-radius:3px 3px 0 0;position:relative;" title="{np_v} profitabilnih">
-                                        <span style="position:absolute;top:-18px;left:50%;transform:translateX(-50%);font-size:10px;font-weight:700;color:#10b981;">{np_v}</span>
+                                <div style="display:flex;align-items:flex-end;gap:3px;height:160px;">
+                                    <div style="width:{bar_w}px;height:{h_p}px;background:#10b981;border-radius:3px 3px 0 0;position:relative;">
+                                        <span style="position:absolute;top:-18px;left:50%;transform:translateX(-50%);font-size:10px;font-weight:700;color:#10b981;white-space:nowrap;">{np_v}</span>
                                     </div>
-                                    <div style="width:{bar_w//2}px;height:{h_n}px;background:#ef4444;border-radius:3px 3px 0 0;position:relative;" title="{nn_v} neprofitabilnih">
-                                        <span style="position:absolute;top:-18px;left:50%;transform:translateX(-50%);font-size:10px;font-weight:700;color:#ef4444;">{nn_v}</span>
+                                    <div style="width:{bar_w}px;height:{h_n}px;background:#ef4444;border-radius:3px 3px 0 0;position:relative;">
+                                        <span style="position:absolute;top:-18px;left:50%;transform:translateX(-50%);font-size:10px;font-weight:700;color:#ef4444;white-space:nowrap;">{nn_v}</span>
                                     </div>
                                 </div>
-                                <div style="font-size:10px;color:#888;margin-top:4px;text-align:center;">{lb}</div>
+                                <div style="font-size:10px;color:#888;margin-top:4px;text-align:center;width:{bar_w*2+3}px;">{lb}</div>
                             </div>"""
-
-                        legenda = """
-                        <div style="display:flex;gap:16px;margin-bottom:10px;">
-                            <span style="display:flex;align-items:center;gap:5px;font-size:12px;color:#555;">
-                                <span style="width:12px;height:12px;background:#10b981;border-radius:2px;display:inline-block;"></span> Profitabilni
-                            </span>
-                            <span style="display:flex;align-items:center;gap:5px;font-size:12px;color:#555;">
-                                <span style="width:12px;height:12px;background:#ef4444;border-radius:2px;display:inline-block;"></span> Neprofitabilni
-                            </span>
-                        </div>"""
-                        st.markdown(f"""
-                        <div style="background:white;border-radius:12px;padding:20px 24px;box-shadow:0 2px 8px rgba(0,0,0,0.06);margin-bottom:16px;">
-                            {legenda}
-                            <div style="display:flex;gap:8px;align-items:flex-end;overflow-x:auto;padding-bottom:4px;">
+                        chart_html = f"""<!DOCTYPE html><html><body style="margin:0;padding:0;font-family:sans-serif;background:white;">
+                        <div style="padding:16px 20px;">
+                            <div style="display:flex;gap:16px;margin-bottom:14px;">
+                                <span style="display:flex;align-items:center;gap:5px;font-size:12px;color:#555;">
+                                    <span style="width:12px;height:12px;background:#10b981;border-radius:2px;display:inline-block;"></span> Profitabilni
+                                </span>
+                                <span style="display:flex;align-items:center;gap:5px;font-size:12px;color:#555;">
+                                    <span style="width:12px;height:12px;background:#ef4444;border-radius:2px;display:inline-block;"></span> Neprofitabilni
+                                </span>
+                            </div>
+                            <div style="display:flex;gap:6px;align-items:flex-end;overflow-x:auto;padding-bottom:4px;">
                                 {bars_html}
                             </div>
-                        </div>""", unsafe_allow_html=True)
+                        </div>
+                        </body></html>"""
+                        components.html(chart_html, height=220)
 
                     unprofitable = prof[prof['Neto_profit'] <= 0].sort_values('Neto_profit')
                     if len(unprofitable) > 0:
@@ -1133,29 +1134,124 @@ Ostaju samo objekti koji su u plusu.</p>
                     st.markdown("<div style='margin:20px 0 4px 0;'></div>", unsafe_allow_html=True)
 
                     # --- OOS sekcija ---
-                    st.markdown('<div class="section-title">🔴 OOS — Izgubljeni profit zbog nedostatka zaliha</div>', unsafe_allow_html=True)
+                    st.markdown('<div class="section-title">🔴 OOS — Izgubljena zarada zbog nedostatka robe</div>', unsafe_allow_html=True)
                     if len(engine.df_oos) > 0:
                         a_labels_oos = engine.analitika_labels if engine.analitika_labels else engine.mesec_labels
+
+                        # --- 3 summary kartice ---
+                        oos_ukupno = int(engine.df_oos['Izgubljeni_profit'].sum())
+                        oos_mes_avg = oos_ukupno // max(n_mes, 1)
+                        oos_kombinacija = int((engine.df_oos['OOS_meseci'] > 0).sum()) if 'OOS_meseci' in engine.df_oos.columns else len(engine.df_oos)
+                        # broji kombinacije na 0 lagera danas
+                        oos_0_danas = int((engine.df_oos.get('Lager_danas', 0) == 0).sum()) if 'Lager_danas' in engine.df_oos.columns else oos_kombinacija
+
+                        o1, o2, o3 = st.columns(3)
+                        def _oos_kard(col, label, val, suffix=""):
+                            col.markdown(f"""<div style="background:white;border-radius:12px;padding:16px 18px;
+                                border-top:3px solid #ef4444;box-shadow:0 2px 8px rgba(0,0,0,0.07);text-align:center;">
+                                <div style="font-size:22px;font-weight:700;color:#ef4444;">{val:,}{suffix}</div>
+                                <div style="font-size:11px;color:#aaa;margin-top:4px;text-transform:uppercase;letter-spacing:.5px;">{label}</div>
+                            </div>""", unsafe_allow_html=True)
+                        _oos_kard(o1, f"Izgubljen profit · {n_mes} meseci (RSD)", oos_ukupno)
+                        _oos_kard(o2, "Prosečno mesečno (RSD)", oos_mes_avg)
+                        _oos_kard(o3, "Kombinacija na 0 lagera danas", oos_0_danas)
+
+                        st.markdown("<div style='margin:18px 0 4px 0;'></div>", unsafe_allow_html=True)
+
+                        # --- Line chart: izgubljen profit + broj OOS kombinacija po mesecu ---
+                        mes_izgub = []
+                        mes_oos_count = []
+                        for lb in a_labels_oos:
+                            col_izgub = f'Izgub_{lb}'
+                            col_oos = f'OOS_{lb}'
+                            v_izgub = int(engine.df_oos[col_izgub].sum()) if col_izgub in engine.df_oos.columns else 0
+                            v_oos = int((engine.df_oos[col_oos] > 0).sum()) if col_oos in engine.df_oos.columns else 0
+                            mes_izgub.append(v_izgub)
+                            mes_oos_count.append(v_oos)
+
+                        if any(v > 0 for v in mes_izgub):
+                            max_izgub = max(mes_izgub) if mes_izgub else 1
+                            chart_w = 860
+                            chart_h = 220
+                            pad_l, pad_r, pad_t, pad_b = 60, 20, 30, 40
+                            plot_w = chart_w - pad_l - pad_r
+                            plot_h = chart_h - pad_t - pad_b
+                            n_pts = len(a_labels_oos)
+
+                            def px(i): return pad_l + int(i / max(n_pts-1,1) * plot_w)
+                            def py(v): return pad_t + plot_h - int(v / max(max_izgub,1) * plot_h)
+
+                            # area fill
+                            pts_area = " ".join(f"{px(i)},{py(v)}" for i, v in enumerate(mes_izgub))
+                            pts_area = f"{px(0)},{pad_t+plot_h} " + pts_area + f" {px(n_pts-1)},{pad_t+plot_h}"
+                            # line
+                            pts_line = " ".join(f"{px(i)},{py(v)}" for i, v in enumerate(mes_izgub))
+
+                            dots = ""
+                            labels_svg = ""
+                            x_labels = ""
+                            for i, (lb, v, vc) in enumerate(zip(a_labels_oos, mes_izgub, mes_oos_count)):
+                                x, y = px(i), py(v)
+                                v_k = f"{v//1000}k" if v >= 1000 else str(v)
+                                dots += f'<circle cx="{x}" cy="{y}" r="5" fill="#ef4444" stroke="white" stroke-width="2"/>'
+                                labels_svg += f'<text x="{x}" y="{y-10}" text-anchor="middle" font-size="10" font-weight="700" fill="#ef4444">{v_k}</text>'
+                                labels_svg += f'<text x="{x}" y="{y+20}" text-anchor="middle" font-size="9" fill="#999">({vc})</text>'
+                                x_labels += f'<text x="{x}" y="{chart_h-6}" text-anchor="middle" font-size="9" fill="#aaa">{lb}</text>'
+
+                            svg = f"""<svg width="{chart_w}" height="{chart_h}" xmlns="http://www.w3.org/2000/svg" style="font-family:sans-serif;">
+                                <text x="{pad_l-5}" y="{pad_t-8}" font-size="10" fill="#888">Izgubljen profit (RSD)</text>
+                                <text x="{chart_w-pad_r}" y="{pad_t-8}" font-size="10" fill="#aaa" text-anchor="end">Broj OOS kombinacija u zagradama</text>
+                                <polygon points="{pts_area}" fill="#ef4444" fill-opacity="0.08"/>
+                                <polyline points="{pts_line}" fill="none" stroke="#ef4444" stroke-width="2.5"/>
+                                {dots}{labels_svg}{x_labels}
+                            </svg>"""
+                            components.html(f'<!DOCTYPE html><html><body style="margin:0;padding:0;background:white;">{svg}</body></html>', height=chart_h+10)
+
+                        # --- Top 5 artikala po izgubljenom profitu ---
                         oos_art = engine.df_oos.groupby(['id artikla','Naziv artikla']).agg(
-                            Objekata=('ID KOMITENTA','nunique'),
-                            OOS_meseci=('OOS_meseci','sum'),
                             Izgubljeni_profit=('Izgubljeni_profit','sum')
-                        ).reset_index().sort_values('Izgubljeni_profit', ascending=False)
-                        oos_art.columns = ['ID Art.','Naziv','Objekata','OOS meseci','Izg. profit (RSD)']
-                        col_oa, col_ok = st.columns(2)
-                        with col_oa:
-                            st.markdown("**Po artiklima:**")
-                            st.dataframe(oos_art, use_container_width=True, height=250)
-                        with col_ok:
+                        ).reset_index().sort_values('Izgubljeni_profit', ascending=False).head(5)
+
+                        bar_colors = ["#ef4444","#f97316","#ec4899","#8b5cf6","#3b82f6"]
+                        top5_max = int(oos_art['Izgubljeni_profit'].max()) if len(oos_art) > 0 else 1
+                        bars5 = ""
+                        for i, (_, row) in enumerate(oos_art.iterrows()):
+                            naziv = str(row['Naziv artikla'])[:35]
+                            val = int(row['Izgubljeni_profit'])
+                            pct = val / top5_max * 100
+                            color = bar_colors[i % len(bar_colors)]
+                            bars5 += f"""
+                            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+                                <div style="width:200px;font-size:12px;color:#444;text-align:right;flex-shrink:0;">{naziv}</div>
+                                <div style="flex:1;background:#f3f4f6;border-radius:4px;height:22px;position:relative;">
+                                    <div style="width:{pct:.1f}%;background:{color};height:100%;border-radius:4px;"></div>
+                                </div>
+                                <div style="width:110px;font-size:12px;font-weight:700;color:{color};flex-shrink:0;">{val:,} RSD</div>
+                            </div>"""
+
+                        st.markdown("**Top 5 artikala po izgubljenom profitu:**")
+                        components.html(f"""<!DOCTYPE html><html><body style="margin:0;padding:8px 12px;font-family:sans-serif;background:white;">
+                            {bars5}
+                        </body></html>""", height=len(oos_art)*42+20)
+
+                        # --- Tabele u expanderima ---
+                        with st.expander("📋 Svi artikli po izgubljenom profitu"):
+                            oos_art_all = engine.df_oos.groupby(['id artikla','Naziv artikla']).agg(
+                                Objekata=('ID KOMITENTA','nunique'),
+                                OOS_meseci=('OOS_meseci','sum'),
+                                Izgubljeni_profit=('Izgubljeni_profit','sum')
+                            ).reset_index().sort_values('Izgubljeni_profit', ascending=False)
+                            oos_art_all.columns = ['ID Art.','Naziv','Objekata','OOS meseci','Izg. profit (RSD)']
+                            st.dataframe(oos_art_all, use_container_width=True, height=300)
+                        with st.expander("📋 Objekti po izgubljenom profitu (top 20)"):
                             oos_kom = engine.df_oos.groupby('ID KOMITENTA').agg(
                                 Artikala=('id artikla','nunique'),
                                 OOS_meseci=('OOS_meseci','sum'),
                                 Izgubljeni_profit=('Izgubljeni_profit','sum')
                             ).reset_index().sort_values('Izgubljeni_profit', ascending=False)
                             oos_kom.columns = ['ID Kom.','Artikala','OOS meseci','Izg. profit (RSD)']
-                            st.markdown("**Po objektima (top 20):**")
-                            st.dataframe(oos_kom.head(20), use_container_width=True, height=250)
-                        with st.expander("Detaljan pregled po mesecima"):
+                            st.dataframe(oos_kom.head(20), use_container_width=True, height=300)
+                        with st.expander("🔍 Detaljan pregled po mesecima"):
                             det_cols = ['ID KOMITENTA','id artikla','Naziv artikla','Grupa','Prosek_kad_ima','Lager_danas']
                             for lb in a_labels_oos: det_cols += [f'OOS_{lb}', f'Izgub_{lb}']
                             det_cols += ['OOS_meseci','Izgubljeni_profit']
