@@ -320,12 +320,12 @@ class PredictionEngine:
             if row['ID KOMITENTA'] in self.excluded: return 0
             pred=int(row['Predikcija']); lager=int(row['Lager_danas']); prosek=int(row['Prosek'])
             osnova=max(pred-lager,0)
-            if lager<=2 and pred>0:
-                target=max(pred, prosek, self.min_order)
-                dopuna=max(target-lager,0)
-            elif lager<=2 and pred==0: dopuna=0
-            else: dopuna=max(self.min_lager-lager,0)
-            return max(osnova,dopuna)
+            # Min lager: dopuni objekat da ima minimum X na stanju po artiklu
+            if self.min_lager is not None and lager < self.min_lager and pred > 0:
+                dopuna = max(self.min_lager - lager, osnova)
+            else:
+                dopuna = osnova
+            return dopuna
         self.df_result['Porudzbina_1']=self.df_result.apply(p1,axis=1).astype(int)
         self.df_result['Porudzbina_2']=self.df_result.apply(p2,axis=1).astype(int)
 
@@ -354,7 +354,36 @@ class PredictionEngine:
         self.log(f"Finalna provera P2: {n_korigovano} kombinacija korigovano (porudzbina+lager <= prodaja poslednjeg meseca)")
 
     def _apply_min_order(self):
-        self.adjustments=[]
+        self.adjustments = []
+        if self.min_order is None or self.min_order <= 0: return
+
+        grp = self.df_result.groupby('ID KOMITENTA')['Porudzbina_2'].sum()
+        ima_nesto = grp[grp > 0]
+        granica = self.min_order / 2  # ispod granice -> gasi, iznad -> dopuni
+
+        premali = ima_nesto[ima_nesto < granica].index
+        dopuni = ima_nesto[(ima_nesto >= granica) & (ima_nesto < self.min_order)].index
+
+        # 1. Gasi objekte ispod granice
+        mask_gasi = self.df_result['ID KOMITENTA'].isin(premali)
+        n_gasi = len(premali)
+        self.df_result.loc[mask_gasi, 'Porudzbina_2'] = 0
+
+        # 2. Dopuni objekte blizu minimuma — dodaj razliku na artikal sa najvecom porudzbinom
+        n_dopuni = 0
+        for komt_id in dopuni:
+            mask_obj = (self.df_result['ID KOMITENTA'] == komt_id) & (self.df_result['Porudzbina_2'] > 0)
+            ukupno = int(self.df_result.loc[self.df_result['ID KOMITENTA'] == komt_id, 'Porudzbina_2'].sum())
+            nedostaje = self.min_order - ukupno
+            if nedostaje <= 0 or not mask_obj.any(): continue
+            idx_max = self.df_result.loc[mask_obj, 'Porudzbina_2'].idxmax()
+            self.df_result.at[idx_max, 'Porudzbina_2'] += nedostaje
+            n_dopuni += 1
+
+        if n_gasi > 0:
+            self.log(f"Min order ({self.min_order} kom): {n_gasi} objekata imalo premalo komada ukupno — postavljeno na 0")
+        if n_dopuni > 0:
+            self.log(f"Min order ({self.min_order} kom): {n_dopuni} objekata dopunjeno do minimuma {self.min_order} kom")
 
     def _compute_analytics(self):
         if not self.has_prices:
@@ -857,12 +886,18 @@ st.markdown("""
 st.markdown("""<div class="header-banner"><div class="header-title">\U0001f4a8 VAPE ANALITIKA & PORUDZBINE</div>
     <div class="header-sub">Predikcija prodaje \u2022 Profitabilnost \u2022 OOS analiza \u2022 Efekti akcije</div></div>""", unsafe_allow_html=True)
 
+alpha = 0.4
+beta = 0.2
+
 with st.sidebar:
-    st.markdown("### \u2699\ufe0f Parametri modela")
-    alpha = st.number_input("Alpha (nivo)", 0.0, 1.0, 0.4, 0.05)
-    beta = st.number_input("Beta (trend)", 0.0, 1.0, 0.2, 0.05)
-    min_lager = st.number_input("Min lager", 0, 20, 2)
-    min_order = st.number_input("Min porudzbina po objektu", 0, 50, 2)
+    st.markdown("### \U0001f4e6 Parametri porudžbine")
+    _ml_str = st.text_input("Minimalni lager po artiklu", value="", placeholder="prazno = bez ograničenja",
+        help="Dopuni objekat da ima minimum X komada na stanju po artiklu. Ostavi prazno za bez ograničenja.")
+    min_lager = int(_ml_str) if _ml_str.strip().isdigit() else None
+
+    _mo_str = st.text_input("Min. ukupna porudžbina po objektu", value="", placeholder="prazno = bez ograničenja",
+        help="Ako je ukupna porudžbina za objekat manja od X, ne šalji ništa. Ostavi prazno za bez ograničenja.")
+    min_order = int(_mo_str) if _mo_str.strip().isdigit() else None
     st.markdown("---")
     st.markdown("### \U0001f4b0 Troskovi")
     mesecni_trosak = st.number_input(
@@ -919,23 +954,7 @@ if uploaded:
             t1 = int(result[~result['ID KOMITENTA'].isin(excluded)]['Porudzbina_1'].sum())
             t2 = int(result[~result['ID KOMITENTA'].isin(excluded)]['Porudzbina_2'].sum())
 
-            if engine.has_prices:
-                total_profit = int(engine.df_profit_obj['Bruto_profit'].sum())
-                total_lost = int(engine.df_oos['Izgubljeni_profit'].sum()) if len(engine.df_oos) > 0 else 0
-                n_unprofitable = int((engine.df_profit_obj['Neto_profit'] <= 0).sum())
-                c1,c2,c3,c4,c5,c6 = st.columns(6)
-                c1.markdown(f'<div class="metric-card"><div class="metric-value">{tp:,}</div><div class="metric-label">Predikcija (kom)</div></div>', unsafe_allow_html=True)
-                c2.markdown(f'<div class="metric-card"><div class="metric-value">{t2:,}</div><div class="metric-label">Porudzbina P2</div></div>', unsafe_allow_html=True)
-                c3.markdown(f'<div class="metric-card"><div class="metric-value">{tl:,}</div><div class="metric-label">Lager</div></div>', unsafe_allow_html=True)
-                c4.markdown(f'<div class="metric-card"><div class="metric-value-green">{total_profit:,}</div><div class="metric-label">Bruto profit (RSD)</div></div>', unsafe_allow_html=True)
-                c5.markdown(f'<div class="metric-card"><div class="metric-value-red">-{total_lost:,}</div><div class="metric-label">Izgubljeno OOS (RSD)</div></div>', unsafe_allow_html=True)
-                c6.markdown(f'<div class="metric-card"><div class="metric-value-red">{n_unprofitable}</div><div class="metric-label">Neprofitabilnih obj.</div></div>', unsafe_allow_html=True)
-            else:
-                c1,c2,c3,c4,c5 = st.columns(5)
-                for col, val, lbl in [(c1,tp,'Predikcija'),(c2,tl,'Lager'),(c3,t1,'P1'),(c4,t2,f'P2 min {min_lager}'),(c5,result[result['Porudzbina_2']>0]['ID KOMITENTA'].nunique(),'Objekata')]:
-                    col.markdown(f'<div class="metric-card"><div class="metric-value">{val:,}</div><div class="metric-label">{lbl}</div></div>', unsafe_allow_html=True)
 
-            st.markdown("")
 
             if engine.has_prices:
                 tab1, tab2, tab4, tab5 = st.tabs(["\U0001f4e6 Porudzbina", "\U0001f4b0 Profitabilnost objekata & OOS", "\U0001f3af Analiza Akcije", "\U0001f4cb Log"])
@@ -943,6 +962,17 @@ if uploaded:
                 tab1, tab5 = st.tabs(["\U0001f4e6 Porudzbina", "\U0001f4cb Log"])
 
             with tab1:
+                # --- Summary kartice ---
+                n_obj_salji = int(result[result['Porudzbina_2'] > 0]['ID KOMITENTA'].nunique())
+                tp_prosek = int(result['Prosek'].sum())
+                m1,m2,m3,m4,m5 = st.columns(5)
+                m1.markdown(f'<div class="metric-card"><div class="metric-value">{tp:,}</div><div class="metric-label">Predikcija (kom)</div></div>', unsafe_allow_html=True)
+                m2.markdown(f'<div class="metric-card"><div class="metric-value">{tp_prosek:,}</div><div class="metric-label">Prosek (kom)</div></div>', unsafe_allow_html=True)
+                m3.markdown(f'<div class="metric-card"><div class="metric-value-green">{t2:,}</div><div class="metric-label">Porudžbina (kom)</div></div>', unsafe_allow_html=True)
+                m4.markdown(f'<div class="metric-card"><div class="metric-value">{n_obj_salji:,}</div><div class="metric-label">Objekata prima robu</div></div>', unsafe_allow_html=True)
+                m5.markdown(f'<div class="metric-card"><div class="metric-value">{tl:,}</div><div class="metric-label">Lager danas</div></div>', unsafe_allow_html=True)
+                st.markdown("")
+                # --- Tabela ---
                 cols_show = ['ID KOMITENTA','id artikla','Naziv artikla','Grupa']
                 if engine.has_history: cols_show.append('Total_JanAvg')
                 cols_show += ['Predikcija','Prosek','Lager_danas','Porudzbina_1','Porudzbina_2']
