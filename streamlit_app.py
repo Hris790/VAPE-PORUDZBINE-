@@ -289,6 +289,7 @@ def create_pdf(engine, period_str, n_mes):
     doc.build(story)
     buf.seek(0)
     return buf
+WMA_WEIGHTS = np.array([0.03, 0.07, 0.12, 0.28, 0.50])
 HIST_WEIGHT = 0.03
 
 class PredictionEngine:
