@@ -910,16 +910,6 @@ if uploaded:
 
             st.markdown("")
 
-            if engine.has_prices and len(engine.df_oos) > 0:
-                oos_now = engine.df_oos[engine.df_oos['Lager_danas'] == 0]
-                if len(oos_now) > 0:
-                    top_oos = oos_now.head(10)
-                    oos_html = '<div class="warn-box"><strong>\u26a0\ufe0f TRENUTNO BEZ ZALIHA — Top artikli po izgubljenom profitu:</strong><br><small>'
-                    for _, r in top_oos.iterrows():
-                        oos_html += f'&bull; <b>{int(r["ID KOMITENTA"])}</b>/{int(r["id artikla"])} {r["Naziv artikla"][:35]} — izgubljeno <b>{int(r["Izgubljeni_profit"]):,} RSD</b><br>'
-                    oos_html += f'</small><br><em>Ukupno {len(oos_now)} kombinacija trenutno na 0 zaliha</em></div>'
-                    st.markdown(oos_html, unsafe_allow_html=True)
-
             if engine.has_prices:
                 tab1, tab2, tab4, tab5 = st.tabs(["\U0001f4e6 Porudzbina", "\U0001f4b0 Profitabilnost objekata & OOS", "\U0001f3af Analiza Akcije", "\U0001f4cb Log"])
             else:
