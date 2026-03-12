@@ -1735,53 +1735,65 @@ Ostaju samo objekti koji su u plusu.</p>
             st.error(f"Greska: {str(e)}")
             import traceback; st.code(traceback.format_exc())
 else:
-    st.markdown("""
-    <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <div style="font-family:'DM Sans',sans-serif;background:#f8f8f6;border-radius:20px;padding:48px 52px;
-        border:1px solid #e2e2de;box-shadow:0 2px 24px rgba(0,0,0,0.06);max-width:820px;margin:20px auto;">
-
-        <div style="font-family:'DM Mono',monospace;font-size:11px;color:#1e3a5f;letter-spacing:2px;
-            text-transform:uppercase;margin-bottom:18px;display:flex;align-items:center;gap:8px;">
-            <span style="display:inline-block;width:24px;height:1px;background:#1e3a5f;"></span>
-            AMAN d.o.o. · Analitički sistem
+    components.html("""
+<!DOCTYPE html>
+<html>
+<head>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'DM Sans', sans-serif; background: transparent; padding: 20px 0; }
+.wrap { background: #f8f8f6; border-radius: 20px; padding: 48px 52px;
+    border: 1px solid #e2e2de; box-shadow: 0 2px 24px rgba(0,0,0,0.06); max-width: 820px; }
+.eyebrow { font-family: 'DM Mono', monospace; font-size: 11px; color: #1e3a5f;
+    letter-spacing: 2px; text-transform: uppercase; margin-bottom: 18px;
+    display: flex; align-items: center; gap: 8px; }
+.eyebrow::before { content: ''; display: inline-block; width: 24px; height: 1px; background: #1e3a5f; }
+h1 { font-family: 'Syne', sans-serif; font-size: 42px; font-weight: 800;
+    color: #0f1f35; line-height: 1.1; margin-bottom: 10px; }
+h1 span { color: #1e3a5f; }
+.sub { font-size: 14px; color: #999; margin-bottom: 32px; }
+.pills { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 36px; }
+.pill { font-size: 11px; font-weight: 600; color: #1e3a5f;
+    background: #e8eef5; border-radius: 99px; padding: 5px 14px; }
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 32px; }
+.card { background: white; border-radius: 12px; padding: 18px 20px; border: 1px solid #ebebeb; }
+.card .icon { font-size: 20px; margin-bottom: 8px; }
+.card .ctitle { font-size: 12px; font-weight: 700; color: #111; margin-bottom: 4px; }
+.card .cdesc { font-size: 11px; color: #aaa; line-height: 1.5; }
+.hint { font-size: 12px; color: #ccc; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+    <div class="eyebrow">AMAN d.o.o. &middot; Analitički sistem</div>
+    <h1>VAPE<br><span>Analitika &amp; Porudžbine</span></h1>
+    <p class="sub">Predikcija prodaje &middot; Profitabilnost &middot; OOS analiza &middot; Trendovi komitenata</p>
+    <div class="pills">
+        <span class="pill">📦 Predikcija</span>
+        <span class="pill">💰 Profitabilnost</span>
+        <span class="pill">🔴 OOS analiza</span>
+        <span class="pill">📈 Trendovi</span>
+    </div>
+    <div class="cards">
+        <div class="card">
+            <div class="icon">📦</div>
+            <div class="ctitle">Predikcija &amp; Porudžbina</div>
+            <div class="cdesc">WMA + Holt model za svaki objekat i artikal</div>
         </div>
-
-        <div style="font-family:'Syne',sans-serif;font-size:42px;font-weight:800;color:#0f1f35;
-            line-height:1.1;margin-bottom:10px;">
-            VAPE<br><span style="color:#1e3a5f;">Analitika & Porudžbine</span>
+        <div class="card">
+            <div class="icon">💰</div>
+            <div class="ctitle">Profitabilnost mreže</div>
+            <div class="cdesc">Bruto/neto profit po objektu, optimalna mreža</div>
         </div>
-
-        <div style="font-size:14px;color:#999;margin-bottom:32px;font-weight:400;">
-            Predikcija prodaje · Profitabilnost · OOS analiza · Trendovi komitenata
-        </div>
-
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:36px;">
-            <span style="font-size:11px;font-weight:600;color:#1e3a5f;background:#e8eef5;border-radius:99px;padding:5px 14px;">📦 Predikcija</span>
-            <span style="font-size:11px;font-weight:600;color:#1e3a5f;background:#e8eef5;border-radius:99px;padding:5px 14px;">💰 Profitabilnost</span>
-            <span style="font-size:11px;font-weight:600;color:#1e3a5f;background:#e8eef5;border-radius:99px;padding:5px 14px;">🔴 OOS analiza</span>
-            <span style="font-size:11px;font-weight:600;color:#1e3a5f;background:#e8eef5;border-radius:99px;padding:5px 14px;">📈 Trendovi</span>
-        </div>
-
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:32px;">
-            <div style="background:white;border-radius:12px;padding:18px 20px;border:1px solid #ebebeb;">
-                <div style="font-size:20px;margin-bottom:8px;">📦</div>
-                <div style="font-size:12px;font-weight:700;color:#111;margin-bottom:4px;">Predikcija & Porudžbina</div>
-                <div style="font-size:11px;color:#aaa;line-height:1.5;">WMA + Holt model za svaki objekat i artikal</div>
-            </div>
-            <div style="background:white;border-radius:12px;padding:18px 20px;border:1px solid #ebebeb;">
-                <div style="font-size:20px;margin-bottom:8px;">💰</div>
-                <div style="font-size:12px;font-weight:700;color:#111;margin-bottom:4px;">Profitabilnost mreže</div>
-                <div style="font-size:11px;color:#aaa;line-height:1.5;">Bruto/neto profit po objektu, optimalna mreža</div>
-            </div>
-            <div style="background:white;border-radius:12px;padding:18px 20px;border:1px solid #ebebeb;">
-                <div style="font-size:20px;margin-bottom:8px;">📈</div>
-                <div style="font-size:12px;font-weight:700;color:#111;margin-bottom:4px;">OOS & Trendovi</div>
-                <div style="font-size:11px;color:#aaa;line-height:1.5;">Izgubljena zarada, rastući i padajući komitenti</div>
-            </div>
-        </div>
-
-        <div style="font-size:12px;color:#ccc;text-align:center;">
-            ← Učitaj Excel fajl u levom panelu da počneš
+        <div class="card">
+            <div class="icon">📈</div>
+            <div class="ctitle">OOS &amp; Trendovi</div>
+            <div class="cdesc">Izgubljena zarada, rastući i padajući komitenti</div>
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    <div class="hint">← Učitaj Excel fajl u levom panelu da počneš</div>
+</div>
+</body>
+</html>
+""", height=480)
