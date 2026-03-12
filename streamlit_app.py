@@ -889,47 +889,34 @@ st.set_page_config(page_title="VAPE Analitika", page_icon="\U0001f4a8", layout="
 
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
-    .stApp { background: linear-gradient(160deg, #fdf2f8 0%, #f5f0ff 40%, #eff6ff 100%); font-family: 'Poppins', sans-serif; }
+    @import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
+    .stApp { background: #f0f0ec; font-family: 'DM Sans', sans-serif; }
     section[data-testid="stSidebar"] { background: linear-gradient(180deg, #7c3aed 0%, #a855f7 50%, #c084fc 100%) !important; }
     section[data-testid="stSidebar"] * { color: white !important; }
     section[data-testid="stSidebar"] input, section[data-testid="stSidebar"] textarea {
         background: rgba(255,255,255,0.9) !important; border: 1px solid rgba(255,255,255,0.3) !important;
         color: #1a1a2e !important; border-radius: 8px !important; }
     .metric-card { background: white; border-radius: 16px; padding: 16px 20px;
-        box-shadow: 0 2px 12px rgba(124,58,237,0.08); border: 1px solid rgba(124,58,237,0.1); text-align: center; }
-    .metric-value { font-size: 26px; font-weight: 700;
-        background: linear-gradient(135deg, #7c3aed, #ec4899); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        box-shadow: 0 2px 8px rgba(0,0,0,0.06); border: 1px solid #e8e8e4; text-align: center; }
+    .metric-value { font-size: 26px; font-weight: 700; color: #1e3a5f; }
     .metric-value-red { font-size: 26px; font-weight: 700; color: #dc2626; }
     .metric-value-green { font-size: 26px; font-weight: 700; color: #059669; }
     .metric-label { font-size: 11px; color: #888; margin-top: 4px; }
-    .stButton > button { background: linear-gradient(135deg, #a855f7 0%, #ec4899 100%) !important;
+    .stButton > button { background: #1e3a5f !important;
         color: white !important; border: none !important; border-radius: 12px !important;
-        padding: 12px 32px !important; font-weight: 600 !important; font-size: 16px !important;
-        box-shadow: 0 4px 15px rgba(168,85,247,0.3) !important; }
-    [data-testid="stDownloadButton"]:first-of-type > button { background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
-        color: white !important; border: none !important; border-radius: 12px !important;
-        padding: 12px 32px !important; font-weight: 600 !important;
-        box-shadow: 0 4px 15px rgba(16,185,129,0.3) !important; }
+        padding: 12px 32px !important; font-weight: 600 !important; font-size: 16px !important; }
     .stDownloadButton > button { background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
         color: white !important; border: none !important; border-radius: 12px !important;
         padding: 12px 32px !important; font-weight: 600 !important;
         box-shadow: 0 4px 15px rgba(16,185,129,0.3) !important; }
-    .header-banner { background: linear-gradient(135deg, #7c3aed 0%, #a855f7 30%, #ec4899 70%, #f472b6 100%);
-        border-radius: 16px; padding: 24px 32px; color: white; margin-bottom: 24px;
-        box-shadow: 0 4px 20px rgba(124,58,237,0.25); }
-    .header-title { font-size: 28px; font-weight: 700; margin: 0; }
-    .header-sub { font-size: 14px; opacity: 0.85; margin-top: 4px; }
-    .success-box { background: linear-gradient(135deg, rgba(16,185,129,0.1), rgba(5,150,105,0.05));
-        border: 1px solid rgba(16,185,129,0.2); border-radius: 12px; padding: 16px 20px; }
-    .warn-box { background: linear-gradient(135deg, rgba(220,38,38,0.08), rgba(220,38,38,0.03));
-        border: 1px solid rgba(220,38,38,0.2); border-radius: 12px; padding: 12px 16px; margin: 8px 0; }
-    .section-title { font-size: 18px; font-weight: 600; color: #4c1d95; margin: 16px 0 8px 0; }
+    .success-box { background: #f0fdf4; border: 1px solid rgba(16,185,129,0.2);
+        border-radius: 12px; padding: 16px 20px; }
+    .warn-box { background: #fef2f2; border: 1px solid rgba(220,38,38,0.2);
+        border-radius: 12px; padding: 12px 16px; margin: 8px 0; }
+    .section-title { font-size: 18px; font-weight: 700; color: #0f1f35; margin: 16px 0 8px 0; }
+    [data-testid="stFileUploader"] { background: white; border-radius: 12px; padding: 8px; }
 </style>
 """, unsafe_allow_html=True)
-
-st.markdown("""<div class="header-banner"><div class="header-title">\U0001f4a8 VAPE ANALITIKA & PORUDZBINE</div>
-    <div class="header-sub">Predikcija prodaje \u2022 Profitabilnost \u2022 OOS analiza \u2022 Efekti akcije</div></div>""", unsafe_allow_html=True)
 
 alpha = 0.4
 beta = 0.2
@@ -1780,65 +1767,62 @@ Ostaju samo objekti koji su u plusu.</p>
             st.error(f"Greska: {str(e)}")
             import traceback; st.code(traceback.format_exc())
 else:
-    components.html("""
-<!DOCTYPE html>
-<html>
-<head>
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
-<style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: 'DM Sans', sans-serif; background: transparent; padding: 20px 0; }
-.wrap { background: #f8f8f6; border-radius: 20px; padding: 48px 52px;
-    border: 1px solid #e2e2de; box-shadow: 0 2px 24px rgba(0,0,0,0.06); max-width: 820px; }
-.eyebrow { font-family: 'DM Mono', monospace; font-size: 11px; color: #1e3a5f;
-    letter-spacing: 2px; text-transform: uppercase; margin-bottom: 18px;
-    display: flex; align-items: center; gap: 8px; }
-.eyebrow::before { content: ''; display: inline-block; width: 24px; height: 1px; background: #1e3a5f; }
-h1 { font-family: 'Syne', sans-serif; font-size: 42px; font-weight: 800;
-    color: #0f1f35; line-height: 1.1; margin-bottom: 10px; }
-h1 span { color: #1e3a5f; }
-.sub { font-size: 14px; color: #999; margin-bottom: 32px; }
-.pills { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 36px; }
-.pill { font-size: 11px; font-weight: 600; color: #1e3a5f;
-    background: #e8eef5; border-radius: 99px; padding: 5px 14px; }
-.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 32px; }
-.card { background: white; border-radius: 12px; padding: 18px 20px; border: 1px solid #ebebeb; }
-.card .icon { font-size: 20px; margin-bottom: 8px; }
-.card .ctitle { font-size: 12px; font-weight: 700; color: #111; margin-bottom: 4px; }
-.card .cdesc { font-size: 11px; color: #aaa; line-height: 1.5; }
-.hint { font-size: 12px; color: #ccc; text-align: center; }
-</style>
-</head>
-<body>
-<div class="wrap">
-    <div class="eyebrow">AMAN d.o.o. &middot; Analitički sistem</div>
-    <h1>VAPE<br><span>Analitika &amp; Porudžbine</span></h1>
-    <p class="sub">Predikcija prodaje &middot; Profitabilnost &middot; OOS analiza &middot; Trendovi komitenata</p>
-    <div class="pills">
-        <span class="pill">📦 Predikcija</span>
-        <span class="pill">💰 Profitabilnost</span>
-        <span class="pill">🔴 OOS analiza</span>
-        <span class="pill">📈 Trendovi</span>
+    st.markdown("""
+    <style>
+    .landing-wrap {
+        font-family: 'DM Sans', sans-serif;
+        background: #f8f8f6; border-radius: 20px; padding: 48px 52px;
+        border: 1px solid #e2e2de; box-shadow: 0 2px 24px rgba(0,0,0,0.06);
+        max-width: 820px; margin: 20px auto;
+    }
+    .landing-eyebrow {
+        font-family: 'DM Mono', monospace; font-size: 11px; color: #1e3a5f;
+        letter-spacing: 2px; text-transform: uppercase; margin-bottom: 18px;
+        display: flex; align-items: center; gap: 8px;
+    }
+    .landing-title {
+        font-family: 'Syne', sans-serif; font-size: 42px; font-weight: 800;
+        color: #0f1f35; line-height: 1.1; margin-bottom: 10px;
+    }
+    .landing-title span { color: #1e3a5f; }
+    .landing-sub { font-size: 14px; color: #999; margin-bottom: 32px; }
+    .landing-pills { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 36px; }
+    .landing-pill { font-size: 11px; font-weight: 600; color: #1e3a5f;
+        background: #e8eef5; border-radius: 99px; padding: 5px 14px; display: inline-block; }
+    .landing-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 32px; }
+    .landing-card { background: white; border-radius: 12px; padding: 18px 20px; border: 1px solid #ebebeb; }
+    .landing-card-icon { font-size: 20px; margin-bottom: 8px; }
+    .landing-card-title { font-size: 12px; font-weight: 700; color: #111; margin-bottom: 4px; }
+    .landing-card-desc { font-size: 11px; color: #aaa; line-height: 1.5; }
+    .landing-hint { font-size: 12px; color: #ccc; text-align: center; }
+    </style>
+    <div class="landing-wrap">
+        <div class="landing-eyebrow">&#x2500; AMAN d.o.o. &middot; Analitički sistem</div>
+        <div class="landing-title">VAPE<br><span>Analitika &amp; Porudžbine</span></div>
+        <div class="landing-sub">Predikcija prodaje &middot; Profitabilnost &middot; OOS analiza &middot; Trendovi komitenata</div>
+        <div class="landing-pills">
+            <span class="landing-pill">📦 Predikcija</span>
+            <span class="landing-pill">💰 Profitabilnost</span>
+            <span class="landing-pill">🔴 OOS analiza</span>
+            <span class="landing-pill">📈 Trendovi</span>
+        </div>
+        <div class="landing-cards">
+            <div class="landing-card">
+                <div class="landing-card-icon">📦</div>
+                <div class="landing-card-title">Predikcija &amp; Porudžbina</div>
+                <div class="landing-card-desc">WMA + Holt model za svaki objekat i artikal</div>
+            </div>
+            <div class="landing-card">
+                <div class="landing-card-icon">💰</div>
+                <div class="landing-card-title">Profitabilnost mreže</div>
+                <div class="landing-card-desc">Bruto/neto profit po objektu, optimalna mreža</div>
+            </div>
+            <div class="landing-card">
+                <div class="landing-card-icon">📈</div>
+                <div class="landing-card-title">OOS &amp; Trendovi</div>
+                <div class="landing-card-desc">Izgubljena zarada, rastući i padajući komitenti</div>
+            </div>
+        </div>
+        <div class="landing-hint">← Učitaj Excel fajl u levom panelu da počneš</div>
     </div>
-    <div class="cards">
-        <div class="card">
-            <div class="icon">📦</div>
-            <div class="ctitle">Predikcija &amp; Porudžbina</div>
-            <div class="cdesc">WMA + Holt model za svaki objekat i artikal</div>
-        </div>
-        <div class="card">
-            <div class="icon">💰</div>
-            <div class="ctitle">Profitabilnost mreže</div>
-            <div class="cdesc">Bruto/neto profit po objektu, optimalna mreža</div>
-        </div>
-        <div class="card">
-            <div class="icon">📈</div>
-            <div class="ctitle">OOS &amp; Trendovi</div>
-            <div class="cdesc">Izgubljena zarada, rastući i padajući komitenti</div>
-        </div>
-    </div>
-    <div class="hint">← Učitaj Excel fajl u levom panelu da počneš</div>
-</div>
-</body>
-</html>
-""", height=480)
+    """, unsafe_allow_html=True)
