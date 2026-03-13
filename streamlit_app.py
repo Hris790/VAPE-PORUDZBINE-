@@ -972,9 +972,25 @@ if _pg not in ('home', 'porudzbine'):
         visibility: hidden !important;
     }
     .main .block-container {
-        padding-left: 2rem !important;
-        padding-right: 2rem !important;
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
+        padding-top: 0.5rem !important;
         max-width: 100% !important;
+    }
+    header[data-testid="stHeader"] { display: none !important; }
+    #MainMenu { visibility: hidden !important; }
+    footer { visibility: hidden !important; }
+    div[data-testid="stButton"] button[kind="secondary"] {
+        background: rgba(168,85,247,0.15) !important;
+        color: rgba(255,255,255,0.8) !important;
+        border: 1px solid rgba(168,85,247,0.3) !important;
+        border-radius: 8px !important;
+        font-size: 12px !important;
+        padding: 4px 14px !important;
+    }
+    div[data-testid="stButton"] button[kind="secondary"]:hover {
+        background: rgba(168,85,247,0.3) !important;
+        color: white !important;
     }
     </style>""", unsafe_allow_html=True)
 
@@ -1230,10 +1246,12 @@ def render_header(subtitle):
             <span style="font-size:11px;color:rgba(255,255,255,0.25);margin-left:8px;">·</span>
             <span style="font-size:12px;color:rgba(255,255,255,0.35);">{subtitle}</span>
         </div>
-        <div style="display:flex;gap:6px;align-items:center;">
-            <div style="width:8px;height:8px;border-radius:50%;background:rgba(168,85,247,0.7);"></div>
-            <div style="width:8px;height:8px;border-radius:50%;background:rgba(236,72,153,0.5);"></div>
-            <div style="width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,0.15);"></div>
+        <div style="display:flex;gap:12px;align-items:center;">
+            <div style="display:flex;gap:6px;align-items:center;">
+                <div style="width:8px;height:8px;border-radius:50%;background:rgba(168,85,247,0.7);"></div>
+                <div style="width:8px;height:8px;border-radius:50%;background:rgba(236,72,153,0.5);"></div>
+                <div style="width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,0.15);"></div>
+            </div>
         </div>
     </div>''', unsafe_allow_html=True)
     if st.session_state.get('page', 'home') != 'home':
@@ -2119,6 +2137,10 @@ elif page == 'porudzbine':
 # MESECNI IZVESTAJ PRODAJE
 # ============================================================
 elif page == 'mesecni':
+    # Back button
+    if st.button("← Početna", key='back_mesecni'):
+        st.session_state.page = 'home'
+        st.rerun()
     render_header("Mesečni izveštaj prodaje · Sistemi · Zalihe")
 
     @st.cache_data(ttl=300)
@@ -2565,6 +2587,10 @@ elif page == 'mesecni':
         components.html(html_content, height=900, scrolling=True)
 
 elif page == 'finansijski':
+    # Back button
+    if st.button("← Početna", key='back_finansijski'):
+        st.session_state.page = 'home'
+        st.rerun()
     render_header("Finansijski izveštaj · Dugovanja · Lager")
 
     @st.cache_data(ttl=300)
