@@ -984,11 +984,15 @@ if _pg not in ('home', 'porudzbine'):
     .stApp > div:first-child { padding: 0 !important; }
     .main { padding: 0 !important; }
     .main .block-container {
-        padding: 0.3rem 0.5rem 0 0.5rem !important;
+        padding: 0 !important;
+        margin-top: -6rem !important;
         max-width: 100% !important;
         width: 100% !important;
     }
-    div[data-testid="stVerticalBlock"] { gap: 0.3rem !important; }
+    div[data-testid="stVerticalBlock"] { gap: 0 !important; }
+    div[data-testid="stVerticalBlockBorderWrapper"] { padding: 0 !important; }
+    .element-container { margin: 0 !important; padding: 0 !important; }
+    iframe { display: block !important; border: none !important; }
     div[data-testid="stButton"] button {
         background: rgba(168,85,247,0.15) !important;
         color: rgba(255,255,255,0.8) !important;
@@ -2146,11 +2150,6 @@ elif page == 'porudzbine':
 # MESECNI IZVESTAJ PRODAJE
 # ============================================================
 elif page == 'mesecni':
-    # Back button
-    if st.button("← Početna", key='back_mesecni'):
-        st.session_state.page = 'home'
-        st.rerun()
-    render_header("Mesečni izveštaj prodaje · Sistemi · Zalihe")
 
     @st.cache_data(ttl=300)
     def build_mesecni_html():
@@ -2560,6 +2559,13 @@ elif page == 'mesecni':
         html_out = f'''<!DOCTYPE html><html lang="sr"><head><meta charset="UTF-8">
         <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=Outfit:wght@300;400;600;700;800&display=swap" rel="stylesheet">
         <style>{CSS_MESECNI}</style></head><body>
+        <div style="background:#12002a;padding:6px 16px;display:flex;align-items:center;gap:12px;border-bottom:2px solid rgba(168,85,247,0.3)">
+          <a href="#" onclick="window.parent.postMessage('GOTO_HOME','*');return false;"
+             style="color:rgba(255,255,255,0.6);font-size:12px;text-decoration:none;padding:3px 10px;
+             border:1px solid rgba(168,85,247,0.3);border-radius:6px;background:rgba(168,85,247,0.1)">
+             ← Početna</a>
+          <span style="color:rgba(255,255,255,0.3);font-size:11px">VAPE Analitika · Mesečni izveštaj prodaje</span>
+        </div>
         <div class="hdr"><div><h1>&#128202; Mesečni izveštaj prodaje</h1><div class="sub">{info}</div></div>
           <div class="hb" style="display:flex;gap:8px;align-items:center">{badge_html}
     <button onclick="toggleAll(true)" style="background:rgba(168,85,247,0.1);color:#a855f7;border:1px solid rgba(168,85,247,0.2)">Otvori sve</button>
@@ -2587,20 +2593,22 @@ elif page == 'mesecni':
         return html_out
 
 
+    # Listen for back navigation from iframe
+    nav_js = st.query_params.get("nav", "")
+    if nav_js == "home":
+        st.query_params.clear()
+        st.session_state.page = 'home'
+        st.rerun()
+
     with st.spinner("⏳ Učitavam podatke..."):
         html_content = build_mesecni_html()
 
     if html_content is None:
         st.error("❌ Podaci nisu dostupni. Proveri da li su fajlovi postavljeni na GitHub.")
     else:
-        components.html(html_content, height=900, scrolling=True)
+        components.html(html_content, height=1080, scrolling=True)
 
 elif page == 'finansijski':
-    # Back button
-    if st.button("← Početna", key='back_finansijski'):
-        st.session_state.page = 'home'
-        st.rerun()
-    render_header("Finansijski izveštaj · Dugovanja · Lager")
 
     @st.cache_data(ttl=300)
     def build_finansijski_html():
@@ -2787,6 +2795,14 @@ table{width:100%;border-collapse:collapse}
 </style>
 </head>
 <body>
+<div style="background:#12002a;padding:6px 16px;display:flex;align-items:center;gap:12px;border-bottom:2px solid rgba(168,85,247,0.3)">
+  <a href="#" onclick="window.parent.postMessage('GOTO_HOME','*');return false;"
+     style="color:rgba(255,255,255,0.6);font-size:12px;text-decoration:none;padding:3px 10px;
+     border:1px solid rgba(168,85,247,0.3);border-radius:6px;background:rgba(168,85,247,0.1)">
+     ← Početna</a>
+  <span style="color:rgba(255,255,255,0.3);font-size:11px">VAPE Analitika · Finansijski izveštaj</span>
+</div>
+
 <div id="root"></div>
 <script type="text/babel">
 const {useState,useMemo}=React;
@@ -3028,4 +3044,4 @@ ReactDOM.createRoot(document.getElementById('root')).render(<Dashboard/>);
     if html_content is None:
         st.error("❌ Podaci nisu dostupni. Proveri da li je sistemi.xlsx postavljen na GitHub.")
     else:
-        components.html(html_content, height=900, scrolling=True)
+        components.html(html_content, height=1080, scrolling=True)
