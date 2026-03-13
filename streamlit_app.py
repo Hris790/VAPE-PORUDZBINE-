@@ -1218,6 +1218,22 @@ def render_header(subtitle):
             <div style="width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,0.15);"></div>
         </div>
     </div>''', unsafe_allow_html=True)
+    if st.session_state.get('page', 'home') != 'home':
+        st.markdown("""<script>
+        (function() {
+            function collapseSidebar() {
+                var btn = window.parent.document.querySelector('[data-testid="collapsedControl"]');
+                var sidebar = window.parent.document.querySelector('[data-testid="stSidebar"]');
+                if (sidebar) {
+                    var expanded = sidebar.getAttribute('aria-expanded');
+                    if (expanded === 'false') return;
+                }
+                if (btn) { setTimeout(function(){ btn.click(); }, 300); }
+            }
+            if (document.readyState === 'complete') collapseSidebar();
+            else window.addEventListener('load', collapseSidebar);
+        })();
+        </script>""", unsafe_allow_html=True)
 
 page = st.session_state.page
 
@@ -1226,15 +1242,32 @@ page = st.session_state.page
 # ============================================================
 if page == 'home':
     render_header("Odaberi izveštaj")
+
+    # Handle card click navigation
+    card_click = st.session_state.get('home_cards')
+    if card_click == 'GOTO_PORUDZBINE':
+        st.session_state['home_cards'] = None
+        st.session_state.page = 'porudzbine'
+        st.rerun()
+    elif card_click == 'GOTO_MESECNI':
+        st.session_state['home_cards'] = None
+        st.session_state.page = 'mesecni'
+        st.rerun()
+    elif card_click == 'GOTO_FINANSIJSKI':
+        st.session_state['home_cards'] = None
+        st.session_state.page = 'finansijski'
+        st.rerun()
+
     components.html("""<!DOCTYPE html><html><head>
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Poppins',sans-serif;background:transparent;padding:32px 16px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:20px;max-width:760px;margin:0 auto}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:20px;max-width:820px;margin:0 auto}
 .card{background:white;border-radius:20px;padding:28px 24px;cursor:pointer;border:2px solid transparent;
-    box-shadow:0 4px 20px rgba(124,58,237,0.08);transition:all 0.22s;display:block}
+    box-shadow:0 4px 20px rgba(124,58,237,0.08);transition:all 0.22s}
 .card:hover{border-color:#a855f7;transform:translateY(-4px);box-shadow:0 12px 32px rgba(168,85,247,0.18)}
+.card:active{transform:translateY(-1px)}
 .icon{font-size:34px;margin-bottom:14px}
 .title{font-size:16px;font-weight:700;color:#1a0533;margin-bottom:8px}
 .desc{font-size:12px;color:#6b7280;line-height:1.6;margin-bottom:14px}
@@ -1243,23 +1276,39 @@ body{font-family:'Poppins',sans-serif;background:transparent;padding:32px 16px}
 .tag-pink{background:rgba(236,72,153,0.09);color:#be185d}
 .tag-blue{background:rgba(59,130,246,0.09);color:#1d4ed8}
 .label{font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:#9ca3af;margin-bottom:24px;text-align:center}
+.arrow{float:right;font-size:18px;color:#d1d5db;transition:transform 0.2s,color 0.2s}
+.card:hover .arrow{transform:translateX(4px);color:#a855f7}
 </style></head><body>
 <p class="label">AMAN d.o.o. · Odaberi izveštaj</p>
 <div class="grid">
-  <div class="card"><div class="icon">📦</div>
+  <div class="card" onclick="nav('GOTO_PORUDZBINE')">
+    <span class="arrow">→</span>
+    <div class="icon">📦</div>
     <div class="title">Profitabilnost objekata</div>
     <div class="desc">Predikcija prodaje, OOS analiza, trendovi komitenata i analiza akcije.</div>
-    <span class="tag tag-purple">Upload Excel</span></div>
-  <div class="card"><div class="icon">📊</div>
+    <span class="tag tag-purple">Upload Excel</span>
+  </div>
+  <div class="card" onclick="nav('GOTO_MESECNI')">
+    <span class="arrow">→</span>
+    <div class="icon">📊</div>
     <div class="title">Mesečni izveštaj</div>
     <div class="desc">Prodaja po sistemima, profitabilnost, Dr Vukašin i stanje zaliha.</div>
-    <span class="tag tag-pink">Automatski podaci</span></div>
-  <div class="card"><div class="icon">💰</div>
+    <span class="tag tag-pink">Automatski podaci</span>
+  </div>
+  <div class="card" onclick="nav('GOTO_FINANSIJSKI')">
+    <span class="arrow">→</span>
+    <div class="icon">💰</div>
     <div class="title">Finansijski izveštaj</div>
     <div class="desc">Pregled po sistemima, dugovanja, lager vrednosti i PDF generisanje.</div>
-    <span class="tag tag-blue">Automatski podaci</span></div>
+    <span class="tag tag-blue">Automatski podaci</span>
+  </div>
 </div>
-</body></html>""", height=320)
+<script>
+function nav(cmd) {
+  window.parent.postMessage({type:'streamlit:setComponentValue', value: cmd}, '*');
+}
+</script>
+</body></html>""", height=340, key='home_cards')
 
 # ============================================================
 # PROFITABILNOST OBJEKATA
