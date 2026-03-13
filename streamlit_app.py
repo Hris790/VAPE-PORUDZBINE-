@@ -980,15 +980,24 @@ if _pg not in ('home', 'porudzbine'):
     header[data-testid="stHeader"] { display: none !important; }
     #MainMenu { visibility: hidden !important; }
     footer { visibility: hidden !important; }
-    div[data-testid="stButton"] button[kind="secondary"] {
+    .stApp { overflow-x: hidden; }
+    .stApp > div:first-child { padding: 0 !important; }
+    .main { padding: 0 !important; }
+    .main .block-container {
+        padding: 0.3rem 0.5rem 0 0.5rem !important;
+        max-width: 100% !important;
+        width: 100% !important;
+    }
+    div[data-testid="stVerticalBlock"] { gap: 0.3rem !important; }
+    div[data-testid="stButton"] button {
         background: rgba(168,85,247,0.15) !important;
         color: rgba(255,255,255,0.8) !important;
         border: 1px solid rgba(168,85,247,0.3) !important;
         border-radius: 8px !important;
         font-size: 12px !important;
-        padding: 4px 14px !important;
+        padding: 2px 12px !important;
     }
-    div[data-testid="stButton"] button[kind="secondary"]:hover {
+    div[data-testid="stButton"] button:hover {
         background: rgba(168,85,247,0.3) !important;
         color: white !important;
     }
