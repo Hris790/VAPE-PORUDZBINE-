@@ -980,28 +980,36 @@ if _pg not in ('home', 'porudzbine'):
     header[data-testid="stHeader"] { display: none !important; }
     #MainMenu { visibility: hidden !important; }
     footer { visibility: hidden !important; }
-    .stApp { overflow-x: hidden; }
-    .stApp > div:first-child { padding: 0 !important; }
-    .main { padding: 0 !important; }
-    .main .block-container {
+    .stApp, .main, section.main, div[data-testid="stAppViewContainer"] {
         padding: 0 !important;
-        margin: -10rem -6rem 0 -6rem !important;
-        max-width: calc(100% + 12rem) !important;
-        width: calc(100% + 12rem) !important;
+        margin: 0 !important;
+        max-width: 100vw !important;
+        width: 100vw !important;
+        overflow-x: hidden !important;
     }
-    div[data-testid="stVerticalBlock"] { gap: 0 !important; }
-    div[data-testid="stVerticalBlockBorderWrapper"] { padding: 0 !important; }
+    .main .block-container,
+    div[data-testid="block-container"],
+    div[data-testid="stMainBlockContainer"] {
+        padding: 12px 16px 0 16px !important;
+        margin: 0 !important;
+        max-width: 100vw !important;
+        width: 100vw !important;
+        min-width: 100vw !important;
+    }
+    div[data-testid="stVerticalBlock"] { gap: 0 !important; padding: 0 !important; }
+    div[data-testid="stVerticalBlockBorderWrapper"] { padding: 0 !important; margin: 0 !important; }
     .element-container { margin: 0 !important; padding: 0 !important; }
-    iframe { display: block !important; border: none !important; width: 100% !important; }
-    .stApp > div { padding: 0 !important; }
-    .stApp { overflow-x: hidden !important; }
+    .back-wrap .element-container { margin-bottom: 8px !important; }
+    iframe { display: block !important; border: none !important; width: 100vw !important; min-width: 100vw !important; margin: 0 !important; padding: 0 !important; }
     div[data-testid="stButton"] button {
-        background: rgba(168,85,247,0.15) !important;
-        color: rgba(255,255,255,0.8) !important;
-        border: 1px solid rgba(168,85,247,0.3) !important;
-        border-radius: 8px !important;
-        font-size: 12px !important;
-        padding: 2px 12px !important;
+        background: linear-gradient(135deg,#2d0060,#1a0040) !important;
+        color: white !important;
+        border: 2px solid #a855f7 !important;
+        border-radius: 10px !important;
+        font-size: 15px !important;
+        font-weight: 700 !important;
+        padding: 8px 28px !important;
+        min-height: 44px !important;
     }
     div[data-testid="stButton"] button:hover {
         background: rgba(168,85,247,0.3) !important;
@@ -2604,13 +2612,37 @@ elif page == 'mesecni':
         st.session_state.page = 'home'
         st.rerun()
 
+    # Dugme za povratak - vidljivo Streamlit dugme iznad iframera
+    st.markdown("""<style>
+    .back-wrap > div > button {
+        background: linear-gradient(135deg,#2d0060,#1a0040) !important;
+        border: 2px solid #a855f7 !important;
+        color: white !important;
+        font-size: 15px !important;
+        font-weight: 700 !important;
+        border-radius: 10px !important;
+        padding: 8px 28px !important;
+        margin-bottom: 8px !important;
+        min-height: 44px !important;
+    }
+    .back-wrap > div > button:hover {
+        background: rgba(168,85,247,0.3) !important;
+        border-color: #ec4899 !important;
+    }
+    </style>""", unsafe_allow_html=True)
+    st.markdown('<div class="back-wrap">', unsafe_allow_html=True)
+    if st.button("← Početna", key="back_mesecni"):
+        st.session_state.page = 'home'
+        st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
+
     with st.spinner("⏳ Učitavam podatke..."):
         html_content = build_mesecni_html()
 
     if html_content is None:
         st.error("❌ Podaci nisu dostupni. Proveri da li su fajlovi postavljeni na GitHub.")
     else:
-        components.html(html_content, height=1080, scrolling=True)
+        components.html(html_content, height=900, scrolling=True)
 
 elif page == 'finansijski':
 
@@ -3042,14 +3074,14 @@ ReactDOM.createRoot(document.getElementById('root')).render(<Dashboard/>);
     with st.spinner("⏳ Učitavam podatke..."):
         html_content = build_finansijski_html()
 
-    # Listen for back navigation
-    nav_js2 = st.query_params.get("nav", "")
-    if nav_js2 == "home":
-        del st.query_params["nav"]
+    # Dugme za povratak
+    st.markdown('<div class="back-wrap">', unsafe_allow_html=True)
+    if st.button("← Početna", key="back_finansijski"):
         st.session_state.page = 'home'
         st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 
     if html_content is None:
         st.error("❌ Podaci nisu dostupni. Proveri da li je sistemi.xlsx postavljen na GitHub.")
     else:
-        components.html(html_content, height=1080, scrolling=True)
+        components.html(html_content, height=900, scrolling=True)
