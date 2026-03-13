@@ -1192,55 +1192,16 @@ if 'page' not in st.session_state:
 alpha = 0.4
 beta = 0.2
 
-# === SIDEBAR ===
-with st.sidebar:
-    st.markdown("""
-    <div style="padding: 16px 4px 8px 4px; display:flex; align-items:center; gap:10px; margin-bottom:4px;">
-        <div style="width:26px; height:26px; background:linear-gradient(135deg,#a855f7,#ec4899);
-            border-radius:7px; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
-            <div style="width:9px; height:9px; background:white; border-radius:2px;"></div>
-        </div>
-        <span style="font-size:15px; font-weight:700; color:white;">VAPE</span>
-        <span style="font-size:15px; font-weight:300; color:rgba(255,255,255,0.4);">Analitika</span>
-    </div>
-    <div style="height:1px; background:linear-gradient(90deg,rgba(168,85,247,0.5),rgba(236,72,153,0.3),transparent); margin-bottom:16px;"></div>
-    """, unsafe_allow_html=True)
+# === SIDEBAR SAKRIVEN ===
+st.markdown("""<style>
+section[data-testid="stSidebar"] { display: none !important; }
+</style>""", unsafe_allow_html=True)
 
-    # Navigaciona dugmad
-    st.markdown("##### Navigacija")
-    if st.button("🏠  Početna", use_container_width=True):
-        st.session_state.page = 'home'
-        st.rerun()
-    if st.button("📦  Profitabilnost objekata", use_container_width=True):
-        st.session_state.page = 'porudzbine'
-        st.rerun()
-
-    st.markdown("---")
-
-    # Parametri samo za Profitabilnost
-    if st.session_state.page == 'porudzbine':
-        st.markdown("### 📦 Parametri porudžbine")
-        _ml_str = st.text_input("Minimalni lager po artiklu", value="", placeholder="prazno = bez ograničenja",
-            help="Dopuni objekat da ima minimum X komada na stanju po artiklu. Ostavi prazno za bez ograničenja.")
-        min_lager = int(_ml_str) if _ml_str.strip().isdigit() else None
-        _mo_str = st.text_input("Min. ukupna porudžbina po objektu", value="", placeholder="prazno = bez ograničenja",
-            help="Ako je ukupna porudžbina za objekat manja od X, ne šalji ništa. Ostavi prazno za bez ograničenja.")
-        min_order = int(_mo_str) if _mo_str.strip().isdigit() else None
-        st.markdown("---")
-        st.markdown("### 💰 Troškovi")
-        mesecni_trosak = st.number_input(
-            "Ukupan trosak mkt/ulistavanja za ceo period (RSD)",
-            min_value=0, value=0, step=10000,
-            help="Unesi UKUPAN iznos za ceo analizirani period — automatski se deli na broj objekata i broj meseci"
-        )
-        st.markdown("---")
-        st.markdown("### ⛔ Isključeni komitenti")
-        excluded_str = st.text_area("ID-evi razdvojeni zarezom", value=DEFAULT_EXCLUDED, height=100)
-    else:
-        min_lager = None
-        min_order = None
-        mesecni_trosak = 0
-        excluded_str = DEFAULT_EXCLUDED
+# Default vrednosti parametara (koriste se van porudzbine stranice)
+min_lager = None
+min_order = None
+mesecni_trosak = 0
+excluded_str = DEFAULT_EXCLUDED
 
 excluded = set()
 for part in excluded_str.replace('\n', ',').split(','):
@@ -1351,6 +1312,37 @@ body{font-family:'Poppins',sans-serif;background:transparent;padding:24px 16px}
 
 elif page == 'porudzbine':
     render_header("Predikcija prodaje · Profitabilnost · OOS analiza · Efekti akcije")
+
+    # Dugme za povratak
+    st.markdown('<div class="back-wrap">', unsafe_allow_html=True)
+    if st.button("← Početna", key="back_porudzbine"):
+        st.session_state.page = 'home'
+        st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # Parametri u expanderu
+    with st.expander("⚙️ Parametri analize", expanded=False):
+        pc1, pc2, pc3 = st.columns(3)
+        with pc1:
+            st.markdown("**📦 Porudžbina**")
+            _ml_str = st.text_input("Minimalni lager po artiklu", value="", placeholder="prazno = bez ograničenja")
+            min_lager = int(_ml_str) if _ml_str.strip().isdigit() else None
+            _mo_str = st.text_input("Min. ukupna porudžbina po objektu", value="", placeholder="prazno = bez ograničenja")
+            min_order = int(_mo_str) if _mo_str.strip().isdigit() else None
+        with pc2:
+            st.markdown("**💰 Troškovi**")
+            mesecni_trosak = st.number_input(
+                "Ukupan trosak mkt/ulistavanja (RSD)",
+                min_value=0, value=0, step=10000)
+        with pc3:
+            st.markdown("**⛔ Isključeni komitenti**")
+            excluded_str = st.text_area("ID-evi razdvojeni zarezom", value=DEFAULT_EXCLUDED, height=80)
+
+    excluded = set()
+    for part in excluded_str.replace('\n', ',').split(','):
+        p = part.strip()
+        if p.isdigit(): excluded.add(int(p))
+
     uploaded = st.file_uploader("Učitaj Excel fajl sa podacima", type=['xlsx','xls'])
 
     if uploaded:
