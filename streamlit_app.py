@@ -2515,7 +2515,7 @@ elif page == 'mesecni':
         .br{background:rgba(236,72,153,0.12);color:#ec4899;border:1px solid rgba(236,72,153,0.3)}
         .toolbar{display:flex;gap:0;background:white;border-bottom:1px solid var(--bd)}
         .tabs{display:flex;gap:0;padding:0 16px;flex:1}
-        .tab{padding:12px 20px;font-size:11px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;color:var(--t3);transition:all .2s;margin-bottom:-1px;user-select:none;font-family:monospace}
+        .tab{padding:12px 20px;font-size:11px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;color:var(--t3);transition:all .2s;margin-bottom:-1px;user-select:none;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-style:normal;letter-spacing:.5px}
         .tab:hover{color:var(--t1)}.tab.active{color:#a855f7;border-bottom-color:#a855f7}
         .filters{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:10px 20px;background:var(--bg);border-bottom:1px solid var(--bd)}
         .filters label{font-size:10px;color:var(--t3);font-weight:600;text-transform:uppercase;letter-spacing:.5px}
