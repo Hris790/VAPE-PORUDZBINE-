@@ -41,7 +41,7 @@ def check_password():
         background: rgba(255,255,255,0.08) !important;
         border: 1px solid rgba(255,255,255,0.15) !important;
         color: white !important;
-        border-radius: 10px !important;
+        border-radius: 12px !important;
         padding: 12px 16px !important;
         font-size: 15px !important;
     }
@@ -55,9 +55,9 @@ def check_password():
         background: linear-gradient(135deg, #a855f7 0%, #ec4899 100%) !important;
         color: white !important;
         border: none !important;
-        border-radius: 10px !important;
+        border-radius: 12px !important;
         padding: 13px 32px !important;
-        font-weight: 600 !important;
+        font-weight: 700 !important;
         font-size: 15px !important;
         width: 100% !important;
         box-shadow: 0 4px 20px rgba(168,85,247,0.35) !important;
@@ -957,7 +957,7 @@ st.markdown("""
     section[data-testid="stSidebar"] h3 {
         color: white !important;
         font-size: 13px !important;
-        font-weight: 600 !important;
+        font-weight: 700 !important;
         letter-spacing: 0.5px !important;
         text-transform: uppercase !important;
         margin-bottom: 8px !important;
@@ -977,6 +977,25 @@ st.markdown("""
     section[data-testid="stSidebar"] hr {
         border-color: rgba(255,255,255,0.1) !important;
     }
+
+    /* --- INPUTI VAN SIDEBARA (glavni sadrzaj) --- */
+    .main .stTextInput > div > div > input,
+    .main .stNumberInput > div > div > input {
+        background: white !important;
+        border: 1px solid rgba(168,85,247,0.25) !important;
+        color: #1a0533 !important;
+        border-radius: 8px !important;
+    }
+    .main .stTextInput > div > div > input::placeholder,
+    .main .stNumberInput > div > div > input::placeholder {
+        color: #9ca3af !important;
+    }
+    .main .stTextInput > div > div > input:focus,
+    .main .stNumberInput > div > div > input:focus {
+        border-color: #a855f7 !important;
+        box-shadow: 0 0 0 2px rgba(168,85,247,0.15) !important;
+    }
+
     /* Sidebar logo traka */
     section[data-testid="stSidebar"]::before {
         content: '';
@@ -1009,9 +1028,9 @@ st.markdown("""
         background: linear-gradient(135deg, #a855f7 0%, #ec4899 100%) !important;
         color: white !important;
         border: none !important;
-        border-radius: 10px !important;
-        padding: 12px 32px !important;
-        font-weight: 600 !important;
+        border-radius: 12px !important;
+        padding: 14px 32px !important;
+        font-weight: 700 !important;
         font-size: 15px !important;
         box-shadow: 0 4px 15px rgba(168,85,247,0.3) !important;
         transition: opacity 0.2s !important;
@@ -1023,9 +1042,9 @@ st.markdown("""
         background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
         color: white !important;
         border: none !important;
-        border-radius: 10px !important;
-        padding: 12px 32px !important;
-        font-weight: 600 !important;
+        border-radius: 12px !important;
+        padding: 14px 32px !important;
+        font-weight: 700 !important;
         box-shadow: 0 4px 15px rgba(16,185,129,0.25) !important;
     }
 
@@ -1153,18 +1172,11 @@ if uploaded:
         if _sp:
             _prod = pd.read_excel(_xls, sheet_name=_sp); _prod.columns=[c.strip() for c in _prod.columns]
             _meseci = sorted(_prod[['Godina','Mesec']].drop_duplicates().values.tolist())
-            _mn={1:'Jan',2:'Feb',3:'Mar',4:'Apr',5:'Maj',6:'Jun',7:'Jul',8:'Avg',9:'Sep',10:'Okt',11:'Nov',12:'Dec'}
-            _labels = [f"{_mn.get(int(m),'?')} {int(g)}" for g,m in _meseci]
-            st.markdown("**📅 Period za analizu** (OOS, Profitabilnost, Akcija — ne utiče na predikciju):")
-            selected_labels = st.multiselect("Odaberi mesece", _labels, default=_labels, help="Predikcija uvek koristi sve mesece. Ovaj filter se odnosi samo na analitiku.")
-            if not selected_labels:
-                st.warning("⚠️ Mora biti odabran bar jedan mesec za analizu. Automatski je odabran poslednji mesec.")
-                selected_labels = [_labels[-1]] if _labels else []
-            selected_meseci = [_meseci[i] for i, lb in enumerate(_labels) if lb in selected_labels]
+            selected_meseci = _meseci
         else:
-            selected_labels = []; selected_meseci = []
+            selected_meseci = []
     except:
-        selected_labels = []; selected_meseci = []
+        selected_meseci = []
 
     if st.button("🚀 POKRENI ANALIZU", use_container_width=True):
         progress_bar = st.progress(0)
