@@ -1304,15 +1304,15 @@ body{font-family:'Poppins',sans-serif;background:transparent;padding:24px 16px}
 .label{font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:#9ca3af;margin-bottom:20px;text-align:center}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:18px;max-width:820px;margin:0 auto}
 .card{background:white;border-radius:20px;padding:24px 20px 20px;border:2px solid transparent;
-    box-shadow:0 4px 20px rgba(124,58,237,0.08);transition:all 0.22s}
+    box-shadow:0 4px 20px rgba(124,58,237,0.08);transition:all 0.22s;display:flex;flex-direction:column}
 .card:hover{border-color:#a855f7;transform:translateY(-3px);box-shadow:0 12px 32px rgba(168,85,247,0.15)}
 .icon{font-size:30px;margin-bottom:12px}
 .title{font-size:15px;font-weight:700;color:#1a0533;margin-bottom:6px}
-.desc{font-size:11px;color:#6b7280;line-height:1.6;margin-bottom:12px}
-.tag{display:inline-block;font-size:10px;padding:2px 9px;border-radius:99px;font-weight:600}
-.tag-purple{background:rgba(168,85,247,0.1);color:#7c3aed}
-.tag-pink{background:rgba(236,72,153,0.09);color:#be185d}
-.tag-blue{background:rgba(59,130,246,0.09);color:#1d4ed8}
+.desc{font-size:11px;color:#6b7280;line-height:1.6;margin-bottom:12px;flex:1}
+.tag{display:inline-block;font-size:10px;padding:2px 9px;border-radius:99px;font-weight:600;margin-top:auto}
+.tag-purple{background:rgba(168,85,247,0.15);color:#7c3aed;border:1px solid rgba(168,85,247,0.3)}
+.tag-pink{background:rgba(236,72,153,0.15);color:#be185d;border:1px solid rgba(236,72,153,0.3)}
+.tag-blue{background:rgba(59,130,246,0.12);color:#1d4ed8;border:1px solid rgba(59,130,246,0.25)}
 </style></head><body>
 <p class="label">AMAN d.o.o. · Odaberi izveštaj</p>
 <div class="grid">
