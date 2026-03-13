@@ -2376,6 +2376,20 @@ elif page == 'mesecni':
                 r=f'<tr class="gr hidden" data-p="{sid}" data-sistem="{esc(sistem)}" data-grupa="{esc(grupa)}" onclick="tog(\'{gid}\');event.stopPropagation()" style="cursor:pointer"><td style="padding-left:28px"><button class="be beg" id="b-{gid}">+</button><span class="gn">{esc(grupa)}</span></td>'
                 for i,v in enumerate(gvals): r+=cell_c(get_color(gcene[i]),v)
                 r+=f'<td class="nb">{fmtnum(gtotal)}</td></tr>'; prodaja_rows.append(r)
+                # Artikli unutar grupe
+                artikli_g = sorted(g_data['Artikl'].dropna().astype(str).str.strip().unique())
+                for art in artikli_g:
+                    if not art or art == 'nan': continue
+                    a_data = g_data[g_data['Artikl'].astype(str).str.strip() == art]
+                    avals = []
+                    for gyr, myr in periodi:
+                        mask2 = (a_data['Godina']==int(gyr)) & (a_data['Mesec']==int(myr))
+                        avals.append(round(float(a_data.loc[mask2,'Prodata kolicina ka krajnjem kupcu'].sum())))
+                    atotal = sum(avals)
+                    ar = f'<tr class="ar hidden" data-p="{gid}" data-sistem="{esc(sistem)}" data-grupa="{esc(grupa)}"><td class="an">{esc(art)}</td>'
+                    for v in avals: ar += f'<td class="n" style="color:#7c8494;font-size:10px">{fmtnum(v) if v>0 else ""}</td>'
+                    ar += f'<td class="n" style="color:#7c8494;font-size:10px;font-weight:600">{fmtnum(atotal) if atotal>0 else ""}</td></tr>'
+                    prodaja_rows.append(ar)
             prodaja_rows.append(f'<tr class="sep" data-sistem="{esc(sistem)}"><td colspan="999"></td></tr>')
         gtt=sum(grand_totals)
         tr_r='<tr class="totalrow" id="prodaja-total"><td class="total-label">TOTAL</td>'
@@ -2545,6 +2559,7 @@ elif page == 'mesecni':
         .nl{color:#7c3aed;font-weight:800;font-size:10px}.np{color:#7c3aed;font-weight:700}.nn{color:#ec4899;font-weight:700}
         .nf{color:#ec4899;font-weight:600;font-size:10px}.no{color:#a855f7;font-weight:600;font-size:10px}
         .hidden{display:none}
+        tr.excluded{display:none !important}
         tr.totalrow{background:linear-gradient(90deg,rgba(168,85,247,0.06),rgba(236,72,153,0.06))}
         tr.totalrow td{border-top:2px solid var(--bd2);padding:9px 7px}
         .total-label{font-weight:800;color:#a855f7;font-size:13px;font-family:monospace;letter-spacing:1px}
