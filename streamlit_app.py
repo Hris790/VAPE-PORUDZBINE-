@@ -1048,6 +1048,27 @@ st.markdown("""
         box-shadow: 0 4px 15px rgba(16,185,129,0.25) !important;
     }
 
+    /* --- MULTISELECT TAGOVI --- */
+    .stMultiSelect [data-baseweb="tag"] {
+        background: linear-gradient(135deg, #a855f7, #ec4899) !important;
+        border: none !important;
+        border-radius: 99px !important;
+        color: white !important;
+        font-weight: 600 !important;
+        font-size: 12px !important;
+    }
+    .stMultiSelect [data-baseweb="tag"] span { color: white !important; }
+    .stMultiSelect [data-baseweb="tag"] button { color: rgba(255,255,255,0.8) !important; }
+    .stMultiSelect [data-baseweb="select"] > div {
+        border: 1px solid rgba(168,85,247,0.3) !important;
+        border-radius: 10px !important;
+        background: white !important;
+    }
+    .stMultiSelect [data-baseweb="select"] > div:focus-within {
+        border-color: #a855f7 !important;
+        box-shadow: 0 0 0 2px rgba(168,85,247,0.15) !important;
+    }
+
     /* --- HEADER TRAKA (bez kvadrata) --- */
     .header-navbar {
         background: #12002a;
@@ -1172,11 +1193,18 @@ if uploaded:
         if _sp:
             _prod = pd.read_excel(_xls, sheet_name=_sp); _prod.columns=[c.strip() for c in _prod.columns]
             _meseci = sorted(_prod[['Godina','Mesec']].drop_duplicates().values.tolist())
-            selected_meseci = _meseci
+            _mn={1:'Jan',2:'Feb',3:'Mar',4:'Apr',5:'Maj',6:'Jun',7:'Jul',8:'Avg',9:'Sep',10:'Okt',11:'Nov',12:'Dec'}
+            _labels = [f"{_mn.get(int(m),'?' )} {int(g)}" for g,m in _meseci]
+            st.markdown('**📅 Period za analizu** (OOS, Profitabilnost, Akcija — ne utiče na predikciju):')
+            selected_labels = st.multiselect("Odaberi mesece", _labels, default=_labels, help="Predikcija uvek koristi sve mesece. Ovaj filter se odnosi samo na analitiku.")
+            if not selected_labels:
+                st.warning("⚠️ Mora biti odabran bar jedan mesec za analizu. Automatski je odabran poslednji mesec.")
+                selected_labels = [_labels[-1]] if _labels else []
+            selected_meseci = [_meseci[i] for i, lb in enumerate(_labels) if lb in selected_labels]
         else:
-            selected_meseci = []
+            selected_labels = []; selected_meseci = []
     except:
-        selected_meseci = []
+        selected_labels = []; selected_meseci = []
 
     if st.button("🚀 POKRENI ANALIZU", use_container_width=True):
         progress_bar = st.progress(0)
@@ -1575,8 +1603,8 @@ Ostaju samo objekti koji su u plusu.</p>
                     for i, (lb, (g, m)) in enumerate(zip(a_labels_trend2, a_meseci_trend2)):
                         col_neto_lb = f'Neto_{lb}'
                         if col_neto_lb in prof.columns:
-                            n_prof_mes = (prof[col_neto_lb] > 0).sum()
-                            n_nepr_mes = (prof[col_neto_lb] <= 0).sum()
+                            n_prof_mes = int((prof[col_neto_lb] > 0).sum())
+                            n_nepr_mes = int((prof[col_neto_lb] <= 0).sum())
                         else:
                             n_prof_mes = 0; n_nepr_mes = 0
                         chart_mes_data.append((lb, n_prof_mes, n_nepr_mes))
@@ -1604,10 +1632,10 @@ Ostaju samo objekti koji su u plusu.</p>
                         <div style="padding:16px 20px;">
                             <div style="display:flex;gap:16px;margin-bottom:14px;">
                                 <span style="display:flex;align-items:center;gap:5px;font-size:12px;color:#555;">
-                                    <span style="width:12px;height:12px;background:#a855f7;border-radius:2px;display:inline-block;"></span> Profitabilni
+                                    <span style="width:12px;height:12px;background:#a855f7;border-radius:2px;display:inline-block;"></span> Profitabilni taj mesec (neto &gt; 0)
                                 </span>
                                 <span style="display:flex;align-items:center;gap:5px;font-size:12px;color:#555;">
-                                    <span style="width:12px;height:12px;background:#ec4899;border-radius:2px;display:inline-block;"></span> Neprofitabilni
+                                    <span style="width:12px;height:12px;background:#ec4899;border-radius:2px;display:inline-block;"></span> Neprofitabilni taj mesec (neto ≤ 0)
                                 </span>
                             </div>
                             <div style="display:flex;gap:6px;align-items:flex-end;overflow-x:auto;padding-bottom:4px;">
@@ -1616,6 +1644,9 @@ Ostaju samo objekti koji su u plusu.</p>
                         </div>
                         </body></html>"""
                         components.html(chart_html, height=220)
+                        st.markdown('''<p style="font-size:12px;color:#9ca3af;margin-top:4px;">
+                        ℹ️ Grafikon prikazuje profitabilnost po potencijalu <strong>za svaki mesec posebno</strong> — razlikuje se od ukupnih brojeva iznad koji se odnose na <strong>ceo analizirani period</strong>. Na primer, objekat koji je u poslednjem mesecu neprofitabilan može biti profitabilan gledano kroz ceo period.
+                        </p>''', unsafe_allow_html=True)
 
                     st.markdown("<div style='margin:20px 0 4px 0;'></div>", unsafe_allow_html=True)
 
