@@ -2578,7 +2578,7 @@ elif page == 'mesecni':
         html_out = f'''<!DOCTYPE html><html lang="sr"><head><meta charset="UTF-8">
         <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=Outfit:wght@300;400;600;700;800&display=swap" rel="stylesheet">
         <style>{CSS_MESECNI}</style></head><body>
-        <div class="hdr"><div style="display:flex;align-items:center;gap:16px;"><a onclick="window.parent.location.href=window.parent.location.pathname+'?nav=home'" href="#" style="display:inline-flex;align-items:center;gap:6px;background:rgba(168,85,247,0.15);border:2px solid rgba(168,85,247,0.5);color:white;font-size:13px;font-weight:700;padding:7px 18px;border-radius:10px;text-decoration:none;white-space:nowrap;cursor:pointer;letter-spacing:.3px">← Početna</a><div><h1>&#128202; Mesečni izveštaj prodaje</h1><div class="sub">{info}</div></div></div>
+        <div class="hdr"><div><h1>&#128202; Mesečni izveštaj prodaje</h1><div class="sub">{info}</div></div>
           <div class="hb" style="display:flex;gap:8px;align-items:center">{badge_html}
     <button onclick="toggleAll(true)" style="background:rgba(168,85,247,0.1);color:#a855f7;border:1px solid rgba(168,85,247,0.2)">Otvori sve</button>
     <button onclick="toggleAll(false)" style="background:rgba(90,95,122,0.06);color:var(--t2);border:1px solid var(--bd2)">Zatvori sve</button></div></div>
@@ -3052,11 +3052,7 @@ function PregledPoSistemu(){
 function Dashboard(){
   const [tab,setTab]=useState('total');
   return(<div style={{minHeight:'100vh',background:'#12002a',color:'#c9d1d9',fontFamily:"'DM Sans',-apple-system,sans-serif"}}>
-    <div style={{maxWidth:1600,margin:'0 auto',padding:'20px'}}>
-      <div style={{marginBottom:12}}>
-        <a href="#" onClick={()=>window.parent.location.href=window.parent.location.pathname+'?nav=home'}
-          style={{display:'inline-flex',alignItems:'center',gap:6,background:'rgba(168,85,247,0.15)',border:'2px solid rgba(168,85,247,0.5)',color:'white',fontSize:13,fontWeight:700,padding:'7px 18px',borderRadius:10,textDecoration:'none',cursor:'pointer',letterSpacing:'.3px'}}>← Početna</a>
-      </div>
+    <div style={{width:'100%',padding:'20px 28px',boxSizing:'border-box'}}>
       <div style={{display:'flex',borderBottom:'1px solid rgba(168,85,247,0.2)',marginBottom:20}}>
         <TabBtn active={tab==='total'} onClick={()=>setTab('total')}>Total Pregled</TabBtn>
         <TabBtn active={tab==='sistem'} onClick={()=>setTab('sistem')}>Pregled po Sistemu</TabBtn>
@@ -3071,15 +3067,15 @@ ReactDOM.createRoot(document.getElementById('root')).render(<Dashboard/>);
 </html>'''
         return html_out
 
-    with st.spinner("⏳ Učitavam podatke..."):
-        html_content = build_finansijski_html()
-
-    # Dugme za povratak
+    # Dugme za povratak - gore pre ucitavanja
     st.markdown('<div class="back-wrap">', unsafe_allow_html=True)
     if st.button("← Početna", key="back_finansijski"):
         st.session_state.page = 'home'
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
+
+    with st.spinner("⏳ Učitavam podatke..."):
+        html_content = build_finansijski_html()
 
     if html_content is None:
         st.error("❌ Podaci nisu dostupni. Proveri da li je sistemi.xlsx postavljen na GitHub.")
