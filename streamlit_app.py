@@ -2570,7 +2570,7 @@ elif page == 'mesecni':
         html_out = f'''<!DOCTYPE html><html lang="sr"><head><meta charset="UTF-8">
         <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=Outfit:wght@300;400;600;700;800&display=swap" rel="stylesheet">
         <style>{CSS_MESECNI}</style></head><body>
-        <div class="hdr"><div><h1>&#128202; Mesečni izveštaj prodaje</h1><div class="sub">{info}</div></div>
+        <div class="hdr"><div style="display:flex;align-items:center;gap:16px;"><a onclick="window.parent.location.href=window.parent.location.pathname+'?nav=home'" href="#" style="display:inline-flex;align-items:center;gap:6px;background:rgba(168,85,247,0.15);border:2px solid rgba(168,85,247,0.5);color:white;font-size:13px;font-weight:700;padding:7px 18px;border-radius:10px;text-decoration:none;white-space:nowrap;cursor:pointer;letter-spacing:.3px">← Početna</a><div><h1>&#128202; Mesečni izveštaj prodaje</h1><div class="sub">{info}</div></div></div>
           <div class="hb" style="display:flex;gap:8px;align-items:center">{badge_html}
     <button onclick="toggleAll(true)" style="background:rgba(168,85,247,0.1);color:#a855f7;border:1px solid rgba(168,85,247,0.2)">Otvori sve</button>
     <button onclick="toggleAll(false)" style="background:rgba(90,95,122,0.06);color:var(--t2);border:1px solid var(--bd2)">Zatvori sve</button></div></div>
@@ -2597,40 +2597,12 @@ elif page == 'mesecni':
         return html_out
 
 
-    # Listen for back navigation from iframe
+    # Listen for back navigation from iframe via query params
     nav_js = st.query_params.get("nav", "")
     if nav_js == "home":
         st.query_params.clear()
         st.session_state.page = 'home'
         st.rerun()
-
-    # Stilizovano dugme za povratak
-    st.markdown("""<style>
-    div[data-testid="stButton"][id="back_btn_wrap"] > button,
-    button[kind="secondary"] { display:none; }
-    .back-home-btn button {
-        background: linear-gradient(135deg, #1e0040 0%, #12002a 100%) !important;
-        border: 2px solid rgba(168,85,247,0.6) !important;
-        color: white !important;
-        border-radius: 12px !important;
-        font-size: 16px !important;
-        font-weight: 700 !important;
-        padding: 12px 32px !important;
-        letter-spacing: 0.5px !important;
-        box-shadow: 0 4px 16px rgba(168,85,247,0.2) !important;
-        width: auto !important;
-    }
-    .back-home-btn button:hover {
-        border-color: #a855f7 !important;
-        background: rgba(168,85,247,0.15) !important;
-        box-shadow: 0 6px 20px rgba(168,85,247,0.35) !important;
-    }
-    </style>""", unsafe_allow_html=True)
-    st.markdown('<div class="back-home-btn">', unsafe_allow_html=True)
-    if st.button("← Početna", key="back_mesecni"):
-        st.session_state.page = 'home'
-        st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
 
     with st.spinner("⏳ Učitavam podatke..."):
         html_content = build_mesecni_html()
@@ -3049,6 +3021,10 @@ function Dashboard(){
   const [tab,setTab]=useState('total');
   return(<div style={{minHeight:'100vh',background:'#12002a',color:'#c9d1d9',fontFamily:"'DM Sans',-apple-system,sans-serif"}}>
     <div style={{maxWidth:1600,margin:'0 auto',padding:'20px'}}>
+      <div style={{marginBottom:12}}>
+        <a href="#" onClick={()=>window.parent.location.href=window.parent.location.pathname+'?nav=home'}
+          style={{display:'inline-flex',alignItems:'center',gap:6,background:'rgba(168,85,247,0.15)',border:'2px solid rgba(168,85,247,0.5)',color:'white',fontSize:13,fontWeight:700,padding:'7px 18px',borderRadius:10,textDecoration:'none',cursor:'pointer',letterSpacing:'.3px'}}>← Početna</a>
+      </div>
       <div style={{display:'flex',borderBottom:'1px solid rgba(168,85,247,0.2)',marginBottom:20}}>
         <TabBtn active={tab==='total'} onClick={()=>setTab('total')}>Total Pregled</TabBtn>
         <TabBtn active={tab==='sistem'} onClick={()=>setTab('sistem')}>Pregled po Sistemu</TabBtn>
@@ -3066,12 +3042,12 @@ ReactDOM.createRoot(document.getElementById('root')).render(<Dashboard/>);
     with st.spinner("⏳ Učitavam podatke..."):
         html_content = build_finansijski_html()
 
-    # Stilizovano dugme za povratak
-    st.markdown('<div class="back-home-btn">', unsafe_allow_html=True)
-    if st.button("← Početna", key="back_finansijski"):
+    # Listen for back navigation
+    nav_js2 = st.query_params.get("nav", "")
+    if nav_js2 == "home":
+        st.query_params.clear()
         st.session_state.page = 'home'
         st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
 
     if html_content is None:
         st.error("❌ Podaci nisu dostupni. Proveri da li je sistemi.xlsx postavljen na GitHub.")
