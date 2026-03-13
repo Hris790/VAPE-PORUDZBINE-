@@ -6,8 +6,8 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
 from openpyxl.utils import get_column_letter
 
 # === GITHUB KONFIGURACIJA ===
-GITHUB_RAW = "https://raw.githubusercontent.com/VAPE-PORUDZBINE/VAPE-PORUDZBINE/main/data/"
-GITHUB_CONFIG = "https://raw.githubusercontent.com/VAPE-PORUDZBINE/VAPE-PORUDZBINE/main/config.json"
+GITHUB_RAW = "https://raw.githubusercontent.com/Hris790/VAPE-PORUDZBINE-/main/"
+GITHUB_CONFIG = "https://raw.githubusercontent.com/Hris790/VAPE-PORUDZBINE-/main/config.json"
 
 @st.cache_data(ttl=300)
 def load_github_excel(filename):
@@ -1260,17 +1260,6 @@ body{font-family:'Poppins',sans-serif;background:transparent;padding:32px 16px}
     <span class="tag tag-blue">Automatski podaci</span></div>
 </div>
 </body></html>""", height=320)
-    st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        if st.button("📦 Profitabilnost objekata", use_container_width=True):
-            st.session_state.page = 'porudzbine'; st.rerun()
-    with c2:
-        if st.button("📊 Mesečni izveštaj", use_container_width=True):
-            st.session_state.page = 'mesecni'; st.rerun()
-    with c3:
-        if st.button("💰 Finansijski izveštaj", use_container_width=True):
-            st.session_state.page = 'finansijski'; st.rerun()
 
 # ============================================================
 # PROFITABILNOST OBJEKATA
@@ -2086,13 +2075,12 @@ elif page == 'mesecni':
     def build_mesecni_html():
         import html as html_mod, json as json_mod
 
-        buf_s = load_github_excel("sistemi.xlsx")
-        buf_t = load_github_excel("troskovi.xlsx")
+        buf_s = load_github_excel("tabela sistemi3.xlsx")
+        buf_t = load_github_excel("TABELA TROSKOVA.xlsx")
         if buf_s is None:
-            return None, "❌ Ne mogu da učitam sistemi.xlsx sa GitHub-a. Proveri da li fajl postoji u /data/ folderu."
+            return None
         if buf_t is None:
-            return None, "❌ Ne mogu da učitam troskovi.xlsx sa GitHub-a."
-
+            return None
         cfg = load_github_config()
         iskljuci_poslednji = not cfg.get("ukljuci_poslednji_mesec", False)
 
@@ -2407,11 +2395,11 @@ elif page == 'mesecni':
         last3_names=[nazivi[i] for i in range(-3,0)]
         mag_info=f"Prosek prodaje: {', '.join(last3_names)}"
         cards_html=f'''<div class="mag-cards">
-  <div class="mag-card"><div class="mc-label">Ukupno magacin</div><div class="mc-val" style="color:var(--ac)">{fmtnum(total_mag)}</div><div class="mc-sub">komada</div></div>
-  <div class="mag-card"><div class="mc-label">Ø Mesečna prodaja</div><div class="mc-val" style="color:var(--t1)">{fmtnum(total_avg)}</div><div class="mc-sub">kom/mesec</div></div>
-  <div class="mag-card"><div class="mc-label">Pokrivenost</div><div class="mc-val" style="color:{"var(--grn)" if total_days>90 else "var(--red)"}">{total_months_str} mes</div><div class="mc-sub">{total_days} dana</div></div>
-  <div class="mag-card"><div class="mc-label">Artikala</div><div class="mc-val" style="color:var(--t2)">{len(df_mag)}</div><div class="mc-sub">u magacinu</div></div>
-</div>'''
+          <div class="mag-card"><div class="mc-label">Ukupno magacin</div><div class="mc-val" style="color:var(--ac)">{fmtnum(total_mag)}</div><div class="mc-sub">komada</div></div>
+          <div class="mag-card"><div class="mc-label">Ø Mesečna prodaja</div><div class="mc-val" style="color:var(--t1)">{fmtnum(total_avg)}</div><div class="mc-sub">kom/mesec</div></div>
+          <div class="mag-card"><div class="mc-label">Pokrivenost</div><div class="mc-val" style="color:{"var(--grn)" if total_days>90 else "var(--red)"}">{total_months_str} mes</div><div class="mc-sub">{total_days} dana</div></div>
+          <div class="mag-card"><div class="mc-label">Artikala</div><div class="mc-val" style="color:var(--t2)">{len(df_mag)}</div><div class="mc-sub">u magacinu</div></div>
+        </div>'''
         grupa_cards='<div class="mag-cards">'
         for g in sorted(mag_grupe_summary.keys()):
             gs=mag_grupe_summary[g]
@@ -2423,112 +2411,109 @@ elif page == 'mesecni':
 
         # Ucitaj JS i CSS iz originalnog koda
         JS_MESECNI = 'var PRODAJA_DATA=' + prodaja_json + ';\nvar PROFIT_DATA=' + profit_json + ';\nvar DRV_DATA=' + drv_json + ';\nvar NUM_MONTHS=' + str(num_s) + ';\nvar NUM_PROFIT_MONTHS=' + str(num_p) + ''';\nfunction showTab(n){document.querySelectorAll('.panel').forEach(function(p){p.classList.remove('active')});document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active')});document.getElementById('panel-'+n).classList.add('active');var ts=document.querySelectorAll('.tab');if(n==='prodaja')ts[0].classList.add('active');else if(n==='profit')ts[1].classList.add('active');else if(n==='drv')ts[2].classList.add('active');else ts[3].classList.add('active');document.getElementById('leg').style.display=(n==='prodaja')?'flex':'none';document.getElementById('filters-prodaja').style.display=(n==='prodaja')?'flex':'none';document.getElementById('filters-profit').style.display=(n==='profit')?'flex':'none';document.getElementById('filters-drv').style.display=(n==='drv')?'flex':'none';document.getElementById('filters-zalihe').style.display=(n==='zalihe')?'flex':'none'}
-function tog(id){var btn=document.getElementById('b-'+id);if(!btn)return;var isO=btn.textContent.trim()==='\u2212';var rows=document.querySelectorAll('tr[data-p="'+id+'"]');if(isO){rows.forEach(function(r){r.classList.add('hidden');var cb=r.querySelector('.beg');if(cb){cb.textContent='+';var cid=cb.id.replace('b-','');document.querySelectorAll('tr[data-p="'+cid+'"]').forEach(function(cr){cr.classList.add('hidden')})}});btn.textContent='+'}else{var fG=document.getElementById('f-grupa')?document.getElementById('f-grupa').value:'';rows.forEach(function(r){if(fG&&r.getAttribute('data-grupa')&&r.getAttribute('data-grupa')!==fG)return;r.classList.remove('hidden')});btn.textContent='\u2212'}}
-function toggleAll(o){var ap=document.querySelector('.panel.active');if(!ap)return;ap.querySelectorAll('.be').forEach(function(btn){var id=btn.id.replace('b-','');var rows=document.querySelectorAll('tr[data-p="'+id+'"]');rows.forEach(function(r){o?r.classList.remove('hidden'):r.classList.add('hidden')});btn.textContent=o?'\u2212':'+'})}
-function applyFilters(){var fS=document.getElementById('f-sistem').value;var fG=document.getElementById('f-grupa').value;var tbody=document.getElementById('tbody-prodaja');tbody.querySelectorAll('.be').forEach(function(btn){btn.textContent='+'});tbody.querySelectorAll('tr').forEach(function(r){var rS=r.getAttribute('data-sistem');var isSr=r.classList.contains('sr');var isGr=r.classList.contains('gr');var isAr=r.classList.contains('ar');var isSep=r.classList.contains('sep');var isTotal=r.classList.contains('totalrow');if(isTotal){r.classList.remove('hidden');return}if(fS&&rS&&rS!==fS){r.classList.add('hidden');return}if(isSr){if(fG){var hG=PRODAJA_DATA[rS]&&PRODAJA_DATA[rS][fG];if(!hG){r.classList.add('hidden');return}var cells=r.querySelectorAll('td');var gt=0;for(var i=0;i<NUM_MONTHS;i++){cells[i+1].textContent=hG[i].toLocaleString('sr-RS');gt+=hG[i]}cells[NUM_MONTHS+1].textContent=gt.toLocaleString('sr-RS')}else{var allG=PRODAJA_DATA[rS];if(allG){var cells=r.querySelectorAll('td');var sums=new Array(NUM_MONTHS).fill(0);for(var g in allG)for(var i=0;i<NUM_MONTHS;i++)sums[i]+=allG[g][i];var gt=0;for(var i=0;i<NUM_MONTHS;i++){cells[i+1].textContent=sums[i].toLocaleString('sr-RS');gt+=sums[i]}cells[NUM_MONTHS+1].textContent=gt.toLocaleString('sr-RS')}}r.classList.remove('hidden');return}if(isGr||isAr){r.classList.add('hidden');return}if(isSep){if(fS&&rS!==fS){r.classList.add('hidden');return}if(fG){var hSG=PRODAJA_DATA[rS]&&PRODAJA_DATA[rS][fG];if(!hSG){r.classList.add('hidden');return}}r.classList.remove('hidden');return}});recalcTotals(fS,fG)}
-function recalcTotals(fS,fG){var t=new Array(NUM_MONTHS).fill(0);for(var s in PRODAJA_DATA){if(fS&&s!==fS)continue;for(var g in PRODAJA_DATA[s]){if(fG&&g!==fG)continue;var v=PRODAJA_DATA[s][g];for(var i=0;i<NUM_MONTHS;i++)t[i]+=v[i]}}var gt=t.reduce(function(a,b){return a+b},0);var tr=document.getElementById('prodaja-total');if(!tr)return;var c=tr.querySelectorAll('td');for(var i=1;i<=NUM_MONTHS;i++)c[i].textContent=t[i-1].toLocaleString('sr-RS');c[NUM_MONTHS+1].textContent=gt.toLocaleString('sr-RS')}
-function resetFilters(){document.getElementById('f-sistem').value='';document.getElementById('f-grupa').value='';applyFilters()}
-function fmtN(v){return v.toLocaleString('sr-RS')}
-function applyProfitFilters(){var fS=document.getElementById('fp-sistem').value;var tbody=document.getElementById('tbody-profit');var checks=document.querySelectorAll('#filters-profit input[type=checkbox]');var ac={};checks.forEach(function(cb){ac[cb.value]=cb.checked});tbody.querySelectorAll('.be').forEach(function(btn){btn.textContent='+'});tbody.querySelectorAll('tr').forEach(function(r){var rS=r.getAttribute('data-sistem');var isSr=r.classList.contains('sr');var isSep=r.classList.contains('sep');var isTotal=r.classList.contains('totalrow');if(isTotal){r.classList.remove('hidden');return}if(isSr||isSep){if(fS&&rS&&rS!==fS)r.classList.add('hidden');else r.classList.remove('hidden');return}r.classList.add('hidden')});tbody.querySelectorAll('tr[data-trosak]').forEach(function(r){var tid=r.getAttribute('data-trosak');r.classList.toggle('excluded',!ac[tid])});var grandT=new Array(NUM_PROFIT_MONTHS).fill(0);tbody.querySelectorAll('.ukupni-row').forEach(function(ukRow){var sid=ukRow.getAttribute('data-sid');var sistem=ukRow.getAttribute('data-sistem');var pd=PROFIT_DATA[sistem];if(!pd)return;var uk=new Array(NUM_PROFIT_MONTHS).fill(0);if(ac['mkt'])for(var i=0;i<NUM_PROFIT_MONTHS;i++)uk[i]+=pd['mkt'][i];for(var tid in pd){if(tid==='profit'||tid==='mkt')continue;if(ac[tid])for(var i=0;i<NUM_PROFIT_MONTHS;i++)uk[i]+=pd[tid][i]}var ukT=uk.reduce(function(a,b){return a+b},0);var cells=ukRow.querySelectorAll('td');for(var i=3;i<3+NUM_PROFIT_MONTHS;i++)cells[i].textContent=fmtN(uk[i-3]);cells[3+NUM_PROFIT_MONTHS].textContent=fmtN(ukT);var nr=tbody.querySelector('.neto-row[data-sid="'+sid+'"]');if(!nr)return;var p=pd['profit'];var nc=nr.querySelectorAll('td');var nt=0;for(var i=0;i<NUM_PROFIT_MONTHS;i++){var nv=p[i]-uk[i];nt+=nv;nc[3+i].textContent=fmtN(nv);nc[3+i].className='n '+(nv>=0?'np':'nn')}nc[3+NUM_PROFIT_MONTHS].textContent=fmtN(nt);nc[3+NUM_PROFIT_MONTHS].className='n '+(nt>=0?'np':'nn');nc[3+NUM_PROFIT_MONTHS].style.fontSize='13px';var sr=tbody.querySelector('.profit-sr[data-sid="'+sid+'"]');if(sr){var sc=sr.querySelectorAll('td');for(var i=3;i<3+NUM_PROFIT_MONTHS;i++){var nv2=p[i-3]-uk[i-3];sc[i].textContent=fmtN(nv2);sc[i].className='nb '+(nv2>=0?'np':'nn')}var stot=p.reduce(function(a,b){return a+b},0)-ukT;sc[3+NUM_PROFIT_MONTHS].textContent=fmtN(stot);sc[3+NUM_PROFIT_MONTHS].className='nb '+(stot>=0?'np':'nn');sc[3+NUM_PROFIT_MONTHS].style.fontSize='13px'}if(!fS||sistem===fS){for(var i=0;i<NUM_PROFIT_MONTHS;i++)grandT[i]+=p[i]-uk[i]}});var tRow=document.getElementById('profit-total');if(tRow){var tc=tRow.querySelectorAll('td');var ggt=grandT.reduce(function(a,b){return a+b},0);for(var i=3;i<3+NUM_PROFIT_MONTHS;i++){tc[i].textContent=fmtN(grandT[i-3]);tc[i].className='nb total-cell '+(grandT[i-3]>=0?'np':'nn')}tc[3+NUM_PROFIT_MONTHS].textContent=fmtN(ggt);tc[3+NUM_PROFIT_MONTHS].className='nb total-cell '+(ggt>=0?'np':'nn');tc[3+NUM_PROFIT_MONTHS].style.fontSize='13px'}}
-function resetProfitFilters(){document.getElementById('fp-sistem').value='';document.querySelectorAll('#filters-profit input[type=checkbox]').forEach(function(cb){cb.checked=true});applyProfitFilters()}
-function applyDrvFilters(){var fS=document.getElementById('fd-sistem').value;var tbody=document.getElementById('tbody-drv');tbody.querySelectorAll('.be').forEach(function(btn){btn.textContent='+'});tbody.querySelectorAll('tr').forEach(function(r){var rS=r.getAttribute('data-sistem');var isSr=r.classList.contains('sr');var isSep=r.classList.contains('sep');var isTotal=r.classList.contains('totalrow');if(isTotal){r.classList.remove('hidden');return}if(isSr||isSep){if(fS&&rS&&rS!==fS)r.classList.add('hidden');else r.classList.remove('hidden');return}r.classList.add('hidden')});var grandT=new Array(NUM_PROFIT_MONTHS).fill(0);for(var s in DRV_DATA){if(fS&&s!==fS)continue;var d=DRV_DATA[s];for(var i=0;i<NUM_PROFIT_MONTHS;i++)grandT[i]+=d['profit'][i]-d['mkt'][i]}var tRow=document.getElementById('drv-total');if(tRow){var tc=tRow.querySelectorAll('td');var ggt=grandT.reduce(function(a,b){return a+b},0);for(var i=3;i<3+NUM_PROFIT_MONTHS;i++){tc[i].textContent=fmtN(grandT[i-3]);tc[i].className='nb total-cell '+(grandT[i-3]>=0?'np':'nn')}tc[3+NUM_PROFIT_MONTHS].textContent=fmtN(ggt);tc[3+NUM_PROFIT_MONTHS].className='nb total-cell '+(ggt>=0?'np':'nn');tc[3+NUM_PROFIT_MONTHS].style.fontSize='13px'}}
-function applyZaliheFilters(){var fS=document.getElementById('fz-sistem').value;var tbody=document.getElementById('tbody-zalihe');tbody.querySelectorAll('.be').forEach(function(btn){btn.textContent='+'});tbody.querySelectorAll('tr').forEach(function(r){var rS=r.getAttribute('data-sistem');var isSr=r.classList.contains('sr');var isSep=r.classList.contains('sep');var isTotal=r.classList.contains('totalrow');if(isTotal){r.classList.remove('hidden');return}if(isSr||isSep){if(fS&&rS&&rS!==fS)r.classList.add('hidden');else r.classList.remove('hidden');return}r.classList.add('hidden')})}'''
+        function tog(id){var btn=document.getElementById('b-'+id);if(!btn)return;var isO=btn.textContent.trim()==='\u2212';var rows=document.querySelectorAll('tr[data-p="'+id+'"]');if(isO){rows.forEach(function(r){r.classList.add('hidden');var cb=r.querySelector('.beg');if(cb){cb.textContent='+';var cid=cb.id.replace('b-','');document.querySelectorAll('tr[data-p="'+cid+'"]').forEach(function(cr){cr.classList.add('hidden')})}});btn.textContent='+'}else{var fG=document.getElementById('f-grupa')?document.getElementById('f-grupa').value:'';rows.forEach(function(r){if(fG&&r.getAttribute('data-grupa')&&r.getAttribute('data-grupa')!==fG)return;r.classList.remove('hidden')});btn.textContent='\u2212'}}
+        function toggleAll(o){var ap=document.querySelector('.panel.active');if(!ap)return;ap.querySelectorAll('.be').forEach(function(btn){var id=btn.id.replace('b-','');var rows=document.querySelectorAll('tr[data-p="'+id+'"]');rows.forEach(function(r){o?r.classList.remove('hidden'):r.classList.add('hidden')});btn.textContent=o?'\u2212':'+'})}
+        function applyFilters(){var fS=document.getElementById('f-sistem').value;var fG=document.getElementById('f-grupa').value;var tbody=document.getElementById('tbody-prodaja');tbody.querySelectorAll('.be').forEach(function(btn){btn.textContent='+'});tbody.querySelectorAll('tr').forEach(function(r){var rS=r.getAttribute('data-sistem');var isSr=r.classList.contains('sr');var isGr=r.classList.contains('gr');var isAr=r.classList.contains('ar');var isSep=r.classList.contains('sep');var isTotal=r.classList.contains('totalrow');if(isTotal){r.classList.remove('hidden');return}if(fS&&rS&&rS!==fS){r.classList.add('hidden');return}if(isSr){if(fG){var hG=PRODAJA_DATA[rS]&&PRODAJA_DATA[rS][fG];if(!hG){r.classList.add('hidden');return}var cells=r.querySelectorAll('td');var gt=0;for(var i=0;i<NUM_MONTHS;i++){cells[i+1].textContent=hG[i].toLocaleString('sr-RS');gt+=hG[i]}cells[NUM_MONTHS+1].textContent=gt.toLocaleString('sr-RS')}else{var allG=PRODAJA_DATA[rS];if(allG){var cells=r.querySelectorAll('td');var sums=new Array(NUM_MONTHS).fill(0);for(var g in allG)for(var i=0;i<NUM_MONTHS;i++)sums[i]+=allG[g][i];var gt=0;for(var i=0;i<NUM_MONTHS;i++){cells[i+1].textContent=sums[i].toLocaleString('sr-RS');gt+=sums[i]}cells[NUM_MONTHS+1].textContent=gt.toLocaleString('sr-RS')}}r.classList.remove('hidden');return}if(isGr||isAr){r.classList.add('hidden');return}if(isSep){if(fS&&rS!==fS){r.classList.add('hidden');return}if(fG){var hSG=PRODAJA_DATA[rS]&&PRODAJA_DATA[rS][fG];if(!hSG){r.classList.add('hidden');return}}r.classList.remove('hidden');return}});recalcTotals(fS,fG)}
+        function recalcTotals(fS,fG){var t=new Array(NUM_MONTHS).fill(0);for(var s in PRODAJA_DATA){if(fS&&s!==fS)continue;for(var g in PRODAJA_DATA[s]){if(fG&&g!==fG)continue;var v=PRODAJA_DATA[s][g];for(var i=0;i<NUM_MONTHS;i++)t[i]+=v[i]}}var gt=t.reduce(function(a,b){return a+b},0);var tr=document.getElementById('prodaja-total');if(!tr)return;var c=tr.querySelectorAll('td');for(var i=1;i<=NUM_MONTHS;i++)c[i].textContent=t[i-1].toLocaleString('sr-RS');c[NUM_MONTHS+1].textContent=gt.toLocaleString('sr-RS')}
+        function resetFilters(){document.getElementById('f-sistem').value='';document.getElementById('f-grupa').value='';applyFilters()}
+        function fmtN(v){return v.toLocaleString('sr-RS')}
+        function applyProfitFilters(){var fS=document.getElementById('fp-sistem').value;var tbody=document.getElementById('tbody-profit');var checks=document.querySelectorAll('#filters-profit input[type=checkbox]');var ac={};checks.forEach(function(cb){ac[cb.value]=cb.checked});tbody.querySelectorAll('.be').forEach(function(btn){btn.textContent='+'});tbody.querySelectorAll('tr').forEach(function(r){var rS=r.getAttribute('data-sistem');var isSr=r.classList.contains('sr');var isSep=r.classList.contains('sep');var isTotal=r.classList.contains('totalrow');if(isTotal){r.classList.remove('hidden');return}if(isSr||isSep){if(fS&&rS&&rS!==fS)r.classList.add('hidden');else r.classList.remove('hidden');return}r.classList.add('hidden')});tbody.querySelectorAll('tr[data-trosak]').forEach(function(r){var tid=r.getAttribute('data-trosak');r.classList.toggle('excluded',!ac[tid])});var grandT=new Array(NUM_PROFIT_MONTHS).fill(0);tbody.querySelectorAll('.ukupni-row').forEach(function(ukRow){var sid=ukRow.getAttribute('data-sid');var sistem=ukRow.getAttribute('data-sistem');var pd=PROFIT_DATA[sistem];if(!pd)return;var uk=new Array(NUM_PROFIT_MONTHS).fill(0);if(ac['mkt'])for(var i=0;i<NUM_PROFIT_MONTHS;i++)uk[i]+=pd['mkt'][i];for(var tid in pd){if(tid==='profit'||tid==='mkt')continue;if(ac[tid])for(var i=0;i<NUM_PROFIT_MONTHS;i++)uk[i]+=pd[tid][i]}var ukT=uk.reduce(function(a,b){return a+b},0);var cells=ukRow.querySelectorAll('td');for(var i=3;i<3+NUM_PROFIT_MONTHS;i++)cells[i].textContent=fmtN(uk[i-3]);cells[3+NUM_PROFIT_MONTHS].textContent=fmtN(ukT);var nr=tbody.querySelector('.neto-row[data-sid="'+sid+'"]');if(!nr)return;var p=pd['profit'];var nc=nr.querySelectorAll('td');var nt=0;for(var i=0;i<NUM_PROFIT_MONTHS;i++){var nv=p[i]-uk[i];nt+=nv;nc[3+i].textContent=fmtN(nv);nc[3+i].className='n '+(nv>=0?'np':'nn')}nc[3+NUM_PROFIT_MONTHS].textContent=fmtN(nt);nc[3+NUM_PROFIT_MONTHS].className='n '+(nt>=0?'np':'nn');nc[3+NUM_PROFIT_MONTHS].style.fontSize='13px';var sr=tbody.querySelector('.profit-sr[data-sid="'+sid+'"]');if(sr){var sc=sr.querySelectorAll('td');for(var i=3;i<3+NUM_PROFIT_MONTHS;i++){var nv2=p[i-3]-uk[i-3];sc[i].textContent=fmtN(nv2);sc[i].className='nb '+(nv2>=0?'np':'nn')}var stot=p.reduce(function(a,b){return a+b},0)-ukT;sc[3+NUM_PROFIT_MONTHS].textContent=fmtN(stot);sc[3+NUM_PROFIT_MONTHS].className='nb '+(stot>=0?'np':'nn');sc[3+NUM_PROFIT_MONTHS].style.fontSize='13px'}if(!fS||sistem===fS){for(var i=0;i<NUM_PROFIT_MONTHS;i++)grandT[i]+=p[i]-uk[i]}});var tRow=document.getElementById('profit-total');if(tRow){var tc=tRow.querySelectorAll('td');var ggt=grandT.reduce(function(a,b){return a+b},0);for(var i=3;i<3+NUM_PROFIT_MONTHS;i++){tc[i].textContent=fmtN(grandT[i-3]);tc[i].className='nb total-cell '+(grandT[i-3]>=0?'np':'nn')}tc[3+NUM_PROFIT_MONTHS].textContent=fmtN(ggt);tc[3+NUM_PROFIT_MONTHS].className='nb total-cell '+(ggt>=0?'np':'nn');tc[3+NUM_PROFIT_MONTHS].style.fontSize='13px'}}
+        function resetProfitFilters(){document.getElementById('fp-sistem').value='';document.querySelectorAll('#filters-profit input[type=checkbox]').forEach(function(cb){cb.checked=true});applyProfitFilters()}
+        function applyDrvFilters(){var fS=document.getElementById('fd-sistem').value;var tbody=document.getElementById('tbody-drv');tbody.querySelectorAll('.be').forEach(function(btn){btn.textContent='+'});tbody.querySelectorAll('tr').forEach(function(r){var rS=r.getAttribute('data-sistem');var isSr=r.classList.contains('sr');var isSep=r.classList.contains('sep');var isTotal=r.classList.contains('totalrow');if(isTotal){r.classList.remove('hidden');return}if(isSr||isSep){if(fS&&rS&&rS!==fS)r.classList.add('hidden');else r.classList.remove('hidden');return}r.classList.add('hidden')});var grandT=new Array(NUM_PROFIT_MONTHS).fill(0);for(var s in DRV_DATA){if(fS&&s!==fS)continue;var d=DRV_DATA[s];for(var i=0;i<NUM_PROFIT_MONTHS;i++)grandT[i]+=d['profit'][i]-d['mkt'][i]}var tRow=document.getElementById('drv-total');if(tRow){var tc=tRow.querySelectorAll('td');var ggt=grandT.reduce(function(a,b){return a+b},0);for(var i=3;i<3+NUM_PROFIT_MONTHS;i++){tc[i].textContent=fmtN(grandT[i-3]);tc[i].className='nb total-cell '+(grandT[i-3]>=0?'np':'nn')}tc[3+NUM_PROFIT_MONTHS].textContent=fmtN(ggt);tc[3+NUM_PROFIT_MONTHS].className='nb total-cell '+(ggt>=0?'np':'nn');tc[3+NUM_PROFIT_MONTHS].style.fontSize='13px'}}
+        function applyZaliheFilters(){var fS=document.getElementById('fz-sistem').value;var tbody=document.getElementById('tbody-zalihe');tbody.querySelectorAll('.be').forEach(function(btn){btn.textContent='+'});tbody.querySelectorAll('tr').forEach(function(r){var rS=r.getAttribute('data-sistem');var isSr=r.classList.contains('sr');var isSep=r.classList.contains('sep');var isTotal=r.classList.contains('totalrow');if(isTotal){r.classList.remove('hidden');return}if(isSr||isSep){if(fS&&rS&&rS!==fS)r.classList.add('hidden');else r.classList.remove('hidden');return}r.classList.add('hidden')})}'''
 
         CSS_MESECNI = '''*{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#f4f6fb;--bg2:#ffffff;--bd:#e2e6ef;--bd2:#d0d5e0;--t1:#1a1a2e;--t2:#5a5f7a;--t3:#8b90a5;--ac:#a855f7;--acd:rgba(168,85,247,0.08);--red:#ec4899;--redd:rgba(236,72,153,0.06);--grn:#7c3aed;--grnd:rgba(124,58,237,0.06);--shadow:0 1px 3px rgba(0,0,0,0.06)}
-body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--t1)}
-.hdr{padding:16px 24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;background:#12002a;border-bottom:3px solid;border-image:linear-gradient(90deg,#a855f7,#ec4899) 1}
-.hdr h1{font-size:18px;font-weight:700;color:white;letter-spacing:0.5px}
-.hdr .sub{font-size:11px;color:rgba(255,255,255,0.4);margin-top:2px}
-.badge{padding:4px 10px;border-radius:20px;font-size:10px;font-weight:600}
-.bg{background:rgba(124,58,237,0.15);color:#a855f7;border:1px solid rgba(168,85,247,0.3)}
-.br{background:rgba(236,72,153,0.12);color:#ec4899;border:1px solid rgba(236,72,153,0.3)}
-.toolbar{display:flex;gap:0;background:white;border-bottom:1px solid var(--bd)}
-.tabs{display:flex;gap:0;padding:0 16px;flex:1}
-.tab{padding:12px 20px;font-size:11px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;color:var(--t3);transition:all .2s;margin-bottom:-1px;user-select:none;font-family:monospace}
-.tab:hover{color:var(--t1)}.tab.active{color:#a855f7;border-bottom-color:#a855f7}
-.filters{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:10px 20px;background:var(--bg);border-bottom:1px solid var(--bd)}
-.filters label{font-size:10px;color:var(--t3);font-weight:600;text-transform:uppercase;letter-spacing:.5px}
-.filters select{background:var(--bg2);color:var(--t1);border:1px solid var(--bd2);border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer;min-width:140px}
-.reset-btn{background:rgba(236,72,153,0.08);color:#ec4899;border:1px solid rgba(236,72,153,0.2);padding:5px 12px;border-radius:8px;cursor:pointer;font-size:11px;font-weight:600}
-.tcb{display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--t2);cursor:pointer;padding:3px 8px;border-radius:6px;background:var(--bg2);border:1px solid var(--bd)}
-.tcb input{accent-color:#a855f7;cursor:pointer}
-.legend{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 20px;font-size:10px;color:var(--t3);background:var(--bg);border-bottom:1px solid var(--bd)}
-.legend b{font-weight:700}.lc{display:inline-block;padding:2px 7px;border-radius:4px;font-weight:700;font-size:9px;color:#1a1a2e}
-.panel{display:none}.panel.active{display:block}
-.tw{overflow-x:auto;padding:4px 12px 32px}
-table{border-collapse:collapse;width:100%;font-size:11px;margin-top:4px;background:var(--bg2);border-radius:10px;overflow:hidden;box-shadow:var(--shadow)}
-thead th{background:linear-gradient(180deg,#f8f9fd,#eef0f7);color:var(--t2);font-weight:700;font-size:10px;font-family:monospace;text-transform:uppercase;letter-spacing:.5px;padding:9px 7px;text-align:center;border-bottom:2px solid var(--bd);position:sticky;top:0;z-index:20;white-space:nowrap}
-td{padding:5px 7px;border-bottom:1px solid var(--bd);white-space:nowrap;font-family:monospace;font-size:11px}
-tr.sr{background:rgba(168,85,247,0.03)}tr.sr:hover{background:rgba(168,85,247,0.07)}tr.sr td{border-bottom:1px solid var(--bd2)}
-tr.gr{background:rgba(168,85,247,0.015)}tr.gr:hover{background:rgba(168,85,247,0.05)}
-tr.ar{background:var(--bg2)}tr.ar:hover{background:rgba(0,0,0,0.015)}
-tr.cr{background:rgba(236,72,153,0.02)}tr.ctr{background:rgba(236,72,153,0.04)}tr.nr{background:rgba(124,58,237,0.05)}
-tr.sep td{height:4px;background:var(--bg);border:none;padding:0}
-.be{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px;background:var(--acd);color:#a855f7;font-size:13px;font-weight:800;cursor:pointer;border:none;margin-right:8px;font-family:monospace;vertical-align:middle;transition:all .15s}
-.be:hover{background:#a855f7;color:#fff}.beg{background:rgba(90,95,122,0.06);color:var(--t2)}.beg:hover{background:var(--t2);color:#fff}
-.sn{font-weight:700;color:#a855f7;font-size:12px;cursor:pointer}.gn{color:var(--t2);font-weight:600;cursor:pointer}
-.an{padding-left:36px;color:var(--t3);font-size:10px}.an::before{content:'↳ ';color:var(--bd2)}
-.n{text-align:right}.nb{text-align:right;font-weight:600}.nt{text-align:right;font-weight:800;color:#a855f7}
-.cc{color:#ec4899;font-style:italic;opacity:.75}.cl{color:#ec4899;font-style:italic;font-size:10px;opacity:.75}
-.ctl{color:#be185d;font-weight:800;font-size:10px}.ctc{color:#be185d;font-weight:700}
-.nl{color:#7c3aed;font-weight:800;font-size:10px}.np{color:#7c3aed;font-weight:700}.nn{color:#ec4899;font-weight:700}
-.nf{color:#ec4899;font-weight:600;font-size:10px}.no{color:#a855f7;font-weight:600;font-size:10px}
-.hidden{display:none}
-tr.totalrow{background:linear-gradient(90deg,rgba(168,85,247,0.06),rgba(236,72,153,0.06))}
-tr.totalrow td{border-top:2px solid var(--bd2);padding:9px 7px}
-.total-label{font-weight:800;color:#a855f7;font-size:13px;font-family:monospace;letter-spacing:1px}
-.total-cell{font-size:12px}
-.mag-section{padding:16px;background:var(--bg2);border-radius:10px;margin:8px 12px;box-shadow:var(--shadow)}
-.mag-section h3{font-size:13px;font-weight:700;color:#a855f7;margin-bottom:4px}
-.mag-cards{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap}
-.mag-card{flex:1;min-width:140px;padding:12px 16px;border-radius:10px;background:var(--bg);border:1px solid var(--bd)}
-.mag-card .mc-label{font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:var(--t3);font-weight:600}
-.mag-card .mc-val{font-size:20px;font-weight:800;font-family:monospace;margin-top:4px}
-.mag-card .mc-sub{font-size:9px;color:var(--t3);margin-top:2px}
-.hb button{padding:5px 12px;border-radius:8px;cursor:pointer;font-size:10px;font-weight:600}'''
+        :root{--bg:#f4f6fb;--bg2:#ffffff;--bd:#e2e6ef;--bd2:#d0d5e0;--t1:#1a1a2e;--t2:#5a5f7a;--t3:#8b90a5;--ac:#a855f7;--acd:rgba(168,85,247,0.08);--red:#ec4899;--redd:rgba(236,72,153,0.06);--grn:#7c3aed;--grnd:rgba(124,58,237,0.06);--shadow:0 1px 3px rgba(0,0,0,0.06)}
+        body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--t1)}
+        .hdr{padding:16px 24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;background:#12002a;border-bottom:3px solid;border-image:linear-gradient(90deg,#a855f7,#ec4899) 1}
+        .hdr h1{font-size:18px;font-weight:700;color:white;letter-spacing:0.5px}
+        .hdr .sub{font-size:11px;color:rgba(255,255,255,0.4);margin-top:2px}
+        .badge{padding:4px 10px;border-radius:20px;font-size:10px;font-weight:600}
+        .bg{background:rgba(124,58,237,0.15);color:#a855f7;border:1px solid rgba(168,85,247,0.3)}
+        .br{background:rgba(236,72,153,0.12);color:#ec4899;border:1px solid rgba(236,72,153,0.3)}
+        .toolbar{display:flex;gap:0;background:white;border-bottom:1px solid var(--bd)}
+        .tabs{display:flex;gap:0;padding:0 16px;flex:1}
+        .tab{padding:12px 20px;font-size:11px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;color:var(--t3);transition:all .2s;margin-bottom:-1px;user-select:none;font-family:monospace}
+        .tab:hover{color:var(--t1)}.tab.active{color:#a855f7;border-bottom-color:#a855f7}
+        .filters{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:10px 20px;background:var(--bg);border-bottom:1px solid var(--bd)}
+        .filters label{font-size:10px;color:var(--t3);font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+        .filters select{background:var(--bg2);color:var(--t1);border:1px solid var(--bd2);border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer;min-width:140px}
+        .reset-btn{background:rgba(236,72,153,0.08);color:#ec4899;border:1px solid rgba(236,72,153,0.2);padding:5px 12px;border-radius:8px;cursor:pointer;font-size:11px;font-weight:600}
+        .tcb{display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--t2);cursor:pointer;padding:3px 8px;border-radius:6px;background:var(--bg2);border:1px solid var(--bd)}
+        .tcb input{accent-color:#a855f7;cursor:pointer}
+        .legend{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 20px;font-size:10px;color:var(--t3);background:var(--bg);border-bottom:1px solid var(--bd)}
+        .legend b{font-weight:700}.lc{display:inline-block;padding:2px 7px;border-radius:4px;font-weight:700;font-size:9px;color:#1a1a2e}
+        .panel{display:none}.panel.active{display:block}
+        .tw{overflow-x:auto;padding:4px 12px 32px}
+        table{border-collapse:collapse;width:100%;font-size:11px;margin-top:4px;background:var(--bg2);border-radius:10px;overflow:hidden;box-shadow:var(--shadow)}
+        thead th{background:linear-gradient(180deg,#f8f9fd,#eef0f7);color:var(--t2);font-weight:700;font-size:10px;font-family:monospace;text-transform:uppercase;letter-spacing:.5px;padding:9px 7px;text-align:center;border-bottom:2px solid var(--bd);position:sticky;top:0;z-index:20;white-space:nowrap}
+        td{padding:5px 7px;border-bottom:1px solid var(--bd);white-space:nowrap;font-family:monospace;font-size:11px}
+        tr.sr{background:rgba(168,85,247,0.03)}tr.sr:hover{background:rgba(168,85,247,0.07)}tr.sr td{border-bottom:1px solid var(--bd2)}
+        tr.gr{background:rgba(168,85,247,0.015)}tr.gr:hover{background:rgba(168,85,247,0.05)}
+        tr.ar{background:var(--bg2)}tr.ar:hover{background:rgba(0,0,0,0.015)}
+        tr.cr{background:rgba(236,72,153,0.02)}tr.ctr{background:rgba(236,72,153,0.04)}tr.nr{background:rgba(124,58,237,0.05)}
+        tr.sep td{height:4px;background:var(--bg);border:none;padding:0}
+        .be{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px;background:var(--acd);color:#a855f7;font-size:13px;font-weight:800;cursor:pointer;border:none;margin-right:8px;font-family:monospace;vertical-align:middle;transition:all .15s}
+        .be:hover{background:#a855f7;color:#fff}.beg{background:rgba(90,95,122,0.06);color:var(--t2)}.beg:hover{background:var(--t2);color:#fff}
+        .sn{font-weight:700;color:#a855f7;font-size:12px;cursor:pointer}.gn{color:var(--t2);font-weight:600;cursor:pointer}
+        .an{padding-left:36px;color:var(--t3);font-size:10px}.an::before{content:'↳ ';color:var(--bd2)}
+        .n{text-align:right}.nb{text-align:right;font-weight:600}.nt{text-align:right;font-weight:800;color:#a855f7}
+        .cc{color:#ec4899;font-style:italic;opacity:.75}.cl{color:#ec4899;font-style:italic;font-size:10px;opacity:.75}
+        .ctl{color:#be185d;font-weight:800;font-size:10px}.ctc{color:#be185d;font-weight:700}
+        .nl{color:#7c3aed;font-weight:800;font-size:10px}.np{color:#7c3aed;font-weight:700}.nn{color:#ec4899;font-weight:700}
+        .nf{color:#ec4899;font-weight:600;font-size:10px}.no{color:#a855f7;font-weight:600;font-size:10px}
+        .hidden{display:none}
+        tr.totalrow{background:linear-gradient(90deg,rgba(168,85,247,0.06),rgba(236,72,153,0.06))}
+        tr.totalrow td{border-top:2px solid var(--bd2);padding:9px 7px}
+        .total-label{font-weight:800;color:#a855f7;font-size:13px;font-family:monospace;letter-spacing:1px}
+        .total-cell{font-size:12px}
+        .mag-section{padding:16px;background:var(--bg2);border-radius:10px;margin:8px 12px;box-shadow:var(--shadow)}
+        .mag-section h3{font-size:13px;font-weight:700;color:#a855f7;margin-bottom:4px}
+        .mag-cards{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+        .mag-card{flex:1;min-width:140px;padding:12px 16px;border-radius:10px;background:var(--bg);border:1px solid var(--bd)}
+        .mag-card .mc-label{font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:var(--t3);font-weight:600}
+        .mag-card .mc-val{font-size:20px;font-weight:800;font-family:monospace;margin-top:4px}
+        .mag-card .mc-sub{font-size:9px;color:var(--t3);margin-top:2px}
+        .hb button{padding:5px 12px;border-radius:8px;cursor:pointer;font-size:10px;font-weight:600}'''
 
         html_out = f'''<!DOCTYPE html><html lang="sr"><head><meta charset="UTF-8">
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=Outfit:wght@300;400;600;700;800&display=swap" rel="stylesheet">
-<style>{CSS_MESECNI}</style></head><body>
-<div class="hdr"><div><h1>&#128202; Mesečni izveštaj prodaje</h1><div class="sub">{info}</div></div>
-  <div class="hb" style="display:flex;gap:8px;align-items:center">{badge_html}
+        <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=Outfit:wght@300;400;600;700;800&display=swap" rel="stylesheet">
+        <style>{CSS_MESECNI}</style></head><body>
+        <div class="hdr"><div><h1>&#128202; Mesečni izveštaj prodaje</h1><div class="sub">{info}</div></div>
+          <div class="hb" style="display:flex;gap:8px;align-items:center">{badge_html}
     <button onclick="toggleAll(true)" style="background:rgba(168,85,247,0.1);color:#a855f7;border:1px solid rgba(168,85,247,0.2)">Otvori sve</button>
     <button onclick="toggleAll(false)" style="background:rgba(90,95,122,0.06);color:var(--t2);border:1px solid var(--bd2)">Zatvori sve</button></div></div>
-<div class="toolbar"><div class="tabs">
-  <div class="tab active" onclick="showTab('prodaja')">📊 PRODAJA</div>
-  <div class="tab" onclick="showTab('profit')">💰 PROFITABILNOST</div>
-  <div class="tab" onclick="showTab('drv')">DR VUKAŠIN</div>
-  <div class="tab" onclick="showTab('zalihe')">📦 ZALIHE</div>
-</div></div>
-<div class="filters" id="filters-prodaja"><label>Sistem:</label><select id="f-sistem" onchange="applyFilters()"><option value="">Svi</option>{sistem_options}</select><label>Grupa:</label><select id="f-grupa" onchange="applyFilters()"><option value="">Sve</option>{grupa_options}</select><button class="reset-btn" onclick="resetFilters()">✕ Reset</button></div>
-<div class="filters hidden" id="filters-profit"><label>Sistem:</label><select id="fp-sistem" onchange="applyProfitFilters()"><option value="">Svi</option>{sistem_options}</select>&nbsp;<label>Troškovi:</label>{trosak_checks}<button class="reset-btn" onclick="resetProfitFilters()">✕ Reset</button></div>
-<div class="filters hidden" id="filters-drv"><label>Sistem:</label><select id="fd-sistem" onchange="applyDrvFilters()"><option value="">Svi</option>{sistem_options}</select></div>
-<div class="filters hidden" id="filters-zalihe"><label>Sistem:</label><select id="fz-sistem" onchange="applyZaliheFilters()"><option value="">Svi</option>{sistem_options}</select></div>
-<div class="legend" id="leg"><b>NERD:</b><span class="lc" style="background:#90EE90">1390</span><span class="lc" style="background:#FFD1DC">1300</span><span class="lc" style="background:#FFB6C1">1290</span><span class="lc" style="background:#FF69B4;color:#fff">1190</span><span class="lc" style="background:#C71585;color:#fff">990</span>&nbsp;<b>HQD:</b><span class="lc" style="background:#90EE90">890</span><span class="lc" style="background:#FFD1DC">800</span><span class="lc" style="background:#FFB6C1">790</span><span class="lc" style="background:#FF69B4;color:#fff">730</span><span class="lc" style="background:#C71585;color:#fff">690</span></div>
-<div class="panel active" id="panel-prodaja"><div class="tw"><table><thead>{ph}</thead><tbody id="tbody-prodaja">{"".join(prodaja_rows)}</tbody></table></div></div>
-<div class="panel" id="panel-profit"><div class="tw"><table><thead>{prh}</thead><tbody id="tbody-profit">{"".join(profit_rows)}</tbody></table></div></div>
-<div class="panel" id="panel-drv"><div class="tw"><table><thead>{prh}</thead><tbody id="tbody-drv">{"".join(drv_rows)}</tbody></table></div></div>
-<div class="panel" id="panel-zalihe">
-<div class="mag-section"><h3>STANJE MAGACINA</h3><div style="font-size:10px;color:var(--t3);margin-bottom:12px">{mag_info}</div>{cards_html}{grupa_cards}<div class="tw" style="padding:0"><table><thead>{mh}</thead><tbody>{"".join(mag_rows)}</tbody></table></div></div>
-<div style="padding:16px 20px 8px;font-size:12px;font-weight:700;color:var(--t2)">ZALIHE PO SISTEMIMA</div>
-<div class="tw"><table><thead>{zsh}</thead><tbody id="tbody-zalihe">{"".join(zal_rows)}</tbody></table></div></div>
-<script>{JS_MESECNI}</script></body></html>'''
+        <div class="toolbar"><div class="tabs">
+          <div class="tab active" onclick="showTab('prodaja')">📊 PRODAJA</div>
+          <div class="tab" onclick="showTab('profit')">💰 PROFITABILNOST</div>
+          <div class="tab" onclick="showTab('drv')">DR VUKAŠIN</div>
+          <div class="tab" onclick="showTab('zalihe')">📦 ZALIHE</div>
+        </div></div>
+        <div class="filters" id="filters-prodaja"><label>Sistem:</label><select id="f-sistem" onchange="applyFilters()"><option value="">Svi</option>{sistem_options}</select><label>Grupa:</label><select id="f-grupa" onchange="applyFilters()"><option value="">Sve</option>{grupa_options}</select><button class="reset-btn" onclick="resetFilters()">✕ Reset</button></div>
+        <div class="filters hidden" id="filters-profit"><label>Sistem:</label><select id="fp-sistem" onchange="applyProfitFilters()"><option value="">Svi</option>{sistem_options}</select>&nbsp;<label>Troškovi:</label>{trosak_checks}<button class="reset-btn" onclick="resetProfitFilters()">✕ Reset</button></div>
+        <div class="filters hidden" id="filters-drv"><label>Sistem:</label><select id="fd-sistem" onchange="applyDrvFilters()"><option value="">Svi</option>{sistem_options}</select></div>
+        <div class="filters hidden" id="filters-zalihe"><label>Sistem:</label><select id="fz-sistem" onchange="applyZaliheFilters()"><option value="">Svi</option>{sistem_options}</select></div>
+        <div class="legend" id="leg"><b>NERD:</b><span class="lc" style="background:#90EE90">1390</span><span class="lc" style="background:#FFD1DC">1300</span><span class="lc" style="background:#FFB6C1">1290</span><span class="lc" style="background:#FF69B4;color:#fff">1190</span><span class="lc" style="background:#C71585;color:#fff">990</span>&nbsp;<b>HQD:</b><span class="lc" style="background:#90EE90">890</span><span class="lc" style="background:#FFD1DC">800</span><span class="lc" style="background:#FFB6C1">790</span><span class="lc" style="background:#FF69B4;color:#fff">730</span><span class="lc" style="background:#C71585;color:#fff">690</span></div>
+        <div class="panel active" id="panel-prodaja"><div class="tw"><table><thead>{ph}</thead><tbody id="tbody-prodaja">{"".join(prodaja_rows)}</tbody></table></div></div>
+        <div class="panel" id="panel-profit"><div class="tw"><table><thead>{prh}</thead><tbody id="tbody-profit">{"".join(profit_rows)}</tbody></table></div></div>
+        <div class="panel" id="panel-drv"><div class="tw"><table><thead>{prh}</thead><tbody id="tbody-drv">{"".join(drv_rows)}</tbody></table></div></div>
+        <div class="panel" id="panel-zalihe">
+        <div class="mag-section"><h3>STANJE MAGACINA</h3><div style="font-size:10px;color:var(--t3);margin-bottom:12px">{mag_info}</div>{cards_html}{grupa_cards}<div class="tw" style="padding:0"><table><thead>{mh}</thead><tbody>{"".join(mag_rows)}</tbody></table></div></div>
+        <div style="padding:16px 20px 8px;font-size:12px;font-weight:700;color:var(--t2)">ZALIHE PO SISTEMIMA</div>
+        <div class="tw"><table><thead>{zsh}</thead><tbody id="tbody-zalihe">{"".join(zal_rows)}</tbody></table></div></div>
+        <script>{JS_MESECNI}</script></body></html>'''
 
-        return html_out, None
+        return html_out
 
-    with st.spinner("⏳ Učitavam podatke sa GitHub-a..."):
-        html_content, error = build_mesecni_html()
 
-    if error:
-        st.error(error)
-        st.info("💡 **Uputstvo:** Dodaj fajlove `sistemi.xlsx` i `troskovi.xlsx` u `/data/` folder na GitHub-u, pa ažuriraj `GITHUB_RAW` URL u app.py da pokazuje na tvoj repozitorijum.")
+    with st.spinner("⏳ Učitavam podatke..."):
+        html_content = build_mesecni_html()
+
+    if html_content is None:
+        st.error("❌ Podaci nisu dostupni. Proveri da li su fajlovi postavljeni na GitHub.")
     else:
         components.html(html_content, height=900, scrolling=True)
 
-# ============================================================
-# FINANSIJSKI IZVESTAJ
-# ============================================================
 elif page == 'finansijski':
     render_header("Finansijski izveštaj · Dugovanja · Lager")
 
@@ -2536,10 +2521,9 @@ elif page == 'finansijski':
     def build_finansijski_html():
         import json as json_mod, numpy as np_f
 
-        buf_s = load_github_excel("sistemi.xlsx")
+        buf_s = load_github_excel("tabela sistemi3.xlsx")
         if buf_s is None:
-            return None, "❌ Ne mogu da učitam sistemi.xlsx sa GitHub-a."
-
+            return None
         cfg = load_github_config()
         ukljuci_poslednji = cfg.get("ukljuci_poslednji_mesec", False)
 
@@ -2951,12 +2935,12 @@ ReactDOM.createRoot(document.getElementById('root')).render(<Dashboard/>);
 </script>
 </body>
 </html>'''
-        return html_out, None
+        return html_out
 
-    with st.spinner("⏳ Učitavam podatke sa GitHub-a..."):
-        html_content, error = build_finansijski_html()
+    with st.spinner("⏳ Učitavam podatke..."):
+        html_content = build_finansijski_html()
 
-    if error:
-        st.error(error)
+    if html_content is None:
+        st.error("❌ Podaci nisu dostupni. Proveri da li je sistemi.xlsx postavljen na GitHub.")
     else:
         components.html(html_content, height=900, scrolling=True)
