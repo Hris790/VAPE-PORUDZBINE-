@@ -1206,12 +1206,6 @@ with st.sidebar:
     if st.button("📦  Profitabilnost objekata", use_container_width=True):
         st.session_state.page = 'porudzbine'
         st.rerun()
-    if st.button("📊  Mesečni izveštaj prodaje", use_container_width=True):
-        st.session_state.page = 'mesecni'
-        st.rerun()
-    if st.button("💰  Finansijski izveštaj", use_container_width=True):
-        st.session_state.page = 'finansijski'
-        st.rerun()
 
     st.markdown("---")
 
@@ -2576,13 +2570,6 @@ elif page == 'mesecni':
         html_out = f'''<!DOCTYPE html><html lang="sr"><head><meta charset="UTF-8">
         <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=Outfit:wght@300;400;600;700;800&display=swap" rel="stylesheet">
         <style>{CSS_MESECNI}</style></head><body>
-        <div style="background:#12002a;padding:6px 16px;display:flex;align-items:center;gap:12px;border-bottom:2px solid rgba(168,85,247,0.3)">
-          <a href="#" onclick="window.parent.postMessage('GOTO_HOME','*');return false;"
-             style="color:rgba(255,255,255,0.6);font-size:12px;text-decoration:none;padding:3px 10px;
-             border:1px solid rgba(168,85,247,0.3);border-radius:6px;background:rgba(168,85,247,0.1)">
-             ← Početna</a>
-          <span style="color:rgba(255,255,255,0.3);font-size:11px">VAPE Analitika · Mesečni izveštaj prodaje</span>
-        </div>
         <div class="hdr"><div><h1>&#128202; Mesečni izveštaj prodaje</h1><div class="sub">{info}</div></div>
           <div class="hb" style="display:flex;gap:8px;align-items:center">{badge_html}
     <button onclick="toggleAll(true)" style="background:rgba(168,85,247,0.1);color:#a855f7;border:1px solid rgba(168,85,247,0.2)">Otvori sve</button>
@@ -2616,6 +2603,34 @@ elif page == 'mesecni':
         st.query_params.clear()
         st.session_state.page = 'home'
         st.rerun()
+
+    # Stilizovano dugme za povratak
+    st.markdown("""<style>
+    div[data-testid="stButton"][id="back_btn_wrap"] > button,
+    button[kind="secondary"] { display:none; }
+    .back-home-btn button {
+        background: linear-gradient(135deg, #1e0040 0%, #12002a 100%) !important;
+        border: 2px solid rgba(168,85,247,0.6) !important;
+        color: white !important;
+        border-radius: 12px !important;
+        font-size: 16px !important;
+        font-weight: 700 !important;
+        padding: 12px 32px !important;
+        letter-spacing: 0.5px !important;
+        box-shadow: 0 4px 16px rgba(168,85,247,0.2) !important;
+        width: auto !important;
+    }
+    .back-home-btn button:hover {
+        border-color: #a855f7 !important;
+        background: rgba(168,85,247,0.15) !important;
+        box-shadow: 0 6px 20px rgba(168,85,247,0.35) !important;
+    }
+    </style>""", unsafe_allow_html=True)
+    st.markdown('<div class="back-home-btn">', unsafe_allow_html=True)
+    if st.button("← Početna", key="back_mesecni"):
+        st.session_state.page = 'home'
+        st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 
     with st.spinner("⏳ Učitavam podatke..."):
         html_content = build_mesecni_html()
@@ -2812,13 +2827,6 @@ table{width:100%;border-collapse:collapse}
 </style>
 </head>
 <body>
-<div style="background:#12002a;padding:6px 16px;display:flex;align-items:center;gap:12px;border-bottom:2px solid rgba(168,85,247,0.3)">
-  <a href="#" onclick="window.parent.postMessage('GOTO_HOME','*');return false;"
-     style="color:rgba(255,255,255,0.6);font-size:12px;text-decoration:none;padding:3px 10px;
-     border:1px solid rgba(168,85,247,0.3);border-radius:6px;background:rgba(168,85,247,0.1)">
-     ← Početna</a>
-  <span style="color:rgba(255,255,255,0.3);font-size:11px">VAPE Analitika · Finansijski izveštaj</span>
-</div>
 
 <div id="root"></div>
 <script type="text/babel">
@@ -3057,6 +3065,13 @@ ReactDOM.createRoot(document.getElementById('root')).render(<Dashboard/>);
 
     with st.spinner("⏳ Učitavam podatke..."):
         html_content = build_finansijski_html()
+
+    # Stilizovano dugme za povratak
+    st.markdown('<div class="back-home-btn">', unsafe_allow_html=True)
+    if st.button("← Početna", key="back_finansijski"):
+        st.session_state.page = 'home'
+        st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 
     if html_content is None:
         st.error("❌ Podaci nisu dostupni. Proveri da li je sistemi.xlsx postavljen na GitHub.")
