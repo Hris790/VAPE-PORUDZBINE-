@@ -985,15 +985,16 @@ if _pg not in ('home', 'porudzbine'):
     .main { padding: 0 !important; }
     .main .block-container {
         padding: 0 !important;
-        margin: -6rem -4rem 0 -4rem !important;
-        max-width: calc(100% + 8rem) !important;
-        width: calc(100% + 8rem) !important;
+        margin: -10rem -6rem 0 -6rem !important;
+        max-width: calc(100% + 12rem) !important;
+        width: calc(100% + 12rem) !important;
     }
     div[data-testid="stVerticalBlock"] { gap: 0 !important; }
     div[data-testid="stVerticalBlockBorderWrapper"] { padding: 0 !important; }
     .element-container { margin: 0 !important; padding: 0 !important; }
     iframe { display: block !important; border: none !important; width: 100% !important; }
     .stApp > div { padding: 0 !important; }
+    .stApp { overflow-x: hidden !important; }
     div[data-testid="stButton"] button {
         background: rgba(168,85,247,0.15) !important;
         color: rgba(255,255,255,0.8) !important;
