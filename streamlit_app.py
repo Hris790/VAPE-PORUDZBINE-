@@ -1914,44 +1914,31 @@ Ostaju samo objekti koji su u plusu.</p>
 
 else:
     # --- POČETNA STRANICA BEZ FAJLA (čista, bez kvadrata) ---
-    st.markdown("""
-    <div style="max-width: 680px; margin: 40px auto 0 auto; padding: 0 16px;">
-
-        <p style="font-size:11px; color:#9ca3af; font-weight:600; letter-spacing:1.5px;
-            text-transform:uppercase; margin-bottom:14px;">
-            AMAN d.o.o. · Analitički sistem
-        </p>
-
-        <h1 style="font-size:36px; font-weight:700; color:#1a0533; line-height:1.2;
-            margin-bottom:12px;">
-            Predikcija prodaje<br>
-            <span style="background:linear-gradient(135deg,#a855f7,#ec4899);
-                -webkit-background-clip:text; -webkit-text-fill-color:transparent;">
-                &amp; Porudžbine
-            </span>
-        </h1>
-
-        <p style="font-size:15px; color:#6b7280; margin-bottom:28px; line-height:1.6;">
-            Profitabilnost objekata · OOS analiza · Trendovi komitenata · Analiza akcije
-        </p>
-
-        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:36px;">
-            <span style="font-size:12px; background:rgba(168,85,247,0.10); color:#7c3aed;
-                border-radius:99px; padding:5px 14px; font-weight:600;">📦 Predikcija</span>
-            <span style="font-size:12px; background:rgba(236,72,153,0.09); color:#be185d;
-                border-radius:99px; padding:5px 14px; font-weight:600;">💰 Profitabilnost</span>
-            <span style="font-size:12px; background:rgba(239,68,68,0.09); color:#b91c1c;
-                border-radius:99px; padding:5px 14px; font-weight:600;">🔴 OOS analiza</span>
-            <span style="font-size:12px; background:rgba(16,185,129,0.09); color:#065f46;
-                border-radius:99px; padding:5px 14px; font-weight:600;">📈 Trendovi</span>
-        </div>
-
-        <div style="height:1px; background:linear-gradient(90deg,rgba(168,85,247,0.3),rgba(236,72,153,0.2),transparent);
-            margin-bottom:28px;"></div>
-
-        <p style="font-size:14px; color:#9ca3af; text-align:center; margin-top:8px;">
-            ← Učitaj Excel fajl u levom panelu da počneš analizu
-        </p>
-
-    </div>
-    """, unsafe_allow_html=True)
+    components.html("""<!DOCTYPE html><html><head>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
+</head><body style="margin:0;padding:0;background:transparent;font-family:'Poppins',sans-serif;">
+<div style="max-width:680px;margin:32px auto 0 auto;padding:0 16px;">
+  <p style="font-size:11px;color:#9ca3af;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:14px;">
+    AMAN d.o.o. &middot; Analiticki sistem
+  </p>
+  <h1 style="font-size:36px;font-weight:700;color:#1a0533;line-height:1.2;margin-bottom:12px;margin-top:0;">
+    Predikcija prodaje<br>
+    <span style="background:linear-gradient(135deg,#a855f7,#ec4899);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">
+      &amp; Porudzbine
+    </span>
+  </h1>
+  <p style="font-size:15px;color:#6b7280;margin-bottom:28px;line-height:1.6;">
+    Profitabilnost objekata &middot; OOS analiza &middot; Trendovi komitenata &middot; Analiza akcije
+  </p>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:36px;">
+    <span style="font-size:12px;background:rgba(168,85,247,0.10);color:#7c3aed;border-radius:99px;padding:5px 14px;font-weight:600;">Predikcija</span>
+    <span style="font-size:12px;background:rgba(236,72,153,0.09);color:#be185d;border-radius:99px;padding:5px 14px;font-weight:600;">Profitabilnost</span>
+    <span style="font-size:12px;background:rgba(239,68,68,0.09);color:#b91c1c;border-radius:99px;padding:5px 14px;font-weight:600;">OOS analiza</span>
+    <span style="font-size:12px;background:rgba(16,185,129,0.09);color:#065f46;border-radius:99px;padding:5px 14px;font-weight:600;">Trendovi</span>
+  </div>
+  <div style="height:1px;background:linear-gradient(90deg,rgba(168,85,247,0.3),rgba(236,72,153,0.2),transparent);margin-bottom:28px;"></div>
+  <p style="font-size:14px;color:#9ca3af;text-align:center;margin-top:8px;">
+    &#8592; Ucitaj Excel fajl u levom panelu da pocnes analizu
+  </p>
+</div>
+</body></html>""", height=340)
