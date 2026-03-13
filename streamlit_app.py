@@ -959,7 +959,25 @@ def create_excel(engine):
 
 DEFAULT_EXCLUDED = "1023, 1027, 1034, 1043, 1057, 1060, 1061, 1076, 1315, 1347, 1349, 1359"
 
-st.set_page_config(page_title="VAPE Analitika", page_icon="\U0001f4a8", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="VAPE Analitika", page_icon="\U0001f4a8", layout="wide", initial_sidebar_state="collapsed")
+
+# --- Sidebar: hidden on report pages ---
+_pg = st.session_state.get('page', 'home')
+if _pg not in ('home', 'porudzbine'):
+    st.markdown("""<style>
+    section[data-testid="stSidebar"] {
+        width: 0px !important;
+        min-width: 0px !important;
+        overflow: hidden !important;
+        visibility: hidden !important;
+    }
+    .main .block-container {
+        padding-left: 2rem !important;
+        padding-right: 2rem !important;
+        max-width: 100% !important;
+    }
+    </style>""", unsafe_allow_html=True)
+
 
 # =====================================================================
 # NOVI DIZAJN — samo boje i layout, nista matematicko se ne menja
