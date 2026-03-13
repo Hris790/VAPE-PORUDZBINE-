@@ -2600,7 +2600,7 @@ elif page == 'mesecni':
     # Listen for back navigation from iframe via query params
     nav_js = st.query_params.get("nav", "")
     if nav_js == "home":
-        st.query_params.clear()
+        del st.query_params["nav"]
         st.session_state.page = 'home'
         st.rerun()
 
@@ -3045,7 +3045,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(<Dashboard/>);
     # Listen for back navigation
     nav_js2 = st.query_params.get("nav", "")
     if nav_js2 == "home":
-        st.query_params.clear()
+        del st.query_params["nav"]
         st.session_state.page = 'home'
         st.rerun()
 
