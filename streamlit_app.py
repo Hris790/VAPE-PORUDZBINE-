@@ -1233,16 +1233,6 @@ if uploaded:
                 m5.markdown(f'<div class="metric-card"><div class="metric-value">{tl:,}</div><div class="metric-label">Lager danas</div></div>', unsafe_allow_html=True)
                 st.markdown("")
 
-                cols_show = ['ID KOMITENTA','id artikla','Naziv artikla','Grupa']
-                if engine.has_history: cols_show.append('Total_JanAvg')
-                cols_show += ['Predikcija','Prosek','Lager_danas','Porudzbina_1','Porudzbina_2']
-                show = result[cols_show].copy()
-                names = ['ID Kom.','ID Art.','Naziv','Grupa']
-                if engine.has_history: names.append('Jan-Avg')
-                names += ['Pred.','Prosek','Lager','P1','P2']
-                show.columns = names
-                st.dataframe(show, use_container_width=True, height=400)
-
                 st.markdown("<div style='margin:24px 0 4px 0;'></div>", unsafe_allow_html=True)
 
                 ml = engine.mesec_labels
