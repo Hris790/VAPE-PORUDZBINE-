@@ -1263,7 +1263,7 @@ if page == 'home':
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Poppins',sans-serif;background:transparent;padding:24px 16px}
 .label{font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:#9ca3af;margin-bottom:20px;text-align:center}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:18px;max-width:820px;margin:0 auto}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:18px;max-width:1100px;margin:0 auto}
 .card{background:white;border-radius:20px;padding:24px 20px 20px;border:2px solid transparent;
     box-shadow:0 4px 20px rgba(124,58,237,0.08);transition:all 0.22s;display:flex;flex-direction:column}
 .card:hover{border-color:#a855f7;transform:translateY(-3px);box-shadow:0 12px 32px rgba(168,85,247,0.15)}
@@ -1274,6 +1274,7 @@ body{font-family:'Poppins',sans-serif;background:transparent;padding:24px 16px}
 .tag-purple{background:rgba(168,85,247,0.15);color:#7c3aed;border:1px solid rgba(168,85,247,0.3)}
 .tag-pink{background:rgba(236,72,153,0.15);color:#be185d;border:1px solid rgba(236,72,153,0.3)}
 .tag-blue{background:rgba(59,130,246,0.12);color:#1d4ed8;border:1px solid rgba(59,130,246,0.25)}
+.tag-green{background:rgba(22,163,74,0.12);color:#15803d;border:1px solid rgba(22,163,74,0.3)}
 </style></head><body>
 <p class="label">AMAN d.o.o. · Odaberi izveštaj</p>
 <div class="grid">
@@ -1295,11 +1296,17 @@ body{font-family:'Poppins',sans-serif;background:transparent;padding:24px 16px}
     <div class="desc">Pregled po sistemima, dugovanja, lager vrednosti i PDF generisanje.</div>
     <span class="tag tag-blue">Automatski podaci</span>
   </div>
+  <div class="card">
+    <div class="icon">📄</div>
+    <div class="title">PDF Izveštaji</div>
+    <div class="desc">Izveštaji za sastanke po sistemu — mesečni pregled, bilans, lager i prodaja po grupama.</div>
+    <span class="tag tag-green">Automatski podaci</span>
+  </div>
 </div>
 </body></html>""", height=300)
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         if st.button("📦 Otvori izveštaj", use_container_width=True, key='btn_home_p'):
             st.session_state.page = 'porudzbine'; st.rerun()
@@ -1309,6 +1316,9 @@ body{font-family:'Poppins',sans-serif;background:transparent;padding:24px 16px}
     with col3:
         if st.button("💰 Otvori izveštaj", use_container_width=True, key='btn_home_f'):
             st.session_state.page = 'finansijski'; st.rerun()
+    with col4:
+        if st.button("📄 Otvori izveštaj", use_container_width=True, key='btn_home_pdf'):
+            st.session_state.page = 'pdf_izvestaji'; st.rerun()
 
 elif page == 'porudzbine':
     render_header("Predikcija prodaje · Profitabilnost · OOS analiza · Efekti akcije")
@@ -2157,7 +2167,8 @@ elif page == 'mesecni':
             return None
         if buf_t is None:
             return None
-        iskljuci_poslednji = False
+        cfg = load_github_config()
+        iskljuci_poslednji = not cfg.get("ukljuci_poslednji_mesec", False)
 
         df = pd.read_excel(buf_s, sheet_name='tabela')
         df.columns = df.columns.astype(str).str.strip()
@@ -2800,11 +2811,11 @@ elif page == 'finansijski':
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Finansijski Izvestaj VAPE</title>
-<script src="https://unpkg.com/react@18/umd/react.production.min.js"></''' + '''script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></''' + '''script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></''' + '''script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></''' + '''script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></''' + '''script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></''' + r'''script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></''' + r'''script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></''' + r'''script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></''' + r'''script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></''' + r'''script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet"/>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -2844,213 +2855,12 @@ const TC=({children,color})=><td style={{padding:'7px 12px',textAlign:'right',fo
 const Lbl=({children})=><span style={{fontSize:11,fontWeight:600,color:'#8a919e',textTransform:'uppercase',letterSpacing:'0.06em'}}>{children}</span>;
 const SecH=({children,extra})=><div style={{padding:'10px 16px',background:'rgba(168,85,247,0.08)',borderRadius:'8px 8px 0 0',border:'1px solid rgba(168,85,247,0.2)',borderBottom:'2px solid rgba(168,85,247,0.4)',display:'flex',justifyContent:'space-between',alignItems:'center'}}><span style={{fontSize:11,fontWeight:700,color:'#a855f7',textTransform:'uppercase',letterSpacing:'0.08em'}}>{children}</span>{extra}</div>;
 const DugCell=({v})=><td style={{padding:'7px 12px',textAlign:'right',fontWeight:700,fontSize:14,fontFamily:"'JetBrains Mono',monospace",color:v>0?'#ec4899':'#a855f7',background:v>0?'rgba(236,72,153,0.08)':'rgba(168,85,247,0.08)'}}>{fmt(v)}</td>;
-''' + '''
-function generateDebtPDF(sistem, dugF) {
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF('p', 'mm', 'a4');
-  const pw = 210, ph = 297, ml = 22, mr = 22, cw = pw - ml - mr;
-  const today = new Date();
-  const mesNaz = ['januar','februar','mart','april','maj','jun','jul','avgust','septembar','oktobar','novembar','decembar'];
-  const dateStr = today.getDate() + '. ' + mesNaz[today.getMonth()] + ' ' + today.getFullYear() + '.';
-  const navy = [75, 0, 130]; const teal = [168, 85, 247]; const dark = [33, 37, 41];
-  const mid = [108, 117, 125]; const light = [245, 240, 255]; const brd = [222, 210, 240];
-  doc.setFillColor(...teal); doc.rect(0, 0, 5, ph, 'F');
-  let y = 26;
-  doc.setFontSize(26);doc.setFont('helvetica','bold');doc.setTextColor(...navy);
-  doc.text('Finansijski pregled', ml, y); y += 10;
-  doc.setFontSize(14);doc.setFont('helvetica','normal');doc.setTextColor(...teal);
-  doc.text(sistem, ml, y);
-  doc.setFontSize(10);doc.setTextColor(...mid); doc.text(dateStr, pw - mr, 30, {align:'right'});
-  y += 8; doc.setDrawColor(...teal);doc.setLineWidth(0.6);doc.line(ml, y, ml+45, y); y += 16;
-  const lg = META.lager_grupe[sistem];
-  if (lg && lg.grupe && lg.grupe.length > 0) {
-    doc.setFontSize(12);doc.setFont('helvetica','bold');doc.setTextColor(...navy);
-    doc.text('PREGLED LAGERA', ml, y);
-    doc.setFontSize(9);doc.setFont('helvetica','normal');doc.setTextColor(...mid);
-    doc.text('Stanje: '+ML[lg.mesec]+' '+lg.godina+'.', ml+56, y); y += 8;
-    const tblData = lg.grupe.map(g=>[g.grupa,g.lager.toLocaleString('sr-Latn-RS'),fmtPdf2(g.vp_cena_pdv),fmtPdf(g.vrednost)+' RSD']);
-    const totL = lg.grupe.reduce((s,g)=>s+g.lager,0);
-    const totV = lg.grupe.reduce((s,g)=>s+g.vrednost,0);
-    doc.autoTable({startY:y,head:[['Grupa','Kolicina','VP cena (PDV)','Vrednost (PDV)']],body:tblData,foot:[['UKUPNO',totL.toLocaleString('sr-Latn-RS'),'',fmtPdf(totV)+' RSD']],theme:'plain',styles:{fontSize:10,cellPadding:{top:5,bottom:5,left:8,right:8},font:'helvetica',textColor:dark,lineWidth:0},headStyles:{fillColor:navy,textColor:[255,255,255],fontStyle:'bold',fontSize:9},footStyles:{fillColor:light,textColor:navy,fontStyle:'bold',fontSize:11},columnStyles:{0:{halign:'left',cellWidth:42},1:{halign:'right',cellWidth:28},2:{halign:'right',cellWidth:42},3:{halign:'right',cellWidth:52,fontStyle:'bold'}},margin:{left:ml,right:mr}});
-    y = doc.lastAutoTable.finalY + 22;
-    const vrLag = totV, zaUpl = dugF - vrLag;
-    doc.setFontSize(12);doc.setFont('helvetica','bold');doc.setTextColor(...navy);
-    doc.text('OBRACUN DUGA', ml, y); y += 10;
-    const rH=18,lx=ml+6,vx=ml+cw-6;
-    doc.setFillColor(...light);doc.rect(ml,y,cw,rH,'F');
-    doc.setFontSize(10);doc.setFont('helvetica','normal');doc.setTextColor(...mid);
-    doc.text('Dug po fakturi',lx,y+12);
-    doc.setFontSize(14);doc.setFont('helvetica','bold');doc.setTextColor(...dark);
-    doc.text(fmtPdf(dugF)+' RSD',vx,y+12,{align:'right'}); y+=rH+1;
-    doc.setFontSize(10);doc.setFont('helvetica','normal');doc.setTextColor(...mid);
-    doc.text('Vrednost lagera (sa PDV)',lx,y+12);
-    doc.setFontSize(14);doc.setFont('helvetica','bold');doc.setTextColor(...dark);
-    doc.text('- '+fmtPdf(vrLag)+' RSD',vx,y+12,{align:'right'}); y+=rH+3;
-    doc.setFillColor(...navy);doc.roundedRect(ml,y,cw,26,2,2,'F');
-    doc.setFontSize(11);doc.setFont('helvetica','bold');doc.setTextColor(200,180,240);
-    doc.text('ZA UPLATU',lx,y+16);
-    doc.setFontSize(18);doc.setFont('helvetica','bold');doc.setTextColor(255,255,255);
-    doc.text((zaUpl>0?fmtPdf(zaUpl):'0')+' RSD',vx,y+17,{align:'right'});
-  }
-  doc.save('VREDNOST_DUGA_'+sistem.replace(/\\s+/g,'_')+'.pdf');
-}
-function calcDug(sistem){
-  const allRows=DATA.filter(r=>r.sistem===sistem);
-  const pocSt=RAW.data.filter(r=>r.sistem===sistem&&r.mesec===0).reduce((a,r)=>a+r.poc_stanje,0);
-  const vProm=allRows.reduce((a,r)=>a+r.v_promet,0)*1.2;
-  const pov=allRows.reduce((a,r)=>a+r.pov_total,0);
-  const tros=allRows.reduce((a,r)=>a+r.knjizno,0)*1.2+allRows.reduce((a,r)=>a+(r.fakturisano||0),0);
-  const upl=allRows.reduce((a,r)=>a+r.uplata,0);
-  const uplN=allRows.reduce((a,r)=>a+r.uplata_ka_njima,0);
-  const dugF=(pocSt+vProm)-(pov+tros+upl+uplN);
-  const np=META.nacin_placanja[sistem]||0;
-  let dugO=null;
-  if(np===0){let lVP=0;for(let i=allRows.length-1;i>=0;i--)if(allRows[i].v_lager_vp!==0){lVP=allRows[i].v_lager_vp;break};dugO=dugF-lVP*1.2}
-  return {dugF,dugO,np};
-}
-function aggBySistemMulti(rows,lastRows){const m={};const mSets={};rows.forEach(r=>{if(!m[r.sistem]){m[r.sistem]={sistem:r.sistem,v_promet:0,v_kupac:0,marketing:0,knjizno:0,dodatni_trosak:0,total_trosak:0,profit_prodaja:0,profit_promet:0,v_lager_vp:0,v_lager_nc:0,q_promet:0,q_kupac:0,q_lager:0,pov_stari:0,pov_novi:0,njihova_zarada_1:0,nj_zarada_calc:0,nM:0};mSets[r.sistem]=new Set()}const s=m[r.sistem];s.v_promet+=r.v_promet;s.v_kupac+=r.v_kupac;s.marketing+=r.marketing;s.knjizno+=r.knjizno;s.dodatni_trosak+=(r.dodatni_trosak||0);s.total_trosak+=r.total_trosak;s.profit_prodaja+=r.profit_prodaja;s.profit_promet+=r.profit_promet;s.q_promet+=r.q_promet;s.q_kupac+=r.q_kupac;s.pov_stari+=r.pov_stari;s.pov_novi+=r.pov_novi;s.njihova_zarada_1+=(r.njihova_zarada_1||0);mSets[r.sistem].add(r.godina*100+r.mesec)});Object.keys(m).forEach(s=>{m[s].nM=mSets[s].size});Object.keys(m).forEach(s=>{const sr=rows.filter(r=>r.sistem===s).sort((a,b)=>(a.godina*100+a.mesec)-(b.godina*100+b.mesec));m[s].nj_zarada_calc=calcNjZaradaTotal(sr)});lastRows.forEach(r=>{if(m[r.sistem]){m[r.sistem].v_lager_vp=r.v_lager_vp;m[r.sistem].v_lager_nc=r.v_lager_nc;m[r.sistem].q_lager=r.q_lager}});return Object.values(m).sort((a,b)=>a.sistem.localeCompare(b.sistem))}
-function TotalPregled(){
-  const allYears=META.godine.filter(y=>y>0);
-  const [selYears,setSelYears]=useState(allYears.map(String));
-  const [mOd,setMOd]=useState('1');const [mDo,setMDo]=useState('12');
-  const mo=Number(mOd),md=Number(mDo);
-  const toggleYear=y=>{const ys=String(y);setSelYears(prev=>prev.includes(ys)?prev.filter(x=>x!==ys):[...prev,ys])};
-  const filt=useMemo(()=>{const ySet=new Set(selYears.map(Number));return DATA.filter(r=>ySet.has(r.godina)&&r.mesec>=mo&&r.mesec<=md)},[selYears,mo,md]);
-  const lastRows=useMemo(()=>{if(!filt.length)return[];let mx=0;filt.forEach(r=>{const ym=r.godina*100+r.mesec;if(ym>mx)mx=ym});return DATA.filter(r=>r.godina===Math.floor(mx/100)&&r.mesec===mx%100)},[filt]);
-  const agg=useMemo(()=>aggBySistemMulti(filt,lastRows),[filt,lastRows]);
-  const tot=useMemo(()=>{const t={v_promet:0,v_kupac:0,marketing:0,knjizno:0,dodatni_trosak:0,total_trosak:0,profit_prodaja:0,profit_promet:0,v_lager_vp:0,v_lager_nc:0,pov_stari:0,pov_novi:0,njihova_zarada_1:0};agg.forEach(r=>Object.keys(t).forEach(k=>t[k]+=r[k]));return t},[agg]);
-  const mOpts=Array.from({length:12},(_,i)=>({v:String(i+1),l:ML[i+1]}));
-  return(<div style={{padding:'20px'}}>
-    <div style={{display:'flex',gap:16,alignItems:'flex-end',marginBottom:20,flexWrap:'wrap'}}>
-      <div style={{display:'flex',flexDirection:'column',gap:4}}><Lbl>Godine</Lbl><div className="ychk">{allYears.map(y=><label key={y}><input type="checkbox" checked={selYears.includes(String(y))} onChange={()=>toggleYear(y)}/>{y}</label>)}</div></div>
-      <div style={{display:'flex',flexDirection:'column',gap:4}}><Lbl>Od meseca</Lbl><select value={mOd} onChange={e=>setMOd(e.target.value)} style={{width:130}}>{mOpts.map(o=><option key={o.v} value={o.v}>{o.l}</option>)}</select></div>
-      <div style={{display:'flex',flexDirection:'column',gap:4}}><Lbl>Do meseca</Lbl><select value={mDo} onChange={e=>setMDo(e.target.value)} style={{width:130}}>{mOpts.map(o=><option key={o.v} value={o.v}>{o.l}</option>)}</select></div>
-    </div>
-    <div style={{overflowX:'auto',borderRadius:8,border:'1px solid rgba(168,85,247,0.2)'}}>
-      <table style={{minWidth:1400}}>
-        <thead>
-          <tr><TG colSpan={2}>&nbsp;</TG><TG colSpan={2}>Promet (bez PDV)</TG><TG colSpan={HAS_DOD?4:3}>Trosak (bez PDV)</TG><TG colSpan={2}>Profit</TG><TG colSpan={2}>Vrednost Lagera</TG><TG colSpan={1}>Obrt</TG><TG colSpan={2}>Povrat</TG><TG colSpan={1}>Zarada</TG></tr>
-          <tr><TH>Sistem</TH><TH>Placanje</TH><TH>Ka sistemu</TH><TH>Ka kupcu</TH><TH>Marketing</TH><TH>Knjizno</TH>{HAS_DOD&&<TH>Dodatni</TH>}<TH>Total</TH><TH>Po prodaji</TH><TH>Po prometu</TH><TH>VP cena</TH><TH>NC cena</TH><TH>Obrt lagera</TH><TH>Pov. starih</TH><TH>Pov. novih</TH><TH>Njihova</TH></tr>
-        </thead>
-        <tbody>
-          {agg.map(r=>{const avgV=r.nM>0?r.v_kupac/r.nM:0;const obrt=avgV>0?r.v_lager_vp/avgV:0;const np=META.nacin_placanja[r.sistem];return(
-            <tr key={r.sistem} onMouseEnter={e=>e.currentTarget.style.background='rgba(168,85,247,0.05)'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
-              <TDL>{r.sistem}</TDL>
-              <TD style={{textAlign:'center',fontSize:11,color:np===1?'#a855f7':'#ec4899'}}>{np===1?'Faktura':'Odjava'}</TD>
-              <TD>{fmt(r.v_promet)}</TD><TD>{fmt(r.v_kupac)}</TD><TD>{fmt(r.marketing)}</TD><TD>{fmt(r.knjizno)}</TD>{HAS_DOD&&<TD>{fmt(r.dodatni_trosak)}</TD>}<TD>{fmt(r.total_trosak)}</TD><TD neg>{fmt(r.profit_prodaja)}</TD><TD neg>{fmt(r.profit_promet)}</TD><TD>{fmt(r.v_lager_vp)}</TD><TD>{fmt(r.v_lager_nc)}</TD><TD>{fmtD(obrt)}</TD><TD>{fmt(r.pov_stari/1.2)}</TD><TD>{fmt(r.pov_novi/1.2)}</TD><TD>{fmt(r.nj_zarada_calc)}</TD>
-            </tr>)})}
-          <tr style={{background:'rgba(168,85,247,0.08)'}}>
-            <td style={{padding:'9px 12px',fontWeight:700,color:'#a855f7',fontSize:13,position:'sticky',left:0,background:'rgba(168,85,247,0.08)',zIndex:1}}>GRAND TOTAL</td><td></td>
-            {[tot.v_promet,tot.v_kupac,tot.marketing,tot.knjizno].map((v,i)=><TC key={i}>{fmt(v)}</TC>)}
-            {HAS_DOD&&<TC>{fmt(tot.dodatni_trosak)}</TC>}
-            <TC>{fmt(tot.total_trosak)}</TC>
-            <TC color={tot.profit_prodaja>=0?'#a855f7':'#ec4899'}>{fmt(tot.profit_prodaja)}</TC>
-            <TC color={tot.profit_promet>=0?'#a855f7':'#ec4899'}>{fmt(tot.profit_promet)}</TC>
-            {[tot.v_lager_vp,tot.v_lager_nc].map((v,i)=><TC key={i}>{fmt(v)}</TC>)}
-            <td style={{textAlign:'center',color:'#475569',fontSize:11}}>-</td>
-            <TC>{fmt(tot.pov_stari/1.2)}</TC><TC>{fmt(tot.pov_novi/1.2)}</TC>
-            <TC>{fmt(agg.reduce((s,r)=>s+r.nj_zarada_calc,0))}</TC>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    {(()=>{const dugovi=META.sistemi.map(s=>{const d=calcDug(s);return{sistem:s,...d}});return(
-      <div style={{marginTop:24}}>
-        <SecH>Dugovanja po sistemima</SecH>
-        <div style={{overflowX:'auto',border:'1px solid rgba(168,85,247,0.2)',borderTop:'none',borderRadius:'0 0 8px 8px'}}>
-          <table><thead><tr><TH>Sistem</TH><TH>Placanje</TH><TH style={{color:'#ec4899'}}>Dug (Faktura)</TH><TH style={{color:'#ec4899'}}>Dug (Odjava)</TH><TH>PDF</TH></tr></thead>
-          <tbody>{dugovi.map(d=><tr key={d.sistem} onMouseEnter={e=>e.currentTarget.style.background='rgba(168,85,247,0.05)'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
-            <TDL>{d.sistem}</TDL>
-            <TD style={{textAlign:'center',fontSize:11,color:d.np===1?'#a855f7':'#ec4899'}}>{d.np===1?'Faktura':'Odjava'}</TD>
-            <DugCell v={d.dugF}/>
-            {d.dugO!==null?<DugCell v={d.dugO}/>:<TD style={{textAlign:'center',color:'#475569',fontSize:11}}>-</TD>}
-            <td style={{padding:'7px 12px',borderBottom:'1px solid rgba(168,85,247,0.08)',textAlign:'center'}}>
-              {d.np===0&&<button onClick={()=>generateDebtPDF(d.sistem,d.dugF)} style={{padding:'5px 14px',background:'rgba(168,85,247,0.1)',color:'#a855f7',border:'1px solid rgba(168,85,247,0.3)',borderRadius:6,fontSize:11,fontWeight:600,cursor:'pointer',fontFamily:'inherit'}} onMouseEnter={e=>{e.target.style.background='#a855f7';e.target.style.color='#fff'}} onMouseLeave={e=>{e.target.style.background='rgba(168,85,247,0.1)';e.target.style.color='#a855f7'}}>PDF Duga</button>}
-            </td>
-          </tr>)}</tbody></table>
-        </div>
-      </div>)})()}
-  </div>);
-}
-function PregledPoSistemu(){
-  const allYears=META.godine.filter(y=>y>0);
-  const [sistem,setSistem]=useState(META.sistemi[0]);
-  const [selYears2,setSelYears2]=useState(allYears.map(String));
-  const toggleYear2=y=>{const ys=String(y);const idx=allYears.indexOf(y);setSelYears2(prev=>{if(prev.includes(ys)){return allYears.filter((_,i)=>i<idx).map(String).filter(x=>prev.includes(x))}else{const need=allYears.slice(0,idx+1).map(String);return[...new Set([...prev,...need])]}})};
-  const ySet2=useMemo(()=>new Set(selYears2.map(Number)),[selYears2]);
-  const monthly=useMemo(()=>DATA.filter(r=>r.sistem===sistem&&ySet2.has(r.godina)).sort((a,b)=>(a.godina*100+a.mesec)-(b.godina*100+b.mesec)),[sistem,ySet2]);
-  const pocS=useMemo(()=>RAW.data.filter(r=>r.sistem===sistem&&r.mesec===0).reduce((s,r)=>s+r.poc_stanje,0),[sistem]);
-  const tS=k=>monthly.reduce((s,r)=>s+(r[k]||0),0);
-  const lNZ=k=>{for(let i=monthly.length-1;i>=0;i--)if(monthly[i][k]!==0)return monthly[i][k];return 0};
-  const dug=useMemo(()=>{
-    const vProm=monthly.reduce((a,r)=>a+r.v_promet,0)*1.2;
-    const pov=monthly.reduce((a,r)=>a+r.pov_total,0);
-    const tros=monthly.reduce((a,r)=>a+r.knjizno,0)*1.2+monthly.reduce((a,r)=>a+(r.fakturisano||0),0);
-    const upl=monthly.reduce((a,r)=>a+r.uplata,0);
-    const uplN=monthly.reduce((a,r)=>a+r.uplata_ka_njima,0);
-    const dugF=(pocS+vProm)-(pov+tros+upl+uplN);
-    const np=META.nacin_placanja[sistem]||0;
-    let dugO=null;
-    if(np===0){let lVP=0;for(let i=monthly.length-1;i>=0;i--)if(monthly[i].v_lager_vp!==0){lVP=monthly[i].v_lager_vp;break};dugO=dugF-lVP*1.2}
-    return{dugF,dugO,np};
-  },[monthly,pocS,sistem]);
-  const isO=dug.np===0;
-  return(<div style={{padding:'20px'}}>
-    <div style={{display:'flex',gap:16,alignItems:'flex-end',marginBottom:20,flexWrap:'wrap'}}>
-      <div style={{display:'flex',flexDirection:'column',gap:4}}><Lbl>Sistem</Lbl><select value={sistem} onChange={e=>setSistem(e.target.value)} style={{width:180}}>{META.sistemi.map(s=><option key={s} value={s}>{s}</option>)}</select></div>
-      <div style={{display:'flex',flexDirection:'column',gap:4}}><Lbl>Godine</Lbl><div className="ychk">{allYears.map(y=><label key={y}><input type="checkbox" checked={selYears2.includes(String(y))} onChange={()=>toggleYear2(y)}/>{y}</label>)}</div></div>
-    </div>
-    <div style={{overflowX:'auto',borderRadius:8,border:'1px solid rgba(168,85,247,0.2)',marginBottom:24}}>
-      <table style={{minWidth:1200}}>
-        <thead>
-          <tr><TG colSpan={2}>&nbsp;</TG><TG colSpan={2}>Promet (bez PDV)</TG><TG colSpan={HAS_DOD?4:3}>Trosak (bez PDV)</TG><TG colSpan={2}>Profit</TG><TG colSpan={2}>Vrednost Lagera</TG><TG colSpan={2}>Povrat</TG><TG colSpan={1}>Zarada</TG></tr>
-          <tr><TH>Mesec</TH><TH>Godina</TH><TH>Ka sistemu</TH><TH>Ka kupcu</TH><TH>Marketing</TH><TH>Knjizno</TH>{HAS_DOD&&<TH>Dodatni</TH>}<TH>Total</TH><TH>Po prodaji</TH><TH>Po prometu</TH><TH>VP cena</TH><TH>NC cena</TH><TH>Pov. starih</TH><TH>Pov. novih</TH><TH>Njihova</TH></tr>
-        </thead>
-        <tbody>
-          {monthly.map((r,i)=><tr key={r.godina+'-'+r.mesec} onMouseEnter={e=>e.currentTarget.style.background='rgba(168,85,247,0.05)'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
-            <TDL>{ML[r.mesec]||r.mesec}</TDL><TD style={{color:'#8a919e',textAlign:'center',fontSize:12}}>{r.godina}</TD>
-            <TD>{fmt(r.v_promet)}</TD><TD>{fmt(r.v_kupac)}</TD><TD>{fmt(r.marketing)}</TD><TD>{fmt(r.knjizno)}</TD>{HAS_DOD&&<TD>{fmt(r.dodatni_trosak||0)}</TD>}<TD>{fmt(r.total_trosak)}</TD><TD neg>{fmt(r.profit_prodaja)}</TD><TD neg>{fmt(r.profit_promet)}</TD><TD>{fmt(r.v_lager_vp)}</TD><TD>{fmt(r.v_lager_nc)}</TD><TD>{fmt(r.pov_stari/1.2)}</TD><TD>{fmt(r.pov_novi/1.2)}</TD><TD>{fmt(calcNjZarada(monthly,i))}</TD>
-          </tr>)}
-          <tr style={{background:'rgba(168,85,247,0.08)'}}>
-            <td colSpan={2} style={{padding:'9px 12px',fontWeight:700,color:'#a855f7',fontSize:13,position:'sticky',left:0,background:'rgba(168,85,247,0.08)'}}>UKUPNO</td>
-            {['v_promet','v_kupac','marketing','knjizno'].map(k=><TC key={k}>{fmt(tS(k))}</TC>)}
-            {HAS_DOD&&<TC>{fmt(tS('dodatni_trosak'))}</TC>}
-            <TC>{fmt(tS('total_trosak'))}</TC>
-            {['profit_prodaja','profit_promet'].map(k=>{const v=tS(k);return<TC key={k} color={v>=0?'#a855f7':'#ec4899'}>{fmt(v)}</TC>})}
-            {['v_lager_vp','v_lager_nc'].map(k=><TC key={k}>{fmt(lNZ(k))}</TC>)}
-            {['pov_stari','pov_novi'].map(k=><TC key={k}>{fmt(tS(k)/1.2)}</TC>)}
-            <TC>{fmt(calcNjZaradaTotal(monthly))}</TC>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    <div style={{marginBottom:24}}>
-      <SecH extra={isO&&<button onClick={()=>generateDebtPDF(sistem,dug.dugF)} style={{padding:'6px 18px',background:'rgba(168,85,247,0.1)',color:'#a855f7',border:'1px solid rgba(168,85,247,0.3)',borderRadius:6,fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:'inherit'}} onMouseEnter={e=>{e.target.style.background='#a855f7';e.target.style.color='#fff'}} onMouseLeave={e=>{e.target.style.background='rgba(168,85,247,0.1)';e.target.style.color='#a855f7'}}>&#128196; Generisi PDF duga</button>}>Finansijski Bilans (sa PDV)</SecH>
-      <div style={{overflowX:'auto',border:'1px solid rgba(168,85,247,0.2)',borderTop:'none',borderRadius:'0 0 8px 8px'}}>
-        <table style={{minWidth:900}}><thead><tr>
-          <TH>Poc. stanje</TH><TH>Promet+PDV</TH><TH style={{color:'#a855f7'}}>ZADUZENJE</TH><TH>Povrat(PDV)</TH><TH>Trosak+PDV</TH><TH style={{color:'#a855f7'}}>SA UMANJENJEM</TH><TH>Uplata</TH><TH>Uplata ka njima</TH><TH style={{color:'#ec4899'}}>Dug (Faktura)</TH>
-          {dug.dugO!==null&&<React.Fragment><TH>Lager VP(PDV)</TH><TH style={{color:'#ec4899'}}>Dug (Odjava)</TH></React.Fragment>}
-        </tr></thead>
-        <tbody><tr>
-          <TD>{fmt(pocS)}</TD><TD>{fmt(tS('v_promet')*1.2)}</TD><TD style={{color:'#a855f7',fontWeight:700}}>{fmt(pocS+tS('v_promet')*1.2)}</TD><TD>{fmt(tS('pov_total'))}</TD><TD>{fmt(tS('knjizno')*1.2+tS('fakturisano'))}</TD><TD style={{color:'#a855f7',fontWeight:700}}>{fmt(pocS+tS('v_promet')*1.2-tS('pov_total')-(tS('knjizno')*1.2+tS('fakturisano')))}</TD><TD>{fmt(tS('uplata'))}</TD><TD>{fmt(tS('uplata_ka_njima'))}</TD><DugCell v={dug.dugF}/>
-          {dug.dugO!==null&&<React.Fragment><TD>{fmt(lNZ('v_lager_vp')*1.2)}</TD><DugCell v={dug.dugF-lNZ('v_lager_vp')*1.2}/></React.Fragment>}
-        </tr></tbody></table>
-      </div>
-    </div>
-  </div>);
-}
-function Dashboard(){
-  const [tab,setTab]=useState('total');
-  return(<div style={{minHeight:'100vh',background:'#12002a',color:'#c9d1d9',fontFamily:"'DM Sans',-apple-system,sans-serif"}}>
-    <div style={{width:'100%',padding:'20px 28px',boxSizing:'border-box'}}>
-      <div style={{display:'flex',borderBottom:'1px solid rgba(168,85,247,0.2)',marginBottom:20}}>
-        <TabBtn active={tab==='total'} onClick={()=>setTab('total')}>Total Pregled</TabBtn>
-        <TabBtn active={tab==='sistem'} onClick={()=>setTab('sistem')}>Pregled po Sistemu</TabBtn>
-      </div>
-      {tab==='total'?<TotalPregled/>:<PregledPoSistemu/>}
-    </div>
-  </div>);
-}
+function generateDebtPDF(sistem,dugF){const{jsPDF}=window.jspdf;const doc=new jsPDF('p','mm','a4');const pw=210,ph=297,ml=22,mr=22,cw=pw-ml-mr;const today=new Date();const mesNaz=['januar','februar','mart','april','maj','jun','jul','avgust','septembar','oktobar','novembar','decembar'];const dateStr=today.getDate()+'. '+mesNaz[today.getMonth()]+' '+today.getFullYear()+'.';const navy=[75,0,130];const teal=[168,85,247];const dark=[33,37,41];const mid=[108,117,125];const light=[245,240,255];const brd=[222,210,240];doc.setFillColor(...teal);doc.rect(0,0,5,ph,'F');let y=26;doc.setFontSize(26);doc.setFont('helvetica','bold');doc.setTextColor(...navy);doc.text('Finansijski pregled',ml,y);y+=10;doc.setFontSize(14);doc.setFont('helvetica','normal');doc.setTextColor(...teal);doc.text(sistem,ml,y);doc.setFontSize(10);doc.setTextColor(...mid);doc.text(dateStr,pw-mr,30,{align:'right'});y+=8;doc.setDrawColor(...teal);doc.setLineWidth(0.6);doc.line(ml,y,ml+45,y);y+=16;const lg=META.lager_grupe[sistem];if(lg&&lg.grupe&&lg.grupe.length>0){doc.setFontSize(12);doc.setFont('helvetica','bold');doc.setTextColor(...navy);doc.text('PREGLED LAGERA',ml,y);doc.setFontSize(9);doc.setFont('helvetica','normal');doc.setTextColor(...mid);doc.text('Stanje: '+ML[lg.mesec]+' '+lg.godina+'.',ml+56,y);y+=8;const tblData=lg.grupe.map(g=>[g.grupa,g.lager.toLocaleString('sr-Latn-RS'),fmtPdf2(g.vp_cena_pdv),fmtPdf(g.vrednost)+' RSD']);const totL=lg.grupe.reduce((s,g)=>s+g.lager,0);const totV=lg.grupe.reduce((s,g)=>s+g.vrednost,0);doc.autoTable({startY:y,head:[['Grupa','Kolicina','VP cena (PDV)','Vrednost (PDV)']],body:tblData,foot:[['UKUPNO',totL.toLocaleString('sr-Latn-RS'),'',fmtPdf(totV)+' RSD']],theme:'plain',styles:{fontSize:10,cellPadding:{top:5,bottom:5,left:8,right:8},font:'helvetica',textColor:dark,lineWidth:0},headStyles:{fillColor:navy,textColor:[255,255,255],fontStyle:'bold',fontSize:9},footStyles:{fillColor:light,textColor:navy,fontStyle:'bold',fontSize:11},columnStyles:{0:{halign:'left',cellWidth:42},1:{halign:'right',cellWidth:28},2:{halign:'right',cellWidth:42},3:{halign:'right',cellWidth:52,fontStyle:'bold'}},margin:{left:ml,right:mr}});y=doc.lastAutoTable.finalY+22;const vrLag=totV,zaUpl=dugF-vrLag;doc.setFontSize(12);doc.setFont('helvetica','bold');doc.setTextColor(...navy);doc.text('OBRACUN DUGA',ml,y);y+=10;const rH=18,lx=ml+6,vx=ml+cw-6;doc.setFillColor(...light);doc.rect(ml,y,cw,rH,'F');doc.setFontSize(10);doc.setFont('helvetica','normal');doc.setTextColor(...mid);doc.text('Dug po fakturi',lx,y+12);doc.setFontSize(14);doc.setFont('helvetica','bold');doc.setTextColor(...dark);doc.text(fmtPdf(dugF)+' RSD',vx,y+12,{align:'right'});y+=rH+1;doc.setFontSize(10);doc.setFont('helvetica','normal');doc.setTextColor(...mid);doc.text('Vrednost lagera (sa PDV)',lx,y+12);doc.setFontSize(14);doc.setFont('helvetica','bold');doc.setTextColor(...dark);doc.text('- '+fmtPdf(vrLag)+' RSD',vx,y+12,{align:'right'});y+=rH+3;doc.setFillColor(...navy);doc.roundedRect(ml,y,cw,26,2,2,'F');doc.setFontSize(11);doc.setFont('helvetica','bold');doc.setTextColor(200,180,240);doc.text('ZA UPLATU',lx,y+16);doc.setFontSize(18);doc.setFont('helvetica','bold');doc.setTextColor(255,255,255);doc.text((zaUpl>0?fmtPdf(zaUpl):'0')+' RSD',vx,y+17,{align:'right'});}doc.save('VREDNOST_DUGA_'+sistem.replace(/\\s+/g,'_')+'.pdf');}
+function calcDug(sistem){const allRows=DATA.filter(r=>r.sistem===sistem);const pocSt=RAW.data.filter(r=>r.sistem===sistem&&r.mesec===0).reduce((a,r)=>a+r.poc_stanje,0);const vProm=allRows.reduce((a,r)=>a+r.v_promet,0)*1.2;const pov=allRows.reduce((a,r)=>a+r.pov_total,0);const tros=allRows.reduce((a,r)=>a+r.knjizno,0)*1.2+allRows.reduce((a,r)=>a+(r.fakturisano||0),0);const upl=allRows.reduce((a,r)=>a+r.uplata,0);const uplN=allRows.reduce((a,r)=>a+r.uplata_ka_njima,0);const dugF=(pocSt+vProm)-(pov+tros+upl+uplN);const np=META.nacin_placanja[sistem]||0;let dugO=null;if(np===0){let lVP=0;for(let i=allRows.length-1;i>=0;i--)if(allRows[i].v_lager_vp!==0){lVP=allRows[i].v_lager_vp;break};dugO=dugF-lVP*1.2}return{dugF,dugO,np};}
+function aggBySistemMulti(rows,lastRows){const m={};const mSets={};rows.forEach(r=>{if(!m[r.sistem]){m[r.sistem]={sistem:r.sistem,v_promet:0,v_kupac:0,marketing:0,knjizno:0,dodatni_trosak:0,total_trosak:0,profit_prodaja:0,profit_promet:0,v_lager_vp:0,v_lager_nc:0,q_promet:0,q_kupac:0,q_lager:0,pov_stari:0,pov_novi:0,njihova_zarada_1:0,nj_zarada_calc:0,nM:0};mSets[r.sistem]=new Set()}const s=m[r.sistem];s.v_promet+=r.v_promet;s.v_kupac+=r.v_kupac;s.marketing+=r.marketing;s.knjizno+=r.knjizno;s.dodatni_trosak+=(r.dodatni_trosak||0);s.total_trosak+=r.total_trosak;s.profit_prodaja+=r.profit_prodaja;s.profit_promet+=r.profit_promet;s.q_promet+=r.q_promet;s.q_kupac+=r.q_kupac;s.pov_stari+=r.pov_stari;s.pov_novi+=r.pov_novi;s.njihova_zarada_1+=(r.njihova_zarada_1||0);mSets[r.sistem].add(r.godina*100+r.mesec)});Object.keys(m).forEach(s=>{m[s].nM=mSets[s].size});Object.keys(m).forEach(s=>{const sr=rows.filter(r=>r.sistem===s).sort((a,b)=>(a.godina*100+a.mesec)-(b.godina*100+b.mesec));m[s].nj_zarada_calc=calcNjZaradaTotal(sr)});lastRows.forEach(r=>{if(m[r.sistem]){m[r.sistem].v_lager_vp=r.v_lager_vp;m[r.sistem].v_lager_nc=r.v_lager_nc;m[r.sistem].q_lager=r.q_lager}});return Object.values(m).sort((a,b)=>a.sistem.localeCompare(b.sistem));}
+function TotalPregled(){const allYears=META.godine.filter(y=>y>0);const[selYears,setSelYears]=useState(allYears.map(String));const[mOd,setMOd]=useState('1');const[mDo,setMDo]=useState('12');const mo=Number(mOd),md=Number(mDo);const toggleYear=y=>{const ys=String(y);setSelYears(prev=>prev.includes(ys)?prev.filter(x=>x!==ys):[...prev,ys])};const filt=useMemo(()=>{const ySet=new Set(selYears.map(Number));return DATA.filter(r=>ySet.has(r.godina)&&r.mesec>=mo&&r.mesec<=md)},[selYears,mo,md]);const lastRows=useMemo(()=>{if(!filt.length)return[];let mx=0;filt.forEach(r=>{const ym=r.godina*100+r.mesec;if(ym>mx)mx=ym});return DATA.filter(r=>r.godina===Math.floor(mx/100)&&r.mesec===mx%100)},[filt]);const agg=useMemo(()=>aggBySistemMulti(filt,lastRows),[filt,lastRows]);const tot=useMemo(()=>{const t={v_promet:0,v_kupac:0,marketing:0,knjizno:0,dodatni_trosak:0,total_trosak:0,profit_prodaja:0,profit_promet:0,v_lager_vp:0,v_lager_nc:0,pov_stari:0,pov_novi:0,njihova_zarada_1:0};agg.forEach(r=>Object.keys(t).forEach(k=>t[k]+=r[k]));return t},[agg]);const mOpts=Array.from({length:12},(_,i)=>({v:String(i+1),l:ML[i+1]}));return(<div style={{padding:'20px'}}><div style={{display:'flex',gap:16,alignItems:'flex-end',marginBottom:20,flexWrap:'wrap'}}><div style={{display:'flex',flexDirection:'column',gap:4}}><Lbl>Godine</Lbl><div className="ychk">{allYears.map(y=><label key={y}><input type="checkbox" checked={selYears.includes(String(y))} onChange={()=>toggleYear(y)}/>{y}</label>)}</div></div><div style={{display:'flex',flexDirection:'column',gap:4}}><Lbl>Od meseca</Lbl><select value={mOd} onChange={e=>setMOd(e.target.value)} style={{width:130}}>{mOpts.map(o=><option key={o.v} value={o.v}>{o.l}</option>)}</select></div><div style={{display:'flex',flexDirection:'column',gap:4}}><Lbl>Do meseca</Lbl><select value={mDo} onChange={e=>setMDo(e.target.value)} style={{width:130}}>{mOpts.map(o=><option key={o.v} value={o.v}>{o.l}</option>)}</select></div></div><div style={{overflowX:'auto',borderRadius:8,border:'1px solid rgba(168,85,247,0.2)'}}><table style={{minWidth:1400}}><thead><tr><TG colSpan={2}>&nbsp;</TG><TG colSpan={2}>Promet (bez PDV)</TG><TG colSpan={HAS_DOD?4:3}>Trosak (bez PDV)</TG><TG colSpan={2}>Profit</TG><TG colSpan={2}>Vrednost Lagera</TG><TG colSpan={1}>Obrt</TG><TG colSpan={2}>Povrat</TG><TG colSpan={1}>Zarada</TG></tr><tr><TH>Sistem</TH><TH>Placanje</TH><TH>Ka sistemu</TH><TH>Ka kupcu</TH><TH>Marketing</TH><TH>Knjizno</TH>{HAS_DOD&&<TH>Dodatni</TH>}<TH>Total</TH><TH>Po prodaji</TH><TH>Po prometu</TH><TH>VP cena</TH><TH>NC cena</TH><TH>Obrt lagera</TH><TH>Pov. starih</TH><TH>Pov. novih</TH><TH>Njihova</TH></tr></thead><tbody>{agg.map(r=>{const avgV=r.nM>0?r.v_kupac/r.nM:0;const obrt=avgV>0?r.v_lager_vp/avgV:0;const np=META.nacin_placanja[r.sistem];return(<tr key={r.sistem} onMouseEnter={e=>e.currentTarget.style.background='rgba(168,85,247,0.05)'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}><TDL>{r.sistem}</TDL><TD style={{textAlign:'center',fontSize:11,color:np===1?'#a855f7':'#ec4899'}}>{np===1?'Faktura':'Odjava'}</TD><TD>{fmt(r.v_promet)}</TD><TD>{fmt(r.v_kupac)}</TD><TD>{fmt(r.marketing)}</TD><TD>{fmt(r.knjizno)}</TD>{HAS_DOD&&<TD>{fmt(r.dodatni_trosak)}</TD>}<TD>{fmt(r.total_trosak)}</TD><TD neg>{fmt(r.profit_prodaja)}</TD><TD neg>{fmt(r.profit_promet)}</TD><TD>{fmt(r.v_lager_vp)}</TD><TD>{fmt(r.v_lager_nc)}</TD><TD>{fmtD(obrt)}</TD><TD>{fmt(r.pov_stari/1.2)}</TD><TD>{fmt(r.pov_novi/1.2)}</TD><TD>{fmt(r.nj_zarada_calc)}</TD></tr>)})}<tr style={{background:'rgba(168,85,247,0.08)'}}><td style={{padding:'9px 12px',fontWeight:700,color:'#a855f7',fontSize:13,position:'sticky',left:0,background:'rgba(168,85,247,0.08)',zIndex:1}}>GRAND TOTAL</td><td></td>{[tot.v_promet,tot.v_kupac,tot.marketing,tot.knjizno].map((v,i)=><TC key={i}>{fmt(v)}</TC>)}{HAS_DOD&&<TC>{fmt(tot.dodatni_trosak)}</TC>}<TC>{fmt(tot.total_trosak)}</TC><TC color={tot.profit_prodaja>=0?'#a855f7':'#ec4899'}>{fmt(tot.profit_prodaja)}</TC><TC color={tot.profit_promet>=0?'#a855f7':'#ec4899'}>{fmt(tot.profit_promet)}</TC>{[tot.v_lager_vp,tot.v_lager_nc].map((v,i)=><TC key={i}>{fmt(v)}</TC>)}<td style={{textAlign:'center',color:'#475569',fontSize:11}}>-</td><TC>{fmt(tot.pov_stari/1.2)}</TC><TC>{fmt(tot.pov_novi/1.2)}</TC><TC>{fmt(agg.reduce((s,r)=>s+r.nj_zarada_calc,0))}</TC></tr></tbody></table></div>{(()=>{const dugovi=META.sistemi.map(s=>{const d=calcDug(s);return{sistem:s,...d}});return(<div style={{marginTop:24}}><SecH>Dugovanja po sistemima</SecH><div style={{overflowX:'auto',border:'1px solid rgba(168,85,247,0.2)',borderTop:'none',borderRadius:'0 0 8px 8px'}}><table><thead><tr><TH>Sistem</TH><TH>Placanje</TH><TH style={{color:'#ec4899'}}>Dug (Faktura)</TH><TH style={{color:'#ec4899'}}>Dug (Odjava)</TH><TH>PDF</TH></tr></thead><tbody>{dugovi.map(d=><tr key={d.sistem} onMouseEnter={e=>e.currentTarget.style.background='rgba(168,85,247,0.05)'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}><TDL>{d.sistem}</TDL><TD style={{textAlign:'center',fontSize:11,color:d.np===1?'#a855f7':'#ec4899'}}>{d.np===1?'Faktura':'Odjava'}</TD><DugCell v={d.dugF}/>{d.dugO!==null?<DugCell v={d.dugO}/>:<TD style={{textAlign:'center',color:'#475569',fontSize:11}}>-</TD>}<td style={{padding:'7px 12px',borderBottom:'1px solid rgba(168,85,247,0.08)',textAlign:'center'}}>{d.np===0&&<button onClick={()=>generateDebtPDF(d.sistem,d.dugF)} style={{padding:'5px 14px',background:'rgba(168,85,247,0.1)',color:'#a855f7',border:'1px solid rgba(168,85,247,0.3)',borderRadius:6,fontSize:11,fontWeight:600,cursor:'pointer',fontFamily:'inherit'}} onMouseEnter={e=>{e.target.style.background='#a855f7';e.target.style.color='#fff'}} onMouseLeave={e=>{e.target.style.background='rgba(168,85,247,0.1)';e.target.style.color='#a855f7'}}>PDF Duga</button>}</td></tr>)}</tbody></table></div></div>)})()}</div>);}
+function PregledPoSistemu(){const allYears=META.godine.filter(y=>y>0);const[sistem,setSistem]=useState(META.sistemi[0]);const[selYears2,setSelYears2]=useState(allYears.map(String));const toggleYear2=y=>{const ys=String(y);const idx=allYears.indexOf(y);setSelYears2(prev=>{if(prev.includes(ys)){return allYears.filter((_,i)=>i<idx).map(String).filter(x=>prev.includes(x))}else{const need=allYears.slice(0,idx+1).map(String);return[...new Set([...prev,...need])]}})};const ySet2=useMemo(()=>new Set(selYears2.map(Number)),[selYears2]);const monthly=useMemo(()=>DATA.filter(r=>r.sistem===sistem&&ySet2.has(r.godina)).sort((a,b)=>(a.godina*100+a.mesec)-(b.godina*100+b.mesec)),[sistem,ySet2]);const pocS=useMemo(()=>RAW.data.filter(r=>r.sistem===sistem&&r.mesec===0).reduce((s,r)=>s+r.poc_stanje,0),[sistem]);const tS=k=>monthly.reduce((s,r)=>s+(r[k]||0),0);const lNZ=k=>{for(let i=monthly.length-1;i>=0;i--)if(monthly[i][k]!==0)return monthly[i][k];return 0};const dug=useMemo(()=>{const vProm=monthly.reduce((a,r)=>a+r.v_promet,0)*1.2;const pov=monthly.reduce((a,r)=>a+r.pov_total,0);const tros=monthly.reduce((a,r)=>a+r.knjizno,0)*1.2+monthly.reduce((a,r)=>a+(r.fakturisano||0),0);const upl=monthly.reduce((a,r)=>a+r.uplata,0);const uplN=monthly.reduce((a,r)=>a+r.uplata_ka_njima,0);const dugF=(pocS+vProm)-(pov+tros+upl+uplN);const np=META.nacin_placanja[sistem]||0;let dugO=null;if(np===0){let lVP=0;for(let i=monthly.length-1;i>=0;i--)if(monthly[i].v_lager_vp!==0){lVP=monthly[i].v_lager_vp;break};dugO=dugF-lVP*1.2}return{dugF,dugO,np};},[monthly,pocS,sistem]);const isO=dug.np===0;return(<div style={{padding:'20px'}}><div style={{display:'flex',gap:16,alignItems:'flex-end',marginBottom:20,flexWrap:'wrap'}}><div style={{display:'flex',flexDirection:'column',gap:4}}><Lbl>Sistem</Lbl><select value={sistem} onChange={e=>setSistem(e.target.value)} style={{width:180}}>{META.sistemi.map(s=><option key={s} value={s}>{s}</option>)}</select></div><div style={{display:'flex',flexDirection:'column',gap:4}}><Lbl>Godine</Lbl><div className="ychk">{allYears.map(y=><label key={y}><input type="checkbox" checked={selYears2.includes(String(y))} onChange={()=>toggleYear2(y)}/>{y}</label>)}</div></div></div><div style={{overflowX:'auto',borderRadius:8,border:'1px solid rgba(168,85,247,0.2)',marginBottom:24}}><table style={{minWidth:1200}}><thead><tr><TG colSpan={2}>&nbsp;</TG><TG colSpan={2}>Promet (bez PDV)</TG><TG colSpan={HAS_DOD?4:3}>Trosak (bez PDV)</TG><TG colSpan={2}>Profit</TG><TG colSpan={2}>Vrednost Lagera</TG><TG colSpan={2}>Povrat</TG><TG colSpan={1}>Zarada</TG></tr><tr><TH>Mesec</TH><TH>Godina</TH><TH>Ka sistemu</TH><TH>Ka kupcu</TH><TH>Marketing</TH><TH>Knjizno</TH>{HAS_DOD&&<TH>Dodatni</TH>}<TH>Total</TH><TH>Po prodaji</TH><TH>Po prometu</TH><TH>VP cena</TH><TH>NC cena</TH><TH>Pov. starih</TH><TH>Pov. novih</TH><TH>Njihova</TH></tr></thead><tbody>{monthly.map((r,i)=><tr key={r.godina+'-'+r.mesec} onMouseEnter={e=>e.currentTarget.style.background='rgba(168,85,247,0.05)'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}><TDL>{ML[r.mesec]||r.mesec}</TDL><TD style={{color:'#8a919e',textAlign:'center',fontSize:12}}>{r.godina}</TD><TD>{fmt(r.v_promet)}</TD><TD>{fmt(r.v_kupac)}</TD><TD>{fmt(r.marketing)}</TD><TD>{fmt(r.knjizno)}</TD>{HAS_DOD&&<TD>{fmt(r.dodatni_trosak||0)}</TD>}<TD>{fmt(r.total_trosak)}</TD><TD neg>{fmt(r.profit_prodaja)}</TD><TD neg>{fmt(r.profit_promet)}</TD><TD>{fmt(r.v_lager_vp)}</TD><TD>{fmt(r.v_lager_nc)}</TD><TD>{fmt(r.pov_stari/1.2)}</TD><TD>{fmt(r.pov_novi/1.2)}</TD><TD>{fmt(calcNjZarada(monthly,i))}</TD></tr>)}<tr style={{background:'rgba(168,85,247,0.08)'}}><td colSpan={2} style={{padding:'9px 12px',fontWeight:700,color:'#a855f7',fontSize:13,position:'sticky',left:0,background:'rgba(168,85,247,0.08)'}}>UKUPNO</td>{['v_promet','v_kupac','marketing','knjizno'].map(k=><TC key={k}>{fmt(tS(k))}</TC>)}{HAS_DOD&&<TC>{fmt(tS('dodatni_trosak'))}</TC>}<TC>{fmt(tS('total_trosak'))}</TC>{['profit_prodaja','profit_promet'].map(k=>{const v=tS(k);return<TC key={k} color={v>=0?'#a855f7':'#ec4899'}>{fmt(v)}</TC>})}{['v_lager_vp','v_lager_nc'].map(k=><TC key={k}>{fmt(lNZ(k))}</TC>)}{['pov_stari','pov_novi'].map(k=><TC key={k}>{fmt(tS(k)/1.2)}</TC>)}<TC>{fmt(calcNjZaradaTotal(monthly))}</TC></tr></tbody></table></div><div style={{marginBottom:24}}><SecH extra={isO&&<button onClick={()=>generateDebtPDF(sistem,dug.dugF)} style={{padding:'6px 18px',background:'rgba(168,85,247,0.1)',color:'#a855f7',border:'1px solid rgba(168,85,247,0.3)',borderRadius:6,fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:'inherit'}} onMouseEnter={e=>{e.target.style.background='#a855f7';e.target.style.color='#fff'}} onMouseLeave={e=>{e.target.style.background='rgba(168,85,247,0.1)';e.target.style.color='#a855f7'}}>&#128196; Generisi PDF duga</button>}>Finansijski Bilans (sa PDV)</SecH><div style={{overflowX:'auto',border:'1px solid rgba(168,85,247,0.2)',borderTop:'none',borderRadius:'0 0 8px 8px'}}><table style={{minWidth:900}}><thead><tr><TH>Poc. stanje</TH><TH>Promet+PDV</TH><TH style={{color:'#a855f7'}}>ZADUZENJE</TH><TH>Povrat(PDV)</TH><TH>Trosak+PDV</TH><TH style={{color:'#a855f7'}}>SA UMANJENJEM</TH><TH>Uplata</TH><TH>Uplata ka njima</TH><TH style={{color:'#ec4899'}}>Dug (Faktura)</TH>{dug.dugO!==null&&<React.Fragment><TH>Lager VP(PDV)</TH><TH style={{color:'#ec4899'}}>Dug (Odjava)</TH></React.Fragment>}</tr></thead><tbody><tr><TD>{fmt(pocS)}</TD><TD>{fmt(tS('v_promet')*1.2)}</TD><TD style={{color:'#a855f7',fontWeight:700}}>{fmt(pocS+tS('v_promet')*1.2)}</TD><TD>{fmt(tS('pov_total'))}</TD><TD>{fmt(tS('knjizno')*1.2+tS('fakturisano'))}</TD><TD style={{color:'#a855f7',fontWeight:700}}>{fmt(pocS+tS('v_promet')*1.2-tS('pov_total')-(tS('knjizno')*1.2+tS('fakturisano')))}</TD><TD>{fmt(tS('uplata'))}</TD><TD>{fmt(tS('uplata_ka_njima'))}</TD><DugCell v={dug.dugF}/>{dug.dugO!==null&&<React.Fragment><TD>{fmt(lNZ('v_lager_vp')*1.2)}</TD><DugCell v={dug.dugF-lNZ('v_lager_vp')*1.2}/></React.Fragment>}</tr></tbody></table></div></div></div>);}
+function Dashboard(){const[tab,setTab]=useState('total');return(<div style={{minHeight:'100vh',background:'#12002a',color:'#c9d1d9',fontFamily:"'DM Sans',-apple-system,sans-serif"}}><div style={{width:'100%',padding:'20px 28px',boxSizing:'border-box'}}><div style={{display:'flex',borderBottom:'1px solid rgba(168,85,247,0.2)',marginBottom:20}}><TabBtn active={tab==='total'} onClick={()=>setTab('total')}>Total Pregled</TabBtn><TabBtn active={tab==='sistem'} onClick={()=>setTab('sistem')}>Pregled po Sistemu</TabBtn></div>{tab==='total'?<TotalPregled/>:<PregledPoSistemu/>}</div></div>);}
 ReactDOM.createRoot(document.getElementById('root')).render(<Dashboard/>);
 </script>
 </body>
@@ -3071,3 +2881,638 @@ ReactDOM.createRoot(document.getElementById('root')).render(<Dashboard/>);
         st.error("❌ Podaci nisu dostupni. Proveri da li je sistemi.xlsx postavljen na GitHub.")
     else:
         components.html(html_content, height=900, scrolling=True)
+
+elif page == 'pdf_izvestaji':
+
+    # ============================================================
+    # PDF IZVEŠTAJI ZA SASTANKE
+    # ============================================================
+    from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.lib.pagesizes import landscape, A4
+    from reportlab.lib.units import mm
+    from reportlab.lib.colors import HexColor
+    import zipfile
+
+    # --- Boje ---
+    PDF_NAVY  = HexColor('#192f59')
+    PDF_TEAL  = HexColor('#008080')
+    PDF_DARK  = HexColor('#212529')
+    PDF_MID   = HexColor('#6c757d')
+    PDF_LIGHT = HexColor('#f5f7fa')
+    PDF_BORDER= HexColor('#dee2e6')
+    PDF_WHITE = HexColor('#ffffff')
+    PDF_RED   = HexColor('#dc2626')
+    PDF_GRN   = HexColor('#16a34a')
+
+    PDF_ML = {1:'Jan',2:'Feb',3:'Mar',4:'Apr',5:'Maj',6:'Jun',
+              7:'Jul',8:'Avg',9:'Sep',10:'Okt',11:'Nov',12:'Dec'}
+
+    PDF_CENA_BOJE = {
+        1390: HexColor('#90EE90'), 1300: HexColor('#FFD1DC'), 1290: HexColor('#FFB6C1'),
+        1190: HexColor('#FF69B4'), 990:  HexColor('#C71585'),
+        890:  HexColor('#90EE90'), 800:  HexColor('#FFD1DC'), 790: HexColor('#FFB6C1'),
+        730:  HexColor('#FF69B4'), 690:  HexColor('#C71585'),
+        599:  HexColor('#90EE90'), 400:  HexColor('#FFD1DC'), 299: HexColor('#FFB6C1'),
+    }
+
+    def pdf_fmt(v):
+        if v is None or (isinstance(v, float) and (np.isnan(v) or np.isinf(v))): return '-'
+        n = round(float(v))
+        if abs(n) < 1: return '-'
+        s = f'{abs(n):,}'.replace(',', '.')
+        return f'({s})' if n < 0 else s
+
+    def pdf_fmt2(v):
+        if v is None or (isinstance(v, float) and np.isnan(v)): return '-'
+        return f'{float(v):,.2f}'.replace(',', 'X').replace('.', ',').replace('X', '.')
+
+    @st.cache_data(ttl=300)
+    def pdf_load_data(ukljuci_poslednji):
+        buf = load_github_excel("tabela sistemi3.xlsx")
+        if buf is None: return None, None, None
+        df = pd.read_excel(buf, sheet_name='tabela')
+        df.columns = df.columns.astype(str).str.strip()
+        df = df[df['SISTEM'] != 'MOBILLAND']
+        nums = ['Godina','Mesec','VREDNOST PROMETA','VREDNOST PRODAJA KA KRAJNJEM KUPCU',
+                'MESECNI TROSAK1','KNJIZNO TOTAL','DODATNI MESECNI TROSAK','PROFIT2','PROFIT3',
+                'VREDNOST LAGERA','VREDNOST LAGERA NC','Promet','Prodata kolicina ka krajnjem kupcu',
+                'Zalihe','POVRAT STARIH CIGARETA sa pdv','POVRAT NOVIH CIGARETA sa PDV',
+                'POCETNO STANJE','POVRAT TOTAL sa PDV','UPLATA','UPLATA KA SISTEMIMA','UPLATA KA SISTEMU 1',
+                'FINALNA MP','NJIHOVA ZARADA 1','Nacin placanja','VP CENA SA PDVOM','KNJIZNO PROVERA',
+                'Fakturisano sa njihove strane']
+        for c in nums:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+        df['UPLATA_KA_NJIMA_TOTAL'] = df['UPLATA KA SISTEMIMA'].fillna(0) + df['UPLATA KA SISTEMU 1'].fillna(0)
+        df['TOTAL_TROSAK'] = df['MESECNI TROSAK1'].fillna(0) + df['KNJIZNO TOTAL'].fillna(0) + df['DODATNI MESECNI TROSAK'].fillna(0)
+        # Nacin placanja
+        nacin = {}
+        for s in df[df['Mesec'] == 0]['SISTEM'].unique():
+            if pd.notna(s):
+                nacin[str(s)] = int(df[(df['SISTEM'] == s) & (df['Mesec'] == 0)]['Nacin placanja'].iloc[0])
+        # Iskljuci poslednji mesec ako treba
+        if not ukljuci_poslednji:
+            active = df[df['Mesec'] > 0]
+            if not active.empty:
+                max_ym = int((active['Godina'] * 100 + active['Mesec']).max())
+                max_g, max_m = max_ym // 100, max_ym % 100
+                df = df[~((df['Godina'] == max_g) & (df['Mesec'] == max_m))]
+        sistemi = sorted([str(s) for s in df['SISTEM'].unique() if pd.notna(s) and str(s).strip() != ''])
+        return df, nacin, sistemi
+
+    def pdf_get_monthly(df, sistem):
+        ds = df[(df['SISTEM'] == sistem) & (df['Mesec'] > 0)]
+        if ds.empty: return []
+        ag = ds.groupby(['Godina', 'Mesec']).agg({
+            'VREDNOST PROMETA': 'sum', 'VREDNOST PRODAJA KA KRAJNJEM KUPCU': 'sum',
+            'MESECNI TROSAK1': 'sum', 'KNJIZNO TOTAL': 'sum', 'DODATNI MESECNI TROSAK': 'sum',
+            'TOTAL_TROSAK': 'sum', 'PROFIT2': 'sum', 'PROFIT3': 'sum',
+            'VREDNOST LAGERA': 'sum', 'VREDNOST LAGERA NC': 'sum',
+            'POVRAT STARIH CIGARETA sa pdv': 'sum', 'POVRAT NOVIH CIGARETA sa PDV': 'sum',
+            'POVRAT TOTAL sa PDV': 'sum', 'UPLATA': 'sum', 'UPLATA_KA_NJIMA_TOTAL': 'sum',
+            'NJIHOVA ZARADA 1': 'sum', 'KNJIZNO PROVERA': 'sum',
+            'Fakturisano sa njihove strane': 'sum'
+        }).reset_index().sort_values(['Godina', 'Mesec'])
+        rows = []
+        for _, r in ag.iterrows():
+            rows.append({
+                'godina': int(r['Godina']), 'mesec': int(r['Mesec']),
+                'v_promet': float(r['VREDNOST PROMETA']),
+                'v_kupac': float(r['VREDNOST PRODAJA KA KRAJNJEM KUPCU']),
+                'marketing': float(r['MESECNI TROSAK1']),
+                'knjizno': float(r['KNJIZNO TOTAL']),
+                'dodatni_trosak': float(r['DODATNI MESECNI TROSAK']),
+                'total_trosak': float(r['TOTAL_TROSAK']),
+                'profit_prodaja': float(r['PROFIT2']),
+                'profit_promet': float(r['PROFIT3']),
+                'v_lager_vp': float(r['VREDNOST LAGERA']),
+                'v_lager_nc': float(r['VREDNOST LAGERA NC']),
+                'pov_stari': float(r['POVRAT STARIH CIGARETA sa pdv']),
+                'pov_novi': float(r['POVRAT NOVIH CIGARETA sa PDV']),
+                'pov_total': float(r['POVRAT TOTAL sa PDV']),
+                'uplata': float(r['UPLATA']),
+                'uplata_ka_njima': float(r['UPLATA_KA_NJIMA_TOTAL']),
+                'njihova_zarada_1': float(r['NJIHOVA ZARADA 1']),
+                'knjizno_provera': float(r['KNJIZNO PROVERA']),
+                'fakturisano': float(r['Fakturisano sa njihove strane'])
+            })
+        return rows
+
+    def pdf_get_poc_stanje(df, sistem):
+        ds = df[(df['SISTEM'] == sistem) & (df['Mesec'] == 0)]
+        return float(ds['POCETNO STANJE'].sum()) if not ds.empty else 0.0
+
+    def pdf_get_lager_grupe(df, sistem):
+        ds = df[(df['SISTEM'] == sistem) & (df['Mesec'] > 0)].copy()
+        if ds.empty: return None
+        ds['ym'] = ds['Godina'] * 100 + ds['Mesec']
+        last = ds['ym'].max()
+        dl = ds[ds['ym'] == last]
+        lm, lg = int(last % 100), int(last // 100)
+        grupe = {}
+        for _, row in dl.iterrows():
+            g = str(row['Grupa artikla']) if pd.notna(row.get('Grupa artikla')) else ''
+            if g.strip() == '': continue
+            if g not in grupe: grupe[g] = {'lager': 0, 'vp': 0}
+            grupe[g]['lager'] += int(row['Zalihe'])
+            grupe[g]['vp'] = max(grupe[g]['vp'], round(float(row['VP CENA SA PDVOM']), 2))
+        if not grupe: return None
+        res = [{'grupa': k, 'lager': v['lager'], 'vp_cena_pdv': v['vp'],
+                'vrednost': round(v['lager'] * v['vp'], 2)} for k, v in sorted(grupe.items())]
+        return {'mesec': lm, 'godina': lg, 'grupe': res}
+
+    def pdf_get_prodaja_grupe(df, sistem):
+        ds = df[(df['SISTEM'] == sistem) & (df['Mesec'] > 0)].copy()
+        if ds.empty: return None
+        ds['ym'] = ds['Godina'] * 100 + ds['Mesec']
+        periods = sorted(ds['ym'].unique())
+        grupe = sorted([str(g) for g in ds['Grupa artikla'].unique()
+                        if pd.notna(g) and str(g).strip() != ''])
+        if not grupe: return None
+        data = {}
+        for g in grupe:
+            data[g] = {}
+            for ym in periods:
+                dg = ds[(ds['Grupa artikla'].astype(str) == g) & (ds['ym'] == ym)]
+                qty = int(dg['Prodata kolicina ka krajnjem kupcu'].sum())
+                mp = float(dg['FINALNA MP'].mean()) if not dg.empty and dg['FINALNA MP'].sum() != 0 else 0
+                data[g][ym] = {'qty': qty, 'mp': round(mp)}
+        return {'periods': periods, 'grupe': grupe, 'data': data}
+
+    def pdf_calc_dug(monthly, poc, nacin, last_vp):
+        tS = lambda k: sum(r[k] for r in monthly)
+        vP = tS('v_promet') * 1.2
+        pov = tS('pov_total')
+        tr = tS('knjizno') * 1.2 + tS('fakturisano')
+        upl = tS('uplata')
+        uplN = tS('uplata_ka_njima')
+        dugF = (poc + vP) - (pov + tr + upl + uplN)
+        dugO = None
+        if nacin == 0:
+            prodO = vP - (last_vp * 1.2) - tS('pov_novi')
+            dugO = prodO + poc - (upl + uplN + tr) - tS('pov_stari')
+        return dugF, dugO
+
+    # --- PDF draw helpers ---
+    def _draw_accent(c, ph):
+        c.setFillColor(PDF_TEAL); c.rect(0, 0, 5*mm, ph, fill=1, stroke=0)
+
+    def _draw_header(c, pw, ph, sistem, ds, sub=None):
+        _draw_accent(c, ph)
+        y = ph - 18*mm
+        c.setFont('Helvetica-Bold', 20); c.setFillColor(PDF_NAVY)
+        c.drawString(18*mm, y, f'Izvestaj: {sistem}')
+        c.setFont('Helvetica', 9); c.setFillColor(PDF_MID)
+        c.drawRightString(pw - 14*mm, y + 2*mm, ds)
+        y -= 4*mm; c.setStrokeColor(PDF_TEAL); c.setLineWidth(0.6*mm)
+        c.line(18*mm, y, 58*mm, y)
+        if sub:
+            y -= 5*mm; c.setFont('Helvetica', 8); c.setFillColor(PDF_MID)
+            c.drawString(18*mm, y, sub)
+        return y
+
+    def _draw_footer(c, pw, ph, ds, sistem, pg, tot):
+        c.setStrokeColor(PDF_BORDER); c.setLineWidth(0.3*mm)
+        c.line(14*mm, 10*mm, pw - 14*mm, 10*mm)
+        c.setFont('Helvetica', 6); c.setFillColor(PDF_MID)
+        c.drawString(14*mm, 6*mm, f'{ds}  |  {sistem}  |  Strana {pg}/{tot}')
+        c.setFillColor(PDF_TEAL); c.rect(pw - 32*mm, 7*mm, 18*mm, 1.2*mm, fill=1, stroke=0)
+
+    def _draw_section(c, x, y, title, extra=None):
+        c.setFont('Helvetica-Bold', 10); c.setFillColor(PDF_NAVY); c.drawString(x, y, title)
+        if extra:
+            c.setFont('Helvetica', 8); c.setFillColor(PDF_MID)
+            c.drawString(x + c.stringWidth(title, 'Helvetica-Bold', 10) + 8, y, extra)
+        return y - 5*mm
+
+    def _draw_table(c, x, y, heads, rows, cw, foot=None, fs=7, rh=4.8*mm, neg_cols=None):
+        if neg_cols is None: neg_cols = set()
+        tw = sum(cw)
+        c.setFillColor(PDF_NAVY); c.rect(x, y - rh, tw, rh, fill=1, stroke=0)
+        c.setFont('Helvetica-Bold', fs - 0.5); c.setFillColor(PDF_WHITE)
+        cx = x
+        for i, h in enumerate(heads):
+            if i <= 1: c.drawString(cx + 2*mm, y - rh + 1.5*mm, h)
+            else: c.drawRightString(cx + cw[i] - 2*mm, y - rh + 1.5*mm, h)
+            cx += cw[i]
+        y -= rh
+        c.setFont('Helvetica', fs)
+        prev_yr = None
+        for ri, row in enumerate(rows):
+            y -= rh
+            if y < 16*mm: break
+            if prev_yr is not None and row[1] != prev_yr:
+                c.setStrokeColor(PDF_TEAL); c.setLineWidth(0.4*mm)
+                c.line(x, y + rh, x + tw, y + rh)
+            if ri % 2 == 0:
+                c.setFillColor(HexColor('#fafbfc')); c.rect(x, y, tw, rh, fill=1, stroke=0)
+            c.setStrokeColor(PDF_BORDER); c.setLineWidth(0.15*mm); c.line(x, y, x + tw, y)
+            cx = x
+            for i, val in enumerate(row):
+                sv = str(val)
+                if i in neg_cols and sv.startswith('('): c.setFillColor(PDF_RED)
+                elif i in neg_cols and sv != '-': c.setFillColor(PDF_GRN)
+                else: c.setFillColor(PDF_DARK)
+                c.setFont('Helvetica', fs)
+                if i <= 1: c.drawString(cx + 2*mm, y + 1.5*mm, sv)
+                else: c.drawRightString(cx + cw[i] - 2*mm, y + 1.5*mm, sv)
+                cx += cw[i]
+            prev_yr = row[1]
+        if foot:
+            y -= rh
+            c.setFillColor(PDF_LIGHT); c.rect(x, y, tw, rh, fill=1, stroke=0)
+            c.setFont('Helvetica-Bold', fs)
+            cx = x
+            for i, val in enumerate(foot):
+                sv = str(val)
+                if i in neg_cols and sv.startswith('('): c.setFillColor(PDF_RED)
+                else: c.setFillColor(PDF_NAVY)
+                if i <= 1: c.drawString(cx + 2*mm, y + 1.5*mm, sv)
+                else: c.drawRightString(cx + cw[i] - 2*mm, y + 1.5*mm, sv)
+                cx += cw[i]
+        return y
+
+    def _draw_kpi(c, x, y, w, h, label, value, bg=None, tc=None, lc=None):
+        if bg is None: bg = PDF_LIGHT
+        if tc is None: tc = PDF_NAVY
+        if lc is None: lc = PDF_MID
+        c.setFillColor(bg); c.roundRect(x, y, w, h, 2*mm, fill=1, stroke=0)
+        c.setFont('Helvetica-Bold', 7); c.setFillColor(lc); c.drawString(x + 4*mm, y + h - 5*mm, label)
+        c.setFont('Helvetica-Bold', 13); c.setFillColor(tc); c.drawString(x + 4*mm, y + 4*mm, value)
+
+    def _draw_bilans(c, x, y, heads, vals, pw):
+        nc = len(heads); cw = (pw - 36*mm) / nc; tw = nc * cw; rh = 6*mm
+        c.setFillColor(PDF_NAVY); c.rect(x, y - rh, tw, rh, fill=1, stroke=0)
+        c.setFont('Helvetica-Bold', 7); c.setFillColor(PDF_WHITE)
+        for i, h in enumerate(heads):
+            if h in ('ZADUZENJE', 'SA UMANJENJEM'):
+                c.setFillColor(PDF_TEAL); c.rect(x + i*cw, y - rh, cw, rh, fill=1, stroke=0)
+                c.setFillColor(PDF_WHITE)
+            c.drawCentredString(x + i*cw + cw/2, y - rh + 2*mm, h)
+        y -= rh; y -= rh
+        c.setFont('Helvetica-Bold', 8)
+        for i, v in enumerate(vals):
+            sv = str(v)
+            if heads[i] in ('ZADUZENJE', 'SA UMANJENJEM'):
+                c.setFillColor(HexColor('#e0f2f1')); c.rect(x + i*cw, y, cw, rh, fill=1, stroke=0)
+                c.setFillColor(PDF_TEAL)
+            elif 'Dug' in heads[i] and sv != '-' and not sv.startswith('('): c.setFillColor(PDF_RED)
+            else: c.setFillColor(PDF_DARK)
+            c.drawRightString(x + i*cw + cw - 3*mm, y + 2*mm, sv)
+        return y
+
+    def _draw_lager(c, x, y, data):
+        grupe = data['grupe']; rh = 5*mm
+        cw = [45*mm, 25*mm, 38*mm, 48*mm]; tw = sum(cw)
+        c.setFillColor(PDF_NAVY); c.rect(x, y - rh, tw, rh, fill=1, stroke=0)
+        c.setFont('Helvetica-Bold', 7); c.setFillColor(PDF_WHITE)
+        for i, h in enumerate(['Grupa proizvoda', 'Kolicina', 'VP cena (sa PDV)', 'Vrednost (sa PDV)']):
+            if i == 0: c.drawString(x + 2*mm, y - rh + 1.5*mm, h)
+            else:
+                cx2 = x + sum(cw[:i])
+                c.drawRightString(cx2 + cw[i] - 2*mm, y - rh + 1.5*mm, h)
+        y -= rh
+        for gi, g in enumerate(grupe):
+            y -= rh
+            if gi % 2 == 0:
+                c.setFillColor(HexColor('#fafbfc')); c.rect(x, y, tw, rh, fill=1, stroke=0)
+            c.setStrokeColor(PDF_BORDER); c.setLineWidth(0.15*mm); c.line(x, y, x + tw, y)
+            c.setFillColor(PDF_DARK); c.setFont('Helvetica', 7.5)
+            c.drawString(x + 2*mm, y + 1.5*mm, g['grupa'])
+            c.drawRightString(x + cw[0] + cw[1] - 2*mm, y + 1.5*mm, f"{g['lager']:,}".replace(',', '.'))
+            c.drawRightString(x + cw[0] + cw[1] + cw[2] - 2*mm, y + 1.5*mm, pdf_fmt2(g['vp_cena_pdv']))
+            c.setFont('Helvetica-Bold', 7.5)
+            c.drawRightString(x + tw - 2*mm, y + 1.5*mm, pdf_fmt(g['vrednost']) + ' RSD')
+        y -= rh
+        tl = sum(g['lager'] for g in grupe); tv = sum(g['vrednost'] for g in grupe)
+        c.setFillColor(PDF_LIGHT); c.rect(x, y, tw, rh, fill=1, stroke=0)
+        c.setFont('Helvetica-Bold', 8); c.setFillColor(PDF_NAVY)
+        c.drawString(x + 2*mm, y + 1.5*mm, 'UKUPNO')
+        c.drawRightString(x + cw[0] + cw[1] - 2*mm, y + 1.5*mm, f"{tl:,}".replace(',', '.'))
+        c.drawRightString(x + tw - 2*mm, y + 1.5*mm, pdf_fmt(tv) + ' RSD')
+        return y, tv
+
+    def _draw_obracun(c, x, y, dugF, vlag):
+        rh = 6*mm; bw = 160*mm; za = dugF - vlag
+        c.setFillColor(PDF_LIGHT); c.rect(x, y - rh, bw, rh, fill=1, stroke=0)
+        c.setFont('Helvetica', 8); c.setFillColor(PDF_MID)
+        c.drawString(x + 3*mm, y - rh + 2*mm, 'Dug po fakturi')
+        c.setFont('Helvetica-Bold', 10); c.setFillColor(PDF_DARK)
+        c.drawRightString(x + bw - 3*mm, y - rh + 2*mm, pdf_fmt(dugF) + ' RSD')
+        y -= rh + 0.5*mm
+        c.setStrokeColor(PDF_BORDER); c.setLineWidth(0.15*mm); c.line(x, y, x + bw, y)
+        c.setFont('Helvetica', 8); c.setFillColor(PDF_MID)
+        c.drawString(x + 3*mm, y - rh + 2*mm, 'Vrednost lagera (sa PDV)')
+        c.setFont('Helvetica-Bold', 10); c.setFillColor(PDF_DARK)
+        c.drawRightString(x + bw - 3*mm, y - rh + 2*mm, '- ' + pdf_fmt(vlag) + ' RSD')
+        c.line(x, y - rh, x + bw, y - rh)
+        y -= rh + 1*mm
+        zh = 9*mm
+        c.setFillColor(PDF_NAVY); c.roundRect(x, y - zh, bw, zh, 1.5*mm, fill=1, stroke=0)
+        c.setFont('Helvetica-Bold', 9); c.setFillColor(HexColor('#b4c3d7'))
+        c.drawString(x + 3*mm, y - zh + 3*mm, 'ZA UPLATU')
+        c.setFont('Helvetica-Bold', 14); c.setFillColor(PDF_WHITE)
+        c.drawRightString(x + bw - 3*mm, y - zh + 3*mm, (pdf_fmt(za) + ' RSD') if za > 0 else '0 RSD')
+        return y - zh
+
+    def _draw_prodaja(c, x, y, pw, prodaja_data):
+        periods = prodaja_data['periods']
+        grupe = prodaja_data['grupe']
+        data = prodaja_data['data']
+        nP = len(periods)
+        # Legenda
+        y = _draw_section(c, x, y, 'LEGENDA CENA')
+        y -= 1*mm
+        lx = x; bw_l = 12*mm; bh_l = 4.5*mm
+        c.setFont('Helvetica-Bold', 7); c.setFillColor(PDF_NAVY); c.drawString(lx, y, 'NERD 2000:')
+        lx += 18*mm
+        for cena in [1390, 1300, 1290, 1190, 990]:
+            bg = PDF_CENA_BOJE.get(cena, PDF_LIGHT)
+            c.setFillColor(bg); c.rect(lx, y - 1*mm, bw_l, bh_l, fill=1, stroke=0)
+            c.setStrokeColor(PDF_BORDER); c.setLineWidth(0.15*mm); c.rect(lx, y - 1*mm, bw_l, bh_l, fill=0, stroke=1)
+            c.setFillColor(PDF_DARK); c.setFont('Helvetica-Bold', 6.5)
+            c.drawCentredString(lx + bw_l/2, y, str(cena)); lx += bw_l + 1.5*mm
+        lx = x; y -= bh_l + 3*mm
+        c.setFont('Helvetica-Bold', 7); c.setFillColor(PDF_NAVY); c.drawString(lx, y, 'HQD:')
+        lx += 18*mm
+        for cena in [890, 800, 790, 730, 690]:
+            bg = PDF_CENA_BOJE.get(cena, PDF_LIGHT)
+            c.setFillColor(bg); c.rect(lx, y - 1*mm, bw_l, bh_l, fill=1, stroke=0)
+            c.setStrokeColor(PDF_BORDER); c.setLineWidth(0.15*mm); c.rect(lx, y - 1*mm, bw_l, bh_l, fill=0, stroke=1)
+            c.setFillColor(PDF_DARK); c.setFont('Helvetica-Bold', 6.5)
+            c.drawCentredString(lx + bw_l/2, y, str(cena)); lx += bw_l + 1.5*mm
+        lx = x; y -= bh_l + 3*mm
+        c.setFont('Helvetica-Bold', 7); c.setFillColor(PDF_NAVY); c.drawString(lx, y, 'NERD 1000:')
+        lx += 18*mm
+        for cena in [599, 400, 299]:
+            bg = PDF_CENA_BOJE.get(cena, PDF_LIGHT)
+            c.setFillColor(bg); c.rect(lx, y - 1*mm, bw_l, bh_l, fill=1, stroke=0)
+            c.setStrokeColor(PDF_BORDER); c.setLineWidth(0.15*mm); c.rect(lx, y - 1*mm, bw_l, bh_l, fill=0, stroke=1)
+            c.setFillColor(PDF_DARK); c.setFont('Helvetica-Bold', 6.5)
+            c.drawCentredString(lx + bw_l/2, y, str(cena)); lx += bw_l + 1.5*mm
+        y -= bh_l + 6*mm
+        # Tabela
+        y = _draw_section(c, x, y, 'PRODAJA PO GRUPAMA (kolicina)')
+        y -= 2*mm
+        gcw = 38*mm
+        mcw = min(15*mm, (pw - x - 14*mm - gcw - 18*mm) / max(nP, 1))
+        tcw = 18*mm
+        tw = gcw + nP*mcw + tcw
+        rh = 5*mm
+        c.setFillColor(PDF_NAVY); c.rect(x, y - rh, tw, rh, fill=1, stroke=0)
+        c.setFont('Helvetica-Bold', 6); c.setFillColor(PDF_WHITE)
+        c.drawString(x + 2*mm, y - rh + 1.5*mm, 'Grupa')
+        for pi, ym in enumerate(periods):
+            mm_ = int(ym % 100); gg = int(ym // 100)
+            label = f"{PDF_ML[mm_]} {str(gg)[-2:]}"
+            c.drawCentredString(x + gcw + pi*mcw + mcw/2, y - rh + 1.5*mm, label)
+        c.drawCentredString(x + gcw + nP*mcw + tcw/2, y - rh + 1.5*mm, 'TOTAL')
+        y -= rh
+        # Ukupni red
+        y -= rh
+        c.setFillColor(HexColor('#e8edf3')); c.rect(x, y, tw, rh, fill=1, stroke=0)
+        c.setStrokeColor(PDF_BORDER); c.setLineWidth(0.15*mm); c.line(x, y, x + tw, y)
+        c.setFont('Helvetica-Bold', 6.5); c.setFillColor(PDF_NAVY)
+        grand_total = 0
+        for pi, ym in enumerate(periods):
+            col_sum = sum(data[g][ym]['qty'] for g in grupe)
+            grand_total += col_sum
+            c.drawRightString(x + gcw + (pi+1)*mcw - 2*mm, y + 1.5*mm,
+                              f"{col_sum:,}".replace(',', '.') if col_sum else '-')
+        c.drawString(x + 2*mm, y + 1.5*mm, 'UKUPNO')
+        c.drawRightString(x + tw - 2*mm, y + 1.5*mm, f"{grand_total:,}".replace(',', '.'))
+        # Redovi po grupama
+        for gi, g in enumerate(grupe):
+            y -= rh
+            if y < 16*mm: break
+            if gi % 2 == 0:
+                c.setFillColor(HexColor('#fafbfc')); c.rect(x, y, tw, rh, fill=1, stroke=0)
+            c.setStrokeColor(PDF_BORDER); c.setLineWidth(0.15*mm); c.line(x, y, x + tw, y)
+            c.setFillColor(PDF_DARK); c.setFont('Helvetica', 6.5)
+            c.drawString(x + 2*mm, y + 1.5*mm, g)
+            row_total = 0
+            for pi, ym in enumerate(periods):
+                qty = data[g][ym]['qty']
+                mp = data[g][ym]['mp']
+                row_total += qty
+                cx = x + gcw + pi*mcw
+                if mp in PDF_CENA_BOJE and qty > 0:
+                    c.setFillColor(PDF_CENA_BOJE[mp]); c.rect(cx, y, mcw, rh, fill=1, stroke=0)
+                    c.setStrokeColor(PDF_BORDER); c.setLineWidth(0.1*mm); c.rect(cx, y, mcw, rh, fill=0, stroke=1)
+                c.setFillColor(PDF_DARK); c.setFont('Helvetica', 6.5)
+                c.drawRightString(cx + mcw - 2*mm, y + 1.5*mm, f"{qty:,}".replace(',', '.') if qty else '-')
+            c.setFont('Helvetica-Bold', 6.5); c.setFillColor(PDF_NAVY)
+            c.drawRightString(x + tw - 2*mm, y + 1.5*mm, f"{row_total:,}".replace(',', '.') if row_total else '-')
+        return y
+
+    def generate_pdf_bytes(sistem, df, nacin_map, ds):
+        """Generise PDF za jedan sistem i vraca bytes."""
+        monthly = pdf_get_monthly(df, sistem)
+        if not monthly: return None
+        poc = pdf_get_poc_stanje(df, sistem)
+        nac = nacin_map.get(sistem, 1)
+        lager = pdf_get_lager_grupe(df, sistem)
+        prodaja = pdf_get_prodaja_grupe(df, sistem)
+        tS = lambda k: sum(r[k] for r in monthly)
+        def lNZ(k):
+            for r in reversed(monthly):
+                if r[k] != 0: return r[k]
+            return 0
+        lastVP = lNZ('v_lager_vp')
+        dugF, dugO = pdf_calc_dug(monthly, poc, nac, lastVP)
+        has_dod = any(r['dodatni_trosak'] != 0 for r in monthly)
+        pw, ph = landscape(A4)
+        buf = io.BytesIO()
+        pdf = rl_canvas.Canvas(buf, pagesize=landscape(A4))
+        tp = 3 if prodaja else 2
+
+        # --- STRANA 1: MESECNI PREGLED ---
+        sub = f'{sistem}  |  Nacin placanja: {"Faktura" if nac==1 else "Odjava po deklaraciji"}'
+        y = _draw_header(pdf, pw, ph, sistem, ds, sub)
+        y -= 8*mm
+        y = _draw_section(pdf, 18*mm, y, 'MESECNI PREGLED (vrednosti bez PDV)')
+        y -= 2*mm
+        if has_dod:
+            heads = ['Mesec','God.','Promet','Ka kupcu','Marketing','Knjizno','Dodatni','Total troskovi',
+                     'Profit prod.','Profit prom.','Lager VP','Lager NC','Pov. st.cig.nv','Pov. novih','Profit. kupca']
+            cw = [14*mm,11*mm,20*mm,20*mm,17*mm,15*mm,15*mm,19*mm,18*mm,18*mm,20*mm,20*mm,17*mm,17*mm,21*mm]
+            profit_orig = (8, 9)
+        else:
+            heads = ['Mesec','God.','Promet','Ka kupcu','Marketing','Knjizno','Total troskovi',
+                     'Profit prod.','Profit prom.','Lager VP','Lager NC','Pov. st.cig.nv','Pov. novih','Profit. kupca']
+            cw = [14*mm,11*mm,21*mm,21*mm,18*mm,16*mm,20*mm,19*mm,19*mm,21*mm,21*mm,18*mm,18*mm,22*mm]
+            profit_orig = (7, 8)
+        trows = []
+        for r in monthly:
+            nj = r['njihova_zarada_1']
+            if has_dod:
+                row = [PDF_ML.get(r['mesec'], r['mesec']), r['godina'],
+                       pdf_fmt(r['v_promet']), pdf_fmt(r['v_kupac']),
+                       pdf_fmt(r['marketing']), pdf_fmt(r['knjizno']),
+                       pdf_fmt(r['dodatni_trosak']), pdf_fmt(r['total_trosak']),
+                       pdf_fmt(r['profit_prodaja'] - r['dodatni_trosak']),
+                       pdf_fmt(r['profit_promet'] - r['dodatni_trosak']),
+                       pdf_fmt(r['v_lager_vp']), pdf_fmt(r['v_lager_nc']),
+                       pdf_fmt(r['pov_stari']/1.2), pdf_fmt(r['pov_novi']/1.2), pdf_fmt(nj)]
+            else:
+                row = [PDF_ML.get(r['mesec'], r['mesec']), r['godina'],
+                       pdf_fmt(r['v_promet']), pdf_fmt(r['v_kupac']),
+                       pdf_fmt(r['marketing']), pdf_fmt(r['knjizno']),
+                       pdf_fmt(r['total_trosak']),
+                       pdf_fmt(r['profit_prodaja']), pdf_fmt(r['profit_promet']),
+                       pdf_fmt(r['v_lager_vp']), pdf_fmt(r['v_lager_nc']),
+                       pdf_fmt(r['pov_stari']/1.2), pdf_fmt(r['pov_novi']/1.2), pdf_fmt(nj)]
+            trows.append(row)
+        if has_dod:
+            frow = ['UKUPNO','', pdf_fmt(tS('v_promet')), pdf_fmt(tS('v_kupac')),
+                    pdf_fmt(tS('marketing')), pdf_fmt(tS('knjizno')),
+                    pdf_fmt(tS('dodatni_trosak')), pdf_fmt(tS('total_trosak')),
+                    pdf_fmt(tS('profit_prodaja') - tS('dodatni_trosak')),
+                    pdf_fmt(tS('profit_promet') - tS('dodatni_trosak')),
+                    pdf_fmt(lNZ('v_lager_vp')), pdf_fmt(lNZ('v_lager_nc')),
+                    pdf_fmt(tS('pov_stari')/1.2), pdf_fmt(tS('pov_novi')/1.2),
+                    pdf_fmt(tS('njihova_zarada_1'))]
+        else:
+            frow = ['UKUPNO','', pdf_fmt(tS('v_promet')), pdf_fmt(tS('v_kupac')),
+                    pdf_fmt(tS('marketing')), pdf_fmt(tS('knjizno')),
+                    pdf_fmt(tS('total_trosak')),
+                    pdf_fmt(tS('profit_prodaja')), pdf_fmt(tS('profit_promet')),
+                    pdf_fmt(lNZ('v_lager_vp')), pdf_fmt(lNZ('v_lager_nc')),
+                    pdf_fmt(tS('pov_stari')/1.2), pdf_fmt(tS('pov_novi')/1.2),
+                    pdf_fmt(tS('njihova_zarada_1'))]
+        neg_cols = set(profit_orig)
+        y = _draw_table(pdf, 14*mm, y, heads, trows, cw, frow, neg_cols=neg_cols)
+        y -= 5*mm
+        pdf.setFont('Helvetica-Oblique', 5.5); pdf.setFillColor(PDF_MID)
+        pdf.drawString(14*mm, y, '* Knjizna odobrenja su predstavljena na osnovu knjigovodstvene evidencije.')
+        _draw_footer(pdf, pw, ph, ds, sistem, 1, tp)
+
+        # --- STRANA 2: KPI + BILANS + LAGER ---
+        pdf.showPage()
+        y = _draw_header(pdf, pw, ph, sistem, ds)
+        y -= 12*mm
+        nM = len(monthly); avgK = tS('v_kupac') / nM if nM > 0 else 0
+        obrt = lastVP / avgK if avgK > 0 else 0
+        cW = 82*mm; cH = 18*mm; gap = 10*mm
+        _draw_kpi(pdf, 18*mm, y - cH, cW, cH, 'POSLEDNJI LAGER (VP)', pdf_fmt(lastVP) + ' RSD')
+        _draw_kpi(pdf, 18*mm + cW + gap, y - cH, cW, cH, 'PROSECNA MESECNA PRODAJA', pdf_fmt(avgK) + ' RSD')
+        _draw_kpi(pdf, 18*mm + 2*(cW + gap), y - cH, cW, cH, 'OBRT LAGERA', f'{obrt:.1f} meseci',
+                  bg=PDF_TEAL, tc=PDF_WHITE, lc=HexColor('#c8ebeb'))
+        y -= cH + 12*mm
+        y = _draw_section(pdf, 18*mm, y, 'FINANSIJSKI BILANS (sa PDV)')
+        y -= 2*mm
+        zaduzenje = poc + tS('v_promet') * 1.2
+        trosak_b = tS('knjizno') * 1.2 + tS('fakturisano')
+        razduzenje = zaduzenje - tS('pov_total') - trosak_b
+        bilans_dugF = round(dugF)
+        lager_pdv_total = round(sum(g['vrednost'] for g in lager['grupe'])) if lager else round(lastVP * 1.2)
+        bh = ['Pocetno stanje','Promet + PDV','ZADUZENJE','Povrat (sa PDV)','KO + Troskovi + PDV',
+              'SA UMANJENJEM','Uplata','Uplata ka njima','Dug (Faktura)']
+        bv = [pdf_fmt(poc), pdf_fmt(tS('v_promet')*1.2), pdf_fmt(zaduzenje),
+              pdf_fmt(tS('pov_total')), pdf_fmt(trosak_b), pdf_fmt(razduzenje),
+              pdf_fmt(tS('uplata')), pdf_fmt(tS('uplata_ka_njima')), pdf_fmt(bilans_dugF)]
+        if nac == 0:
+            bh += ['Vrednost lagera (VP sa PDV)', 'Dug (Odjava)']
+            bv += [pdf_fmt(lager_pdv_total), pdf_fmt(bilans_dugF - lager_pdv_total)]
+        y = _draw_bilans(pdf, 18*mm, y, bh, bv, pw)
+        y -= 12*mm
+        if lager:
+            y = _draw_section(pdf, 18*mm, y, 'PREGLED LAGERA PO GRUPAMA',
+                              f'Stanje: {PDF_ML[lager["mesec"]]} {lager["godina"]}.')
+            y -= 2*mm
+            y, totV = _draw_lager(pdf, 18*mm, y, lager)
+            y -= 8*mm
+            if nac == 0:
+                y = _draw_section(pdf, 18*mm, y, 'OBRACUN DUGA')
+                y -= 2*mm
+                y = _draw_obracun(pdf, 18*mm, y, bilans_dugF, lager_pdv_total)
+        _draw_footer(pdf, pw, ph, ds, sistem, 2, tp)
+
+        # --- STRANA 3: PRODAJA PO GRUPAMA ---
+        if prodaja:
+            pdf.showPage()
+            y = _draw_header(pdf, pw, ph, sistem, ds)
+            y -= 10*mm
+            y = _draw_prodaja(pdf, 18*mm, y, pw, prodaja)
+            _draw_footer(pdf, pw, ph, ds, sistem, 3, tp)
+
+        pdf.save()
+        buf.seek(0)
+        return buf.read()
+
+    # ============================================================
+    # UI ZA PDF IZVEŠTAJE
+    # ============================================================
+    render_header("PDF Izveštaji za sastanke sa sistemima")
+
+    st.markdown('<div class="back-wrap">', unsafe_allow_html=True)
+    if st.button("← Početna", key="back_pdf"):
+        st.session_state.page = 'home'
+        st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # Opcija za poslednji mesec
+    ukljuci_poslednji_pdf = st.toggle("📅 Uključi poslednji mesec u izveštaj", value=False)
+
+    with st.spinner("⏳ Učitavam podatke..."):
+        df_pdf, nacin_pdf, sistemi_pdf = pdf_load_data(ukljuci_poslednji_pdf)
+
+    if df_pdf is None:
+        st.error("❌ Podaci nisu dostupni. Proveri da li je sistemi.xlsx postavljen na GitHub.")
+    else:
+        now = datetime.datetime.now()
+        mn_sr = ['januar','februar','mart','april','maj','jun','jul','avgust','septembar','oktobar','novembar','decembar']
+        pdf_ds = f'{now.day}. {mn_sr[now.month-1]} {now.year}.'
+
+        st.markdown(f"**{len(sistemi_pdf)} sistema dostupno** · Poslednji mesec: {'✅ uključen' if ukljuci_poslednji_pdf else '❌ isključen'}")
+        st.markdown("---")
+
+        # Grid dugmadi po sistemima
+        st.markdown("### 📥 Preuzmi PDF po sistemu")
+        cols_per_row = 3
+        rows_iter = [sistemi_pdf[i:i+cols_per_row] for i in range(0, len(sistemi_pdf), cols_per_row)]
+        for row_s in rows_iter:
+            cols = st.columns(cols_per_row)
+            for ci, sistem in enumerate(row_s):
+                with cols[ci]:
+                    nac_label = "Faktura" if nacin_pdf.get(sistem, 1) == 1 else "Odjava"
+                    if st.button(f"📄 {sistem}", use_container_width=True, key=f"pdf_btn_{sistem}",
+                                 help=f"Nacin placanja: {nac_label}"):
+                        with st.spinner(f"⏳ Generišem PDF za {sistem}..."):
+                            pdf_bytes = generate_pdf_bytes(sistem, df_pdf, nacin_pdf, pdf_ds)
+                        if pdf_bytes:
+                            fname = f"IZVESTAJ_{sistem.replace(' ', '_')}.pdf"
+                            st.download_button(
+                                label=f"⬇️ Preuzmi {sistem}",
+                                data=pdf_bytes,
+                                file_name=fname,
+                                mime="application/pdf",
+                                key=f"dl_{sistem}"
+                            )
+                        else:
+                            st.warning(f"⚠️ Nema podataka za {sistem}")
+
+        st.markdown("---")
+        st.markdown("### 📦 Preuzmi sve PDF-ove odjednom (ZIP)")
+        if st.button("🗜️ Generiši ZIP sa svim izveštajima", use_container_width=True, key="pdf_zip_all"):
+            zip_buf = io.BytesIO()
+            progress = st.progress(0)
+            status = st.empty()
+            with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for i, sistem in enumerate(sistemi_pdf):
+                    status.text(f"⏳ Generišem: {sistem} ({i+1}/{len(sistemi_pdf)})...")
+                    pdf_bytes = generate_pdf_bytes(sistem, df_pdf, nacin_pdf, pdf_ds)
+                    if pdf_bytes:
+                        zf.writestr(f"IZVESTAJ_{sistem.replace(' ', '_')}.pdf", pdf_bytes)
+                    progress.progress((i + 1) / len(sistemi_pdf))
+            status.empty()
+            progress.empty()
+            zip_buf.seek(0)
+            st.download_button(
+                label="⬇️ Preuzmi ZIP sa svim izveštajima",
+                data=zip_buf.read(),
+                file_name=f"VAPE_PDF_Izvestaji_{now.strftime('%Y%m%d')}.zip",
+                mime="application/zip",
+                key="dl_zip_all"
+            )
+            st.success(f"✅ ZIP generisan — {len(sistemi_pdf)} izveštaja")
