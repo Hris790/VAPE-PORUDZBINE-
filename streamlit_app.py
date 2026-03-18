@@ -2157,8 +2157,7 @@ elif page == 'mesecni':
             return None
         if buf_t is None:
             return None
-        cfg = load_github_config()
-        iskljuci_poslednji = not cfg.get("ukljuci_poslednji_mesec", True)
+        iskljuci_poslednji = True
 
         df = pd.read_excel(buf_s, sheet_name='tabela')
         df.columns = df.columns.astype(str).str.strip()
@@ -2645,8 +2644,7 @@ elif page == 'finansijski':
         buf_s = load_github_excel("tabela sistemi3.xlsx")
         if buf_s is None:
             return None
-        cfg = load_github_config()
-        ukljuci_poslednji = cfg.get("ukljuci_poslednji_mesec", True)
+        ukljuci_poslednji = False
 
         df = pd.read_excel(buf_s, sheet_name='tabela')
         df.columns = df.columns.astype(str).str.strip()
