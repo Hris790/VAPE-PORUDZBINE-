@@ -3342,17 +3342,39 @@ elif page == 'pdf_izvestaji':
             heads_all = ['Mesec','God.','Promet','Ka kupcu','Marketing','Knjizno','Dodatni','Total troskovi',
                      'Profit prod.','Profit prom.','Lager VP','Lager NC','Pov. st.cig.nv','Pov. novih','Profit. kupca']
             cw_all = [14*mm,11*mm,20*mm,20*mm,17*mm,15*mm,15*mm,19*mm,18*mm,18*mm,20*mm,20*mm,17*mm,17*mm,21*mm]
-            profit_orig_all = (8, 9)
+            profit_orig_names = {'Profit prod.', 'Profit prom.'}
         else:
             heads_all = ['Mesec','God.','Promet','Ka kupcu','Marketing','Knjizno','Total troskovi',
                      'Profit prod.','Profit prom.','Lager VP','Lager NC','Pov. st.cig.nv','Pov. novih','Profit. kupca']
             cw_all = [14*mm,11*mm,21*mm,21*mm,18*mm,16*mm,20*mm,19*mm,19*mm,21*mm,21*mm,18*mm,18*mm,22*mm]
-            profit_orig_all = (7, 8)
-        # Primeni sakrij — indeksi 0 i 1 (Mesec, God.) su uvek vidljivi
-        # sakrij sadrzi 1-bazirane indekse kolona bez Mesec/God.
-        vis_idx = [0, 1] + [i for i in range(2, len(heads_all)) if (i - 1) not in sakrij]
+            profit_orig_names = {'Profit prod.', 'Profit prom.'}
+
+        # Mapiranje: UI labele -> ime kolone u heads_all
+        col_name_map = {
+            'Promet': 'Promet', 'Ka kupcu': 'Ka kupcu', 'Marketing': 'Marketing',
+            'Knjizno': 'Knjizno', 'Total troškovi': 'Total troskovi',
+            'Profit prod.': 'Profit prod.', 'Profit prom.': 'Profit prom.',
+            'Lager VP': 'Lager VP', 'Lager NC': 'Lager NC',
+            'Pov. starih cig.': 'Pov. st.cig.nv', 'Pov. novih': 'Pov. novih',
+            'Profit. kupca': 'Profit. kupca'
+        }
+        # Pretvori sakrij (UI indekse) u skup imena kolona
+        sve_kolone_ui = [
+            (1,'Promet'),(2,'Ka kupcu'),(3,'Marketing'),(4,'Knjizno'),
+            (5,'Total troškovi'),(6,'Profit prod.'),(7,'Profit prom.'),
+            (8,'Lager VP'),(9,'Lager NC'),(10,'Pov. starih cig.'),(11,'Pov. novih'),(12,'Profit. kupca')
+        ]
+        sakrij_names = set()
+        for ui_idx, ui_name in sve_kolone_ui:
+            if ui_idx in sakrij:
+                mapped = col_name_map.get(ui_name, ui_name)
+                sakrij_names.add(mapped)
+
+        # Filtriraj kolone — Mesec i God. uvek vidljivi
+        vis_idx = [i for i, h in enumerate(heads_all) if i < 2 or h not in sakrij_names]
         heads = [heads_all[i] for i in vis_idx]
         cw = [cw_all[i] for i in vis_idx]
+
         trows = []
         for r in monthly:
             nj = r['njihova_zarada_1']
@@ -3374,6 +3396,7 @@ elif page == 'pdf_izvestaji':
                        pdf_fmt(r['v_lager_vp']), pdf_fmt(r['v_lager_nc']),
                        pdf_fmt(r['pov_stari']/1.2), pdf_fmt(r['pov_novi']/1.2), pdf_fmt(nj)]
             trows.append([full_row[i] for i in vis_idx])
+
         if has_dod:
             full_frow = ['UKUPNO','', pdf_fmt(tS('v_promet')), pdf_fmt(tS('v_kupac')),
                     pdf_fmt(tS('marketing')), pdf_fmt(tS('knjizno')),
@@ -3392,10 +3415,12 @@ elif page == 'pdf_izvestaji':
                     pdf_fmt(tS('pov_stari')/1.2), pdf_fmt(tS('pov_novi')/1.2),
                     pdf_fmt(tS('njihova_zarada_1'))]
         frow = [full_frow[i] for i in vis_idx]
-        # Mapiranje profit kolona na vidljive indekse
+
+        # Pronađi indekse profit kolona u vidljivim kolonama
         neg_cols = set()
         for vi, oi in enumerate(vis_idx):
-            if oi in profit_orig_all: neg_cols.add(vi)
+            if heads_all[oi] in profit_orig_names:
+                neg_cols.add(vi)
         y = _draw_table(pdf, 14*mm, y, heads, trows, cw, frow, neg_cols=neg_cols)
         y -= 5*mm
         pdf.setFont('Helvetica-Oblique', 5.5); pdf.setFillColor(PDF_MID)
@@ -3470,7 +3495,7 @@ elif page == 'pdf_izvestaji':
     with st.expander("⚙️ Opcije izveštaja", expanded=True):
         opt1, opt2, opt3 = st.columns([1, 1, 2])
         with opt1:
-            ukljuci_poslednji_pdf = st.toggle("📅 Uključi poslednji mesec", value=False)
+            ukljuci_poslednji_pdf = st.toggle("📅 Uključi poslednji mesec", value=True)
         with opt2:
             # Privremeno učitaj samo da bismo dobili godine
             @st.cache_data(ttl=300)
