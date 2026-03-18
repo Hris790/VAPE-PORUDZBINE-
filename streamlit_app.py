@@ -2927,9 +2927,9 @@ elif page == 'pdf_izvestaji':
         return f'{float(v):,.2f}'.replace(',', 'X').replace('.', ',').replace('X', '.')
 
     @st.cache_data(ttl=300)
-    def pdf_load_data(ukljuci_poslednji):
+    def pdf_load_data(ukljuci_poslednji, do_god=None):
         buf = load_github_excel("tabela sistemi3.xlsx")
-        if buf is None: return None, None, None
+        if buf is None: return None, None, None, None
         df = pd.read_excel(buf, sheet_name='tabela')
         df.columns = df.columns.astype(str).str.strip()
         df = df[df['SISTEM'] != 'MOBILLAND']
@@ -2950,6 +2950,11 @@ elif page == 'pdf_izvestaji':
         for s in df[df['Mesec'] == 0]['SISTEM'].unique():
             if pd.notna(s):
                 nacin[str(s)] = int(df[(df['SISTEM'] == s) & (df['Mesec'] == 0)]['Nacin placanja'].iloc[0])
+        # Sve dostupne godine
+        sve_god = sorted([int(g) for g in df[df['Mesec'] > 0]['Godina'].unique() if g > 0])
+        # Filtriranje zakljucno sa do_god
+        if do_god is not None:
+            df = df[(df['Mesec'] == 0) | (df['Godina'] <= do_god)]
         # Iskljuci poslednji mesec ako treba
         if not ukljuci_poslednji:
             active = df[df['Mesec'] > 0]
@@ -2958,7 +2963,7 @@ elif page == 'pdf_izvestaji':
                 max_g, max_m = max_ym // 100, max_ym % 100
                 df = df[~((df['Godina'] == max_g) & (df['Mesec'] == max_m))]
         sistemi = sorted([str(s) for s in df['SISTEM'].unique() if pd.notna(s) and str(s).strip() != ''])
-        return df, nacin, sistemi
+        return df, nacin, sistemi, sve_god
 
     def pdf_get_monthly(df, sistem):
         ds = df[(df['SISTEM'] == sistem) & (df['Mesec'] > 0)]
@@ -3305,8 +3310,9 @@ elif page == 'pdf_izvestaji':
             c.drawRightString(x + tw - 2*mm, y + 1.5*mm, f"{row_total:,}".replace(',', '.') if row_total else '-')
         return y
 
-    def generate_pdf_bytes(sistem, df, nacin_map, ds):
+    def generate_pdf_bytes(sistem, df, nacin_map, ds, sakrij=None):
         """Generise PDF za jedan sistem i vraca bytes."""
+        if sakrij is None: sakrij = set()
         monthly = pdf_get_monthly(df, sistem)
         if not monthly: return None
         poc = pdf_get_poc_stanje(df, sistem)
@@ -3333,20 +3339,25 @@ elif page == 'pdf_izvestaji':
         y = _draw_section(pdf, 18*mm, y, 'MESECNI PREGLED (vrednosti bez PDV)')
         y -= 2*mm
         if has_dod:
-            heads = ['Mesec','God.','Promet','Ka kupcu','Marketing','Knjizno','Dodatni','Total troskovi',
+            heads_all = ['Mesec','God.','Promet','Ka kupcu','Marketing','Knjizno','Dodatni','Total troskovi',
                      'Profit prod.','Profit prom.','Lager VP','Lager NC','Pov. st.cig.nv','Pov. novih','Profit. kupca']
-            cw = [14*mm,11*mm,20*mm,20*mm,17*mm,15*mm,15*mm,19*mm,18*mm,18*mm,20*mm,20*mm,17*mm,17*mm,21*mm]
-            profit_orig = (8, 9)
+            cw_all = [14*mm,11*mm,20*mm,20*mm,17*mm,15*mm,15*mm,19*mm,18*mm,18*mm,20*mm,20*mm,17*mm,17*mm,21*mm]
+            profit_orig_all = (8, 9)
         else:
-            heads = ['Mesec','God.','Promet','Ka kupcu','Marketing','Knjizno','Total troskovi',
+            heads_all = ['Mesec','God.','Promet','Ka kupcu','Marketing','Knjizno','Total troskovi',
                      'Profit prod.','Profit prom.','Lager VP','Lager NC','Pov. st.cig.nv','Pov. novih','Profit. kupca']
-            cw = [14*mm,11*mm,21*mm,21*mm,18*mm,16*mm,20*mm,19*mm,19*mm,21*mm,21*mm,18*mm,18*mm,22*mm]
-            profit_orig = (7, 8)
+            cw_all = [14*mm,11*mm,21*mm,21*mm,18*mm,16*mm,20*mm,19*mm,19*mm,21*mm,21*mm,18*mm,18*mm,22*mm]
+            profit_orig_all = (7, 8)
+        # Primeni sakrij — indeksi 0 i 1 (Mesec, God.) su uvek vidljivi
+        # sakrij sadrzi 1-bazirane indekse kolona bez Mesec/God.
+        vis_idx = [0, 1] + [i for i in range(2, len(heads_all)) if (i - 1) not in sakrij]
+        heads = [heads_all[i] for i in vis_idx]
+        cw = [cw_all[i] for i in vis_idx]
         trows = []
         for r in monthly:
             nj = r['njihova_zarada_1']
             if has_dod:
-                row = [PDF_ML.get(r['mesec'], r['mesec']), r['godina'],
+                full_row = [PDF_ML.get(r['mesec'], r['mesec']), r['godina'],
                        pdf_fmt(r['v_promet']), pdf_fmt(r['v_kupac']),
                        pdf_fmt(r['marketing']), pdf_fmt(r['knjizno']),
                        pdf_fmt(r['dodatni_trosak']), pdf_fmt(r['total_trosak']),
@@ -3355,16 +3366,16 @@ elif page == 'pdf_izvestaji':
                        pdf_fmt(r['v_lager_vp']), pdf_fmt(r['v_lager_nc']),
                        pdf_fmt(r['pov_stari']/1.2), pdf_fmt(r['pov_novi']/1.2), pdf_fmt(nj)]
             else:
-                row = [PDF_ML.get(r['mesec'], r['mesec']), r['godina'],
+                full_row = [PDF_ML.get(r['mesec'], r['mesec']), r['godina'],
                        pdf_fmt(r['v_promet']), pdf_fmt(r['v_kupac']),
                        pdf_fmt(r['marketing']), pdf_fmt(r['knjizno']),
                        pdf_fmt(r['total_trosak']),
                        pdf_fmt(r['profit_prodaja']), pdf_fmt(r['profit_promet']),
                        pdf_fmt(r['v_lager_vp']), pdf_fmt(r['v_lager_nc']),
                        pdf_fmt(r['pov_stari']/1.2), pdf_fmt(r['pov_novi']/1.2), pdf_fmt(nj)]
-            trows.append(row)
+            trows.append([full_row[i] for i in vis_idx])
         if has_dod:
-            frow = ['UKUPNO','', pdf_fmt(tS('v_promet')), pdf_fmt(tS('v_kupac')),
+            full_frow = ['UKUPNO','', pdf_fmt(tS('v_promet')), pdf_fmt(tS('v_kupac')),
                     pdf_fmt(tS('marketing')), pdf_fmt(tS('knjizno')),
                     pdf_fmt(tS('dodatni_trosak')), pdf_fmt(tS('total_trosak')),
                     pdf_fmt(tS('profit_prodaja') - tS('dodatni_trosak')),
@@ -3373,14 +3384,18 @@ elif page == 'pdf_izvestaji':
                     pdf_fmt(tS('pov_stari')/1.2), pdf_fmt(tS('pov_novi')/1.2),
                     pdf_fmt(tS('njihova_zarada_1'))]
         else:
-            frow = ['UKUPNO','', pdf_fmt(tS('v_promet')), pdf_fmt(tS('v_kupac')),
+            full_frow = ['UKUPNO','', pdf_fmt(tS('v_promet')), pdf_fmt(tS('v_kupac')),
                     pdf_fmt(tS('marketing')), pdf_fmt(tS('knjizno')),
                     pdf_fmt(tS('total_trosak')),
                     pdf_fmt(tS('profit_prodaja')), pdf_fmt(tS('profit_promet')),
                     pdf_fmt(lNZ('v_lager_vp')), pdf_fmt(lNZ('v_lager_nc')),
                     pdf_fmt(tS('pov_stari')/1.2), pdf_fmt(tS('pov_novi')/1.2),
                     pdf_fmt(tS('njihova_zarada_1'))]
-        neg_cols = set(profit_orig)
+        frow = [full_frow[i] for i in vis_idx]
+        # Mapiranje profit kolona na vidljive indekse
+        neg_cols = set()
+        for vi, oi in enumerate(vis_idx):
+            if oi in profit_orig_all: neg_cols.add(vi)
         y = _draw_table(pdf, 14*mm, y, heads, trows, cw, frow, neg_cols=neg_cols)
         y -= 5*mm
         pdf.setFont('Helvetica-Oblique', 5.5); pdf.setFillColor(PDF_MID)
@@ -3451,11 +3466,48 @@ elif page == 'pdf_izvestaji':
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # Opcija za poslednji mesec
-    ukljuci_poslednji_pdf = st.toggle("📅 Uključi poslednji mesec u izveštaj", value=False)
+    # Opcije u expanderu
+    with st.expander("⚙️ Opcije izveštaja", expanded=True):
+        opt1, opt2, opt3 = st.columns([1, 1, 2])
+        with opt1:
+            ukljuci_poslednji_pdf = st.toggle("📅 Uključi poslednji mesec", value=False)
+        with opt2:
+            # Privremeno učitaj samo da bismo dobili godine
+            @st.cache_data(ttl=300)
+            def _get_god():
+                buf = load_github_excel("tabela sistemi3.xlsx")
+                if buf is None: return [2025, 2026]
+                df_t = pd.read_excel(buf, sheet_name='tabela')
+                df_t.columns = df_t.columns.astype(str).str.strip()
+                df_t['Godina'] = pd.to_numeric(df_t['Godina'], errors='coerce').fillna(0)
+                return sorted([int(g) for g in df_t[df_t['Godina'] > 0]['Godina'].unique()])
+            sve_god_opts = _get_god()
+            do_god_pdf = st.selectbox(
+                "📆 Zaključno sa godinom",
+                options=sve_god_opts,
+                index=len(sve_god_opts) - 1,
+                help="Prikazuje podatke od početka do kraja odabrane godine"
+            )
+        with opt3:
+            # Kolone koje korisnik može da sakrije (bez Mesec i God. koji su fiksni)
+            sve_kolone = [
+                (1, 'Promet'), (2, 'Ka kupcu'), (3, 'Marketing'), (4, 'Knjizno'),
+                (5, 'Total troškovi'), (6, 'Profit prod.'), (7, 'Profit prom.'),
+                (8, 'Lager VP'), (9, 'Lager NC'), (10, 'Pov. starih cig.'), (11, 'Pov. novih'), (12, 'Profit. kupca')
+            ]
+            sakrij_labele = st.multiselect(
+                "🙈 Sakrij kolone (str. 1)",
+                options=[f"{i}. {n}" for i, n in sve_kolone],
+                default=[],
+                help="Odabrane kolone neće biti prikazane u mesečnom pregledu na prvoj strani PDF-a"
+            )
+            sakrij_pdf = set()
+            for lab in sakrij_labele:
+                idx_str = lab.split('.')[0].strip()
+                if idx_str.isdigit(): sakrij_pdf.add(int(idx_str))
 
     with st.spinner("⏳ Učitavam podatke..."):
-        df_pdf, nacin_pdf, sistemi_pdf = pdf_load_data(ukljuci_poslednji_pdf)
+        df_pdf, nacin_pdf, sistemi_pdf, _ = pdf_load_data(ukljuci_poslednji_pdf, do_god_pdf)
 
     if df_pdf is None:
         st.error("❌ Podaci nisu dostupni. Proveri da li je sistemi.xlsx postavljen na GitHub.")
@@ -3479,7 +3531,7 @@ elif page == 'pdf_izvestaji':
                     if st.button(f"📄 {sistem}", use_container_width=True, key=f"pdf_btn_{sistem}",
                                  help=f"Nacin placanja: {nac_label}"):
                         with st.spinner(f"⏳ Generišem PDF za {sistem}..."):
-                            pdf_bytes = generate_pdf_bytes(sistem, df_pdf, nacin_pdf, pdf_ds)
+                            pdf_bytes = generate_pdf_bytes(sistem, df_pdf, nacin_pdf, pdf_ds, sakrij_pdf)
                         if pdf_bytes:
                             fname = f"IZVESTAJ_{sistem.replace(' ', '_')}.pdf"
                             st.download_button(
@@ -3501,7 +3553,7 @@ elif page == 'pdf_izvestaji':
             with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
                 for i, sistem in enumerate(sistemi_pdf):
                     status.text(f"⏳ Generišem: {sistem} ({i+1}/{len(sistemi_pdf)})...")
-                    pdf_bytes = generate_pdf_bytes(sistem, df_pdf, nacin_pdf, pdf_ds)
+                    pdf_bytes = generate_pdf_bytes(sistem, df_pdf, nacin_pdf, pdf_ds, sakrij_pdf)
                     if pdf_bytes:
                         zf.writestr(f"IZVESTAJ_{sistem.replace(' ', '_')}.pdf", pdf_bytes)
                     progress.progress((i + 1) / len(sistemi_pdf))
