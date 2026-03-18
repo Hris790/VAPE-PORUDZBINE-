@@ -1276,49 +1276,68 @@ body{font-family:'Poppins',sans-serif;background:transparent;padding:24px 16px}
 .tag-blue{background:rgba(59,130,246,0.12);color:#1d4ed8;border:1px solid rgba(59,130,246,0.25)}
 .tag-green{background:rgba(22,163,74,0.12);color:#15803d;border:1px solid rgba(22,163,74,0.3)}
 </style></head><body>
-<p class="label">AMAN d.o.o. · Odaberi izveštaj</p>
+<p class="label">Vape Shop d.o.o. · Odaberi izveštaj</p>
 <div class="grid">
-  <div class="card">
+  <div class="card" onclick="nav('p')">
     <div class="icon">📦</div>
     <div class="title">Profitabilnost objekata</div>
     <div class="desc">Predikcija prodaje, OOS analiza, trendovi komitenata i analiza akcije.</div>
     <span class="tag tag-purple">Upload Excel</span>
   </div>
-  <div class="card">
+  <div class="card" onclick="nav('m')">
     <div class="icon">📊</div>
     <div class="title">Mesečni izveštaj</div>
     <div class="desc">Prodaja po sistemima, profitabilnost, Dr Vukašin i stanje zaliha.</div>
     <span class="tag tag-pink">Automatski podaci</span>
   </div>
-  <div class="card">
+  <div class="card" onclick="nav('f')">
     <div class="icon">💰</div>
     <div class="title">Finansijski izveštaj</div>
     <div class="desc">Pregled po sistemima, dugovanja, lager vrednosti i PDF generisanje.</div>
     <span class="tag tag-blue">Automatski podaci</span>
   </div>
-  <div class="card">
+  <div class="card" onclick="nav('pdf')">
     <div class="icon">📄</div>
     <div class="title">PDF Izveštaji</div>
     <div class="desc">Izveštaji za sastanke po sistemu — mesečni pregled, bilans, lager i prodaja po grupama.</div>
     <span class="tag tag-green">Automatski podaci</span>
   </div>
 </div>
-</body></html>""", height=300)
+<script>
+function nav(key){
+  var parent = window.parent.document;
+  var btns = parent.querySelectorAll('button');
+  for(var i=0;i<btns.length;i++){
+    var t = btns[i].innerText.trim();
+    if(t === key){ btns[i].click(); return; }
+  }
+}
+</script>
+</body></html>""", height=310)
 
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    # Skrivena dugmad koja kartice triggeruju
+    st.markdown("""<style>
+    .nav-btns { display: flex; gap: 8px; }
+    .nav-btns > div { flex: 1; }
+    .nav-btns button { opacity: 0; height: 1px !important; min-height: 1px !important;
+        padding: 0 !important; margin: 0 !important; border: none !important;
+        pointer-events: none; overflow: hidden; }
+    </style>
+    <div class="nav-btns">""", unsafe_allow_html=True)
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        if st.button("📦 Otvori izveštaj", use_container_width=True, key='btn_home_p'):
+        if st.button("p", key='btn_home_p'):
             st.session_state.page = 'porudzbine'; st.rerun()
     with col2:
-        if st.button("📊 Otvori izveštaj", use_container_width=True, key='btn_home_m'):
+        if st.button("m", key='btn_home_m'):
             st.session_state.page = 'mesecni'; st.rerun()
     with col3:
-        if st.button("💰 Otvori izveštaj", use_container_width=True, key='btn_home_f'):
+        if st.button("f", key='btn_home_f'):
             st.session_state.page = 'finansijski'; st.rerun()
     with col4:
-        if st.button("📄 Otvori izveštaj", use_container_width=True, key='btn_home_pdf'):
+        if st.button("pdf", key='btn_home_pdf'):
             st.session_state.page = 'pdf_izvestaji'; st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
 
 elif page == 'porudzbine':
     render_header("Predikcija prodaje · Profitabilnost · OOS analiza · Efekti akcije")
