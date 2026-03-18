@@ -28,7 +28,7 @@ def load_github_config():
             return r.json()
     except:
         pass
-    return {"ukljuci_poslednji_mesec": False}
+    return {"ukljuci_poslednji_mesec": True}
 
 # --- PASSWORD ZASTITA ---
 APP_PASSWORD = "vape2024"
