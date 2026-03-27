@@ -1315,15 +1315,17 @@ function nav(key){
 </script>
 </body></html>""", height=310)
 
-    # Skrivena dugmad koja kartice triggeruju
+    # Skrivena navigaciona dugmad
     st.markdown("""<style>
-    .nav-btns { display: flex; gap: 8px; }
-    .nav-btns > div { flex: 1; }
-    .nav-btns button { opacity: 0; height: 1px !important; min-height: 1px !important;
-        padding: 0 !important; margin: 0 !important; border: none !important;
-        pointer-events: none; overflow: hidden; }
+    .hidden-nav button { 
+        position: absolute !important;
+        width: 1px !important; height: 1px !important;
+        opacity: 0 !important; pointer-events: none !important;
+        overflow: hidden !important; clip: rect(0,0,0,0) !important;
+    }
+    .hidden-nav { height: 0 !important; overflow: hidden !important; }
     </style>
-    <div class="nav-btns">""", unsafe_allow_html=True)
+    <div class="hidden-nav">""", unsafe_allow_html=True)
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         if st.button("p", key='btn_home_p'):
