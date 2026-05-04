@@ -533,51 +533,84 @@ class PredictionEngine:
             best = min(art_keys, key=lambda x: abs(x[1] * 12 + x[2] - target))
             return ppu_mesec[best]
 
+        # ============================================================
+        # NOVA OOS LOGIKA:
+        # OOS izgubljeno (kom) = max(0, prosek_kad_ima_zaliha - (poc + ulaz))
+        # gde se "prosek_kad_ima_zaliha" racuna iz meseci kad NIJE bilo
+        # ogranicenja (dostupno > prodaja, znaci nije rasprodato).
+        # Tako hvatamo i delimicne OOS situacije - kad je dostupno < prosek.
+        # ============================================================
         oos_rows = []
         for _, k in self.all_keys.iterrows():
             idk, ida = k['ID KOMITENTA'], k['id artikla']
             poc = self.startni_dict.get((idk, ida), 0)
-            month_sales = []; month_oos = []; month_gm = []
+            month_sales = []
+            month_dostupno = []
+            month_gm = []
             for i, (god, mes) in enumerate(self.meseci_order):
                 lb = ml[i]
-                pv = df[(df['ID KOMITENTA']==idk)&(df['id artikla']==ida)][f'{lb}_Prodaja'].values
-                pv = int(pv[0]) if len(pv) > 0 else 0
+                pv_arr = df[(df['ID KOMITENTA']==idk)&(df['id artikla']==ida)][f'{lb}_Prodaja'].values
+                pv = int(pv_arr[0]) if len(pv_arr) > 0 else 0
+                tv_arr = df[(df['ID KOMITENTA']==idk)&(df['id artikla']==ida)][f'{lb}_Promet'].values
+                tv = int(tv_arr[0]) if len(tv_arr) > 0 else 0
+                dostupno = poc + tv
                 if i in a_indices:
                     month_sales.append(pv)
-                    month_oos.append(poc == 0)
+                    month_dostupno.append(dostupno)
                     month_gm.append((god, mes))
                 lv_col = self.prodaja_dict.get((idk, ida, god, mes), (0, 0, 0))
                 poc = lv_col[1] if not pd.isna(lv_col[1]) else 0
-            non_oos_sales = [month_sales[j] for j in range(len(month_sales)) if not month_oos[j]]
+
+            # Prosek prodaje u "normalnim" mesecima (kad je bilo dovoljno robe)
+            # Normalan mesec = dostupno > prodaja (nije rasprodato sve)
+            non_oos_sales = []
+            for j in range(len(month_sales)):
+                if month_dostupno[j] > month_sales[j] and month_sales[j] > 0:
+                    non_oos_sales.append(month_sales[j])
             avg_stocked = np.mean(non_oos_sales) if non_oos_sales else 0
-            oos_count = sum(month_oos)
-            if oos_count > 0 and avg_stocked > 0:
+
+            # Racunamo OOS u komadima za svaki mesec
+            month_oos_kom = []
+            month_oos_flag = []
+            total_lost_kom = 0
+            for j in range(len(month_sales)):
+                if avg_stocked > 0:
+                    izgub_kom = max(0, avg_stocked - month_dostupno[j])
+                else:
+                    izgub_kom = 0
+                month_oos_kom.append(izgub_kom)
+                month_oos_flag.append(1 if izgub_kom >= 0.5 else 0)
+                total_lost_kom += izgub_kom
+
+            oos_count = sum(month_oos_flag)
+
+            if total_lost_kom > 0 and avg_stocked > 0:
                 row = {
                     'ID KOMITENTA': idk, 'id artikla': ida,
                     'Naziv artikla': k['Naziv artikla'], 'Grupa': k['Grupa'],
                     'Prosek_kad_ima': round(avg_stocked, 1),
                     'Lager_danas': self.trenutni_dict.get((idk, ida), 0)
                 }
-                total_lost = 0
+                total_lost_rsd = 0
                 for j in range(len(month_sales)):
                     god_j, mes_j = month_gm[j]
                     lb_j = a_labels[j]
-                    if month_oos[j]:
+                    if month_oos_kom[j] > 0:
                         ppu_j = get_ppu(ida, god_j, mes_j)
-                        izgub_j = round(avg_stocked * ppu_j, 0)
-                        row[f'OOS_{lb_j}'] = 1
-                        row[f'Izgub_{lb_j}'] = izgub_j
-                        total_lost += izgub_j
+                        izgub_rsd = round(month_oos_kom[j] * ppu_j, 0)
+                        row[f'OOS_{lb_j}'] = round(month_oos_kom[j], 1)
+                        row[f'Izgub_{lb_j}'] = izgub_rsd
+                        total_lost_rsd += izgub_rsd
                     else:
                         row[f'OOS_{lb_j}'] = 0
                         row[f'Izgub_{lb_j}'] = 0
                 row['OOS_meseci'] = oos_count
-                row['Izgubljeni_profit'] = round(total_lost, 0)
+                row['Izgubljeni_profit'] = round(total_lost_rsd, 0)
                 oos_rows.append(row)
         self.df_oos = pd.DataFrame(oos_rows)
         if len(self.df_oos) > 0:
             self.df_oos = self.df_oos.sort_values('Izgubljeni_profit', ascending=False)
-            self.log(f"OOS analiza: {len(self.df_oos)} kombinacija, izgubljeno {self.df_oos['Izgubljeni_profit'].sum():,.0f} RSD")
+            self.log(f"OOS analiza (nova logika - kom izgubljeno): {len(self.df_oos)} kombinacija, izgubljeno {self.df_oos['Izgubljeni_profit'].sum():,.0f} RSD")
 
         trosak_mes_po_obj = self.trosak_po_objektu / max(n_a, 1) if self.trosak_po_objektu > 0 else 0
 
@@ -793,7 +826,7 @@ def create_excel(engine):
         a_labels_oos = engine.analitika_labels if engine.analitika_labels else engine.mesec_labels
         fixed_h = ['ID Komitenta','ID Artikla','Naziv','Grupa','Prosek kad ima','Lager danas']
         mes_h = []
-        for lb in a_labels_oos: mes_h += [f'OOS {lb}', f'Izgub {lb} (RSD)']
+        for lb in a_labels_oos: mes_h += [f'OOS {lb} (kom)', f'Izgub {lb} (RSD)']
         all_h = fixed_h + mes_h + ['OOS meseci ukupno','Izgubljeni profit (RSD)']
         for c, h in enumerate(all_h, 1):
             cell = ws_oos.cell(1, c, h)
@@ -803,13 +836,13 @@ def create_excel(engine):
             vals = [row['ID KOMITENTA'], row['id artikla'], row['Naziv artikla'], row['Grupa'],
                     row.get('Prosek_kad_ima',0), row.get('Lager_danas',0)]
             for lb in a_labels_oos:
-                vals.append(int(row.get(f'OOS_{lb}', 0)))
+                vals.append(row.get(f'OOS_{lb}', 0))
                 vals.append(row.get(f'Izgub_{lb}', 0))
             vals += [row.get('OOS_meseci',0), row.get('Izgubljeni_profit',0)]
             for c, v in enumerate(vals, 1):
                 cell = ws_oos.cell(idx, c, v); cell.font=dfn; cell.border=tb; cell.alignment=ca
                 col_name = all_h[c-1]
-                if col_name.startswith('OOS ') and v == 1:
+                if col_name.startswith('OOS ') and isinstance(v, (int, float)) and v > 0:
                     cell.fill = oos_fill; cell.font = Font(name='Arial',size=9,bold=True,color='C00000')
                 if col_name.startswith('Izgub ') or col_name == 'Izgubljeni profit (RSD)':
                     cell.number_format = nf_money
@@ -918,7 +951,11 @@ def create_excel(engine):
     if engine.has_prices:
         info+=["",f"=== ANALITIKA ===","",
             f"Profit formula: (Finalna cena / 1.2 / 1.2 - Nabavna) x Kolicina",
-            f"OOS izgubljeni profit: prosek prodaje kad ima zaliha x OOS meseci x profit/kom",
+            f"OOS izgubljeni profit (NOVA LOGIKA):",
+            f"  - Za svaki mesec: izgubljeno_kom = max(0, prosek_kad_ima_zaliha - (poc + ulaz))",
+            f"  - Prosek_kad_ima_zaliha = prosek prodaje u mesecima kad je dostupno > prodaja (znaci nije bilo ogranicenja)",
+            f"  - Izgubljeni profit = izgubljeno_kom x profit/kom",
+            f"  - Hvata i delimicne situacije: kad je dostupno < prosek, racuna se razlika kao izgubljeno",
             f"Ukupan trosak marketinga: {engine.mesecni_trosak:,.0f} RSD / {engine.num_komitenti} objekata = {engine.trosak_po_objektu:,.0f} RSD po objektu za period",
             f"Mesecni trosak po objektu: {engine.trosak_po_objektu / max(len(engine.analitika_labels), 1):,.0f} RSD",
             f"Neto po mesecu = Bruto profit meseca - mesecni trosak po objektu"]
