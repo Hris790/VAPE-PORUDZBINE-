@@ -534,18 +534,29 @@ class PredictionEngine:
             return ppu_mesec[best]
 
         # ============================================================
-        # NOVA OOS LOGIKA:
-        # OOS izgubljeno (kom) = max(0, prosek_kad_ima_zaliha - (poc + ulaz))
-        # gde se "prosek_kad_ima_zaliha" racuna iz meseci kad NIJE bilo
-        # ogranicenja (dostupno > prodaja, znaci nije rasprodato).
-        # Tako hvatamo i delimicne OOS situacije - kad je dostupno < prosek.
+        # NOVA OOS LOGIKA - 3 USLOVA:
+        # OOS se racuna SAMO za "constrained" mesece. Za svaki tip drugacije:
+        #
+        # USLOV 1 - CIST OOS: poc=0 i ulaz=0
+        #   → izgubljeno_kom = avg_stocked (ceo prosek, nista nisu imali)
+        #
+        # USLOV 2 - RASPRODATO: kraj=0 i prodaja>0
+        #   → izgubljeno_kom = max(0, avg_stocked - prodaja)
+        #
+        # USLOV 3 - DOBILI I RASPRODALI: poc=0, ulaz>0, kraj=0
+        #   → izgubljeno_kom = max(0, avg_stocked - prodaja)
+        #
+        # Ako mesec nije ni u jednom uslovu (kraj > 0): OOS = 0
+        # avg_stocked = prosek prodaje u mesecima koji NISU constrained
         # ============================================================
         oos_rows = []
         for _, k in self.all_keys.iterrows():
             idk, ida = k['ID KOMITENTA'], k['id artikla']
             poc = self.startni_dict.get((idk, ida), 0)
             month_sales = []
-            month_dostupno = []
+            month_poc = []
+            month_ulaz = []
+            month_kraj = []
             month_gm = []
             for i, (god, mes) in enumerate(self.meseci_order):
                 lb = ml[i]
@@ -553,30 +564,54 @@ class PredictionEngine:
                 pv = int(pv_arr[0]) if len(pv_arr) > 0 else 0
                 tv_arr = df[(df['ID KOMITENTA']==idk)&(df['id artikla']==ida)][f'{lb}_Promet'].values
                 tv = int(tv_arr[0]) if len(tv_arr) > 0 else 0
-                dostupno = poc + tv
+                lv_col = self.prodaja_dict.get((idk, ida, god, mes), (0, 0, 0))
+                kraj = lv_col[1] if not pd.isna(lv_col[1]) else 0
                 if i in a_indices:
                     month_sales.append(pv)
-                    month_dostupno.append(dostupno)
+                    month_poc.append(poc)
+                    month_ulaz.append(tv)
+                    month_kraj.append(kraj)
                     month_gm.append((god, mes))
-                lv_col = self.prodaja_dict.get((idk, ida, god, mes), (0, 0, 0))
-                poc = lv_col[1] if not pd.isna(lv_col[1]) else 0
+                poc = kraj
 
-            # Prosek prodaje u "normalnim" mesecima (kad je bilo dovoljno robe)
-            # Normalan mesec = dostupno > prodaja (nije rasprodato sve)
-            non_oos_sales = []
+            # Identifikacija constrained meseci (3 uslova)
+            month_constrained_type = []  # 0=normal, 1=cist OOS, 2=rasprodato, 3=dobili-rasprodali
             for j in range(len(month_sales)):
-                if month_dostupno[j] > month_sales[j] and month_sales[j] > 0:
-                    non_oos_sales.append(month_sales[j])
-            avg_stocked = np.mean(non_oos_sales) if non_oos_sales else 0
+                p = month_poc[j]
+                u = month_ulaz[j]
+                kr = month_kraj[j]
+                pr = month_sales[j]
+                if p == 0 and u == 0:
+                    month_constrained_type.append(1)  # cist OOS
+                elif p == 0 and u > 0 and kr == 0:
+                    month_constrained_type.append(3)  # dobili i rasprodali
+                elif kr == 0 and pr > 0:
+                    month_constrained_type.append(2)  # rasprodato
+                else:
+                    month_constrained_type.append(0)  # normal
 
-            # Racunamo OOS u komadima za svaki mesec
+            # Prosek prodaje samo iz "normalnih" meseci (gde nije bilo ogranicenja)
+            normal_sales = [month_sales[j] for j in range(len(month_sales))
+                            if month_constrained_type[j] == 0 and month_sales[j] > 0]
+            avg_stocked = np.mean(normal_sales) if normal_sales else 0
+
+            # Racunamo OOS u komadima za svaki mesec po tipu
             month_oos_kom = []
             month_oos_flag = []
             total_lost_kom = 0
             for j in range(len(month_sales)):
-                if avg_stocked > 0:
-                    izgub_kom = max(0, avg_stocked - month_dostupno[j])
+                t = month_constrained_type[j]
+                pr = month_sales[j]
+                if avg_stocked == 0:
+                    izgub_kom = 0
+                elif t == 1:
+                    # Cist OOS: ceo prosek je izgubljen
+                    izgub_kom = avg_stocked
+                elif t == 2 or t == 3:
+                    # Rasprodato ili dobili-rasprodali: izgubljeno = prosek - prodaja
+                    izgub_kom = max(0, avg_stocked - pr)
                 else:
+                    # Normalan mesec: nema OOS
                     izgub_kom = 0
                 month_oos_kom.append(izgub_kom)
                 month_oos_flag.append(1 if izgub_kom >= 0.5 else 0)
@@ -951,11 +986,13 @@ def create_excel(engine):
     if engine.has_prices:
         info+=["",f"=== ANALITIKA ===","",
             f"Profit formula: (Finalna cena / 1.2 / 1.2 - Nabavna) x Kolicina",
-            f"OOS izgubljeni profit (NOVA LOGIKA):",
-            f"  - Za svaki mesec: izgubljeno_kom = max(0, prosek_kad_ima_zaliha - (poc + ulaz))",
-            f"  - Prosek_kad_ima_zaliha = prosek prodaje u mesecima kad je dostupno > prodaja (znaci nije bilo ogranicenja)",
-            f"  - Izgubljeni profit = izgubljeno_kom x profit/kom",
-            f"  - Hvata i delimicne situacije: kad je dostupno < prosek, racuna se razlika kao izgubljeno",
+            f"OOS izgubljeni profit (NOVA LOGIKA - 3 uslova):",
+            f"  USLOV 1 - Cist OOS (poc=0 i ulaz=0): izgubljeno_kom = avg_stocked",
+            f"  USLOV 2 - Rasprodato (kraj=0 i prodaja>0): izgubljeno_kom = max(0, avg_stocked - prodaja)",
+            f"  USLOV 3 - Dobili i rasprodali (poc=0, ulaz>0, kraj=0): izgubljeno_kom = max(0, avg_stocked - prodaja)",
+            f"  Ako mesec nije constrained (kraj > 0): OOS = 0 (imali su robe i nisu rasprodali)",
+            f"  avg_stocked = prosek prodaje u mesecima koji NISU constrained",
+            f"  Izgubljeni profit = izgubljeno_kom x profit/kom po mesecu",
             f"Ukupan trosak marketinga: {engine.mesecni_trosak:,.0f} RSD / {engine.num_komitenti} objekata = {engine.trosak_po_objektu:,.0f} RSD po objektu za period",
             f"Mesecni trosak po objektu: {engine.trosak_po_objektu / max(len(engine.analitika_labels), 1):,.0f} RSD",
             f"Neto po mesecu = Bruto profit meseca - mesecni trosak po objektu"]
