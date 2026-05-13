@@ -117,9 +117,10 @@ WMA_WEIGHTS = np.array([0.03, 0.07, 0.12, 0.28, 0.50])
 HIST_WEIGHT = 0.03
 
 class PredictionEngine:
-    def __init__(self, file_bytes, excluded_ids, alpha, beta, min_lager, min_order, mesecni_trosak=0, analitika_meseci=None):
+    def __init__(self, file_bytes, excluded_ids, alpha, beta, min_lager, min_order, mesecni_trosak=0, analitika_meseci=None, min_per_artikal=None):
         self.file_bytes = file_bytes; self.excluded = excluded_ids
         self.alpha = alpha; self.beta = beta; self.min_lager = min_lager; self.min_order = min_order
+        self.min_per_artikal = min_per_artikal
         self.mesecni_trosak = mesecni_trosak
         self.analitika_meseci = analitika_meseci
         self.logs = []; self.adjustments = []; self.has_history = False
@@ -449,6 +450,31 @@ class PredictionEngine:
         self.df_result['Porudzbina_2'] = self.df_result.apply(finalna_provera, axis=1).astype(int)
         n_korigovano = (self.df_result['Porudzbina_2'] > self.df_result.apply(p2, axis=1)).sum()
         self.log(f"Finalna provera P2: {n_korigovano} kombinacija korigovano (porudzbina+lager <= prodaja poslednjeg meseca)")
+
+        # === MIN KOM PO ARTIKLU (po stavci porudzbine) ===
+        # Ako je porudzbina > 0 ali manja od minimuma, podigni je na minimum.
+        # Ako je 0, ostaje 0 - ne forsiramo slanje nepotrebnog artikla.
+        if self.min_per_artikal is not None and self.min_per_artikal > 1:
+            # Porudzbina_2
+            mask_p2 = (
+                (self.df_result['Porudzbina_2'] > 0) &
+                (self.df_result['Porudzbina_2'] < self.min_per_artikal) &
+                (~self.df_result['ID KOMITENTA'].isin(self.excluded))
+            )
+            n_podignuto_p2 = int(mask_p2.sum())
+            self.df_result.loc[mask_p2, 'Porudzbina_2'] = self.min_per_artikal
+
+            # Porudzbina_1 (osnovna) - ista logika
+            mask_p1 = (
+                (self.df_result['Porudzbina_1'] > 0) &
+                (self.df_result['Porudzbina_1'] < self.min_per_artikal) &
+                (~self.df_result['ID KOMITENTA'].isin(self.excluded))
+            )
+            n_podignuto_p1 = int(mask_p1.sum())
+            self.df_result.loc[mask_p1, 'Porudzbina_1'] = self.min_per_artikal
+
+            if n_podignuto_p2 > 0 or n_podignuto_p1 > 0:
+                self.log(f"Min po artiklu ({self.min_per_artikal} kom): P1={n_podignuto_p1}, P2={n_podignuto_p2} stavki podignuto na minimum")
 
     def _apply_min_order(self):
         self.adjustments = []
@@ -982,6 +1008,7 @@ def create_excel(engine):
         f"P1 (osnovna): max(Pred-Lager, 0)",
         f"P2 (sa dopunom): Za lager<=2: dopuna do max(predikcija, prosek, min porudzbina={engine.min_order}); Za lager>2: dopuna do min {engine.min_lager}",
         f"P2 finalna provera: ako (P2+lager) <= prodaja_poslednjeg_meseca, dodaje se buffer (1-5 kom: +2, 6-10: +3, 11-15: +4, 16+: +5)",
+        f"Min kom po artiklu (po stavci): {engine.min_per_artikal if engine.min_per_artikal else 'nije zadat'} — ako je porudzbina > 0 ali manja od minimuma, podize se na minimum. Nule ostaju 0.",
         f"Iskljuceni: {', '.join(str(x) for x in sorted(engine.excluded))}"]
     if engine.has_prices:
         info+=["",f"=== ANALITIKA ===","",
@@ -1144,6 +1171,7 @@ beta = 0.2
 # Default vrednosti parametara
 min_lager = None
 min_order = None
+min_per_artikal = None
 mesecni_trosak = 0
 excluded_str = DEFAULT_EXCLUDED
 
@@ -1192,6 +1220,9 @@ with st.expander("⚙️ Parametri analize", expanded=False):
         min_lager = int(_ml_str) if _ml_str.strip().isdigit() else None
         _mo_str = st.text_input("Min. ukupna porudžbina po objektu", value="", placeholder="prazno = bez ograničenja")
         min_order = int(_mo_str) if _mo_str.strip().isdigit() else None
+        _mpa_str = st.text_input("Min. kom po artiklu (po stavci)", value="", placeholder="prazno = bez ograničenja",
+                                  help="Ako je porudžbina za jedan artikal manja od ovog broja (ali > 0), podiže se na minimum. Nule ostaju nule.")
+        min_per_artikal = int(_mpa_str) if _mpa_str.strip().isdigit() else None
     with pc2:
         st.markdown("**💰 Troškovi**")
         mesecni_trosak = st.number_input(
@@ -1238,7 +1269,7 @@ if uploaded:
     if st.button("🚀 POKRENI ANALIZU", use_container_width=True):
         progress_bar = st.progress(0)
         try:
-            engine = PredictionEngine(file_bytes, excluded, alpha, beta, min_lager, min_order, mesecni_trosak, selected_meseci)
+            engine = PredictionEngine(file_bytes, excluded, alpha, beta, min_lager, min_order, mesecni_trosak, selected_meseci, min_per_artikal)
             result = engine.run(progress_bar)
 
             st.markdown("---")
