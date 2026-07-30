@@ -318,6 +318,144 @@ def _admin_header():
         </div>
     </div>''', unsafe_allow_html=True)
 
+@st.cache_resource
+def _pdf_font():
+    import os
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    cands = [("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")]
+    try:
+        import matplotlib
+        _d = os.path.join(matplotlib.get_data_path(), "fonts/ttf")
+        cands.append((os.path.join(_d, "DejaVuSans.ttf"), os.path.join(_d, "DejaVuSans-Bold.ttf")))
+    except Exception:
+        pass
+    for _r, _b in cands:
+        if os.path.exists(_r):
+            try:
+                pdfmetrics.registerFont(TTFont("DejaVu", _r))
+                if os.path.exists(_b):
+                    pdfmetrics.registerFont(TTFont("DejaVu-Bold", _b))
+                    return "DejaVu", "DejaVu-Bold"
+                return "DejaVu", "DejaVu"
+            except Exception:
+                pass
+    return "Helvetica", "Helvetica-Bold"
+
+
+def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
+    import io as _io
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    FN, FB = _pdf_font()
+    H1 = ParagraphStyle('H1', fontName=FB, fontSize=18, textColor=colors.HexColor('#3b0764'), spaceAfter=2)
+    Hsub = ParagraphStyle('Hsub', fontName=FN, fontSize=10, textColor=colors.HexColor('#9188a5'), spaceAfter=14)
+    Hsys = ParagraphStyle('Hsys', fontName=FB, fontSize=14, textColor=colors.HexColor('#7c3aed'), spaceBefore=16, spaceAfter=6)
+    P = ParagraphStyle('P', fontName=FN, fontSize=10, textColor=colors.HexColor('#333333'), spaceAfter=6, leading=15)
+    Psmall = ParagraphStyle('Ps', fontName=FN, fontSize=9, textColor=colors.HexColor('#666666'))
+
+    buf = _io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=16 * mm, bottomMargin=15 * mm,
+                            leftMargin=15 * mm, rightMargin=15 * mm)
+    el = []
+    el.append(Paragraph("Izveštaj administracije", H1))
+    _dan = datetime.datetime.now().strftime("%d.%m.%Y")
+    el.append(Paragraph("Mesec: " + mesec_lbl + "  ·  generisano " + _dan, Hsub))
+
+    sistemi = sb_sisteme(mesec_key)
+    if not sistemi:
+        el.append(Paragraph("Nema objavljenih sistema za ovaj mesec.", P))
+        doc.build(el)
+        buf.seek(0)
+        return buf.getvalue()
+
+    _treb_txt = {"": "—", "nas": "Po našem", "njihov": "Po njihovom"}
+    _zt = {"crveno": "Hitno", "zuto": "Iskontrolisati", "zeleno": "Dobra"}
+    _zc = {"crveno": colors.HexColor('#d33333'), "zuto": colors.HexColor('#c66a00'), "zeleno": colors.HexColor('#158a3f')}
+
+    for _sis in sistemi:
+        podaci = sb_ucitaj(mesec_key, _sis)
+        if not podaci or not podaci.get("stavke"):
+            continue
+        stavke = podaci["stavke"]
+        po = {}
+        for s in stavke:
+            po.setdefault(int(s["idk"]), []).append(s)
+        objekti = []
+        for idk, lst in po.items():
+            nivo, n0, izg = hitnost_objekta(lst)
+            objekti.append({"idk": idk, "nivo": nivo, "kom": sum(int(x["kol"]) for x in lst)})
+        objekti.sort(key=lambda o: (HIT_RANG[o["nivo"]], -o["kom"]))
+        obrada = sb_load_obrada(mesec_key, _sis)
+        rev = [o for o in objekti if obrada.get(o["idk"], {}).get("reakcije")]
+        n = len(objekti)
+        nred = sum(1 for o in objekti if o["nivo"] == "crveno")
+        norg = sum(1 for o in objekti if o["nivo"] == "zuto")
+        ngrn = sum(1 for o in objekti if o["nivo"] == "zeleno")
+        nrev = len(rev)
+        nnas = sum(1 for o in rev if obrada.get(o["idk"], {}).get("trebovali_tip") == "nas")
+        nnj = sum(1 for o in rev if obrada.get(o["idk"], {}).get("trebovali_tip") == "njihov")
+        nnije = sum(1 for o in rev if not obrada.get(o["idk"], {}).get("trebovali_tip"))
+
+        el.append(Paragraph("Sistem: " + str(_sis), Hsys))
+        _rec = ("Kontaktirano " + str(nrev) + " od " + str(n) + " objekata.  "
+                "Uspešno (poručili kod nas): " + str(nnas) + ".  "
+                "Poručili kod drugog: " + str(nnj) + ".  "
+                "Kontaktirano bez porudžbine: " + str(nnije) + ".  "
+                "Nije obrađeno: " + str(n - nrev) + ".")
+        el.append(Paragraph(_rec, P))
+
+        head = ["Ukupno", "Kontaktirano", "Uspešno\n(kod nas)", "Kod\ndrugog", "Bez\nporudžbine", "Neobrađeno"]
+        vals = [str(n), str(nrev), str(nnas), str(nnj), str(nnije), str(n - nrev)]
+        t = Table([head, vals], colWidths=[27 * mm] * 6)
+        t.setStyle(TableStyle([
+            ('FONTNAME', (0, 0), (-1, -1), FN), ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('FONTNAME', (0, 0), (-1, 0), FB), ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f2effc')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#5b21b6')),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e6e0f5')),
+            ('TOPPADDING', (0, 0), (-1, -1), 6), ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('FONTNAME', (0, 1), (-1, 1), FB),
+            ('TEXTCOLOR', (2, 1), (2, 1), colors.HexColor('#158a3f')),
+            ('TEXTCOLOR', (3, 1), (3, 1), colors.HexColor('#c66a00')),
+        ]))
+        el.append(t)
+        el.append(Spacer(1, 6))
+        el.append(Paragraph("Zone:  Hitno " + str(nred) + "   ·   Iskontrolisati " + str(norg) + "   ·   Dobra " + str(ngrn), Psmall))
+        el.append(Spacer(1, 8))
+
+        rows = [["ID", "Zona", "Status", "Trebovanje", "Naša kom.", "Njihova kom."]]
+        sc = [
+            ('FONTNAME', (0, 0), (-1, -1), FN), ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('FONTNAME', (0, 0), (-1, 0), FB), ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#faf7ff')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#8b80a3')),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#fbfaff')]),
+            ('ALIGN', (0, 0), (0, -1), 'CENTER'), ('ALIGN', (4, 0), (5, -1), 'CENTER'),
+            ('TOPPADDING', (0, 0), (-1, -1), 4), ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LINEBELOW', (0, 0), (-1, 0), 0.7, colors.HexColor('#d9d0ef')),
+        ]
+        for _ri, o in enumerate(objekti, start=1):
+            v = obrada.get(o["idk"], {})
+            reak = v.get("reakcije", [])
+            status = ", ".join(_reak_short(r) for r in reak) if reak else "Nepregledano"
+            tip = _treb_txt.get(v.get("trebovali_tip", "") or "", "—")
+            nj = v.get("njihova") or {}
+            nj_sum = sum(int(x) for x in nj.values()) if nj else 0
+            rows.append([str(o["idk"]), _zt[o["nivo"]], status, tip, str(o["kom"]), (str(nj_sum) if nj_sum else "—")])
+            sc.append(('TEXTCOLOR', (1, _ri), (1, _ri), _zc[o["nivo"]]))
+        tob = Table(rows, colWidths=[15 * mm, 24 * mm, 46 * mm, 26 * mm, 20 * mm, 22 * mm], repeatRows=1)
+        tob.setStyle(TableStyle(sc))
+        el.append(tob)
+
+    doc.build(el)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 def prikazi_administraciju():
     st.set_page_config(page_title="VAPE — Porudžbine", page_icon="📦",
                        layout="wide", initial_sidebar_state="collapsed")
@@ -431,6 +569,22 @@ def prikazi_administraciju():
     if not sistem:
         st.warning("Nema dostupnih sistema.")
         return
+
+    _pcx = st.columns([1.5, 1, 2])
+    with _pcx[0]:
+        if st.button("📄 Napravi PDF izveštaj (" + _sel_lbl + ")", key="pdf_make", use_container_width=True):
+            try:
+                with st.spinner("Pravim PDF..."):
+                    st.session_state["pdf_bytes"] = napravi_pdf_izvestaj(mesec_key, _sel_lbl)
+                    st.session_state["pdf_mes"] = mesec_key
+            except Exception as _pe:
+                st.session_state["pdf_bytes"] = None
+                st.error("Greška pri pravljenju PDF-a: " + str(_pe))
+    with _pcx[1]:
+        if st.session_state.get("pdf_bytes") and st.session_state.get("pdf_mes") == mesec_key:
+            st.download_button("⬇️ Preuzmi PDF", st.session_state["pdf_bytes"],
+                file_name="Izvestaj_administracije_" + mesec_key + ".pdf", mime="application/pdf",
+                key="pdf_dl", use_container_width=True)
 
     podaci = sb_ucitaj(mesec_key, sistem)
     if not podaci or not podaci.get("stavke"):
