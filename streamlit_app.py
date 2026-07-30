@@ -113,20 +113,21 @@ def sb_load_obrada(mesec_key, sistem):
     if cli is None:
         return {}
     try:
-        res = cli.table("obrada").select("idk,reakcije,trebovali,trebovali_tip").eq("mesec", mesec_key).eq("sistem", sistem).execute()
+        res = cli.table("obrada").select("idk,reakcije,trebovali,trebovali_tip,njihova").eq("mesec", mesec_key).eq("sistem", sistem).execute()
     except Exception:
         return {}
     out = {}
     for r in (res.data or []):
-        out[int(r["idk"])] = {"reakcije": r.get("reakcije") or [], "trebovali_tip": r.get("trebovali_tip") or ""}
+        out[int(r["idk"])] = {"reakcije": r.get("reakcije") or [], "trebovali_tip": r.get("trebovali_tip") or "", "njihova": r.get("njihova") or {}}
     return out
 
-def sb_save_obrada(mesec_key, sistem, idk, reakcije, trebovali_tip):
+def sb_save_obrada(mesec_key, sistem, idk, reakcije, trebovali_tip, njihova=None):
     cli = _sb()
     if cli is None:
         raise RuntimeError("Supabase nije podešen.")
     cli.table("obrada").upsert({"mesec": mesec_key, "sistem": sistem, "idk": int(idk),
         "reakcije": list(reakcije), "trebovali": bool(trebovali_tip), "trebovali_tip": trebovali_tip or "",
+        "njihova": dict(njihova or {}),
         "azurirano": datetime.datetime.now().isoformat()}, on_conflict="mesec,sistem,idk").execute()
 
 def sb_load_plan(mesec_key):
@@ -341,6 +342,9 @@ def prikazi_administraciju():
     .adm-kpi .n .d{width:8px;height:8px;border-radius:50%;}
     .adm-kpi .n .d.r{background:#e5484d;} .adm-kpi .n .d.o{background:#f2820c;} .adm-kpi .n .d.g{background:#17a34a;} .adm-kpi .n .d.p{background:#7c3aed;}
     .adm-kpi .k{font-size:12px;color:#9ca3af;margin-top:3px;font-weight:500;}
+    .adm-kpi .cell.c-p{background:#faf7ff;} .adm-kpi .cell.c-r{background:#fff7f7;} .adm-kpi .cell.c-o{background:#fffcf5;} .adm-kpi .cell.c-g{background:#f6fdf9;}
+    .adm-kpi .cell.c-p .n{color:#7c3aed;} .adm-kpi .cell.c-r .n{color:#d33;} .adm-kpi .cell.c-o .n{color:#c66a00;} .adm-kpi .cell.c-g .n{color:#158a3f;}
+    table.adm-t tr.row-red td{background:#fff8f8;} table.adm-t tr.row-org td{background:#fffcf6;}
     /* progress */
     .adm-prog{display:flex;align-items:center;gap:12px;margin-bottom:8px;}
     .adm-prog .t{font-size:12.5px;color:#6b7280;font-weight:600;white-space:nowrap;}
@@ -466,10 +470,10 @@ def prikazi_administraciju():
 
     st.markdown(
         '<div class="adm-kpi">'
-        '<div class="cell"><div class="n"><span class="d p"></span>' + str(n_obj) + '</div><div class="k">Objekata za porudžbinu</div></div>'
-        '<div class="cell"><div class="n"><span class="d r"></span>' + str(n_red) + '</div><div class="k">Hitno pozvati</div></div>'
-        '<div class="cell"><div class="n"><span class="d o"></span>' + str(n_org) + '</div><div class="k">Iskontrolisati</div></div>'
-        '<div class="cell"><div class="n"><span class="d g"></span>' + str(n_grn) + '</div><div class="k">Dobra</div></div>'
+        '<div class="cell c-p"><div class="n"><span class="d p"></span>' + str(n_obj) + '</div><div class="k">Objekata za porudžbinu</div></div>'
+        '<div class="cell c-r"><div class="n"><span class="d r"></span>' + str(n_red) + '</div><div class="k">Hitno pozvati</div></div>'
+        '<div class="cell c-o"><div class="n"><span class="d o"></span>' + str(n_org) + '</div><div class="k">Iskontrolisati</div></div>'
+        '<div class="cell c-g"><div class="n"><span class="d g"></span>' + str(n_grn) + '</div><div class="k">Dobra</div></div>'
         '</div>', unsafe_allow_html=True)
     st.markdown('<div class="adm-prog"><span class="t">Pregledano ' + str(n_done) + ' / ' + str(n_obj) + '</span>'
                 '<div class="bar"><div style="width:' + str(_pct) + '%"></div></div></div>', unsafe_allow_html=True)
@@ -493,7 +497,8 @@ def prikazi_administraciju():
                 stat = "".join('<span class="stchip">' + _reak_short(r) + '</span>' for r in reak)
             else:
                 stat = '<span class="stat">Nepregledano</span>'
-            _rows += ('<tr>'
+            _rc = "row-red" if o["nivo"] == "crveno" else ("row-org" if o["nivo"] == "zuto" else "")
+            _rows += ('<tr class="' + _rc + '">'
                 '<td class="idc">' + str(o["idk"]) + '</td>'
                 '<td class="mut">— naknadno</td>'
                 '<td class="ce" style="color:#d33;">' + str(o["na_nuli"]) + '</td>'
@@ -543,18 +548,33 @@ def prikazi_administraciju():
 
         _dc1, _dc2 = st.columns([1.7, 1])
         with _dc1:
-            _ar = ""
-            for d in sorted(o["lst"], key=lambda x: (int(x["lager"]), -int(x["kol"]))):
-                _lg = int(d["lager"])
-                _dot = "ar-red" if _lg == 0 else ("ar-yel" if _lg <= 2 else "ar-grn")
-                _sty = 'color:#d33;font-weight:700;' if _lg == 0 else ''
-                _ar += ('<tr><td style="width:16px;"><span class="adot ' + _dot + '"></span></td>'
-                    '<td>' + str(d["naziv"]) + '</td>'
-                    '<td class="ce" style="color:#158a3f;font-weight:600;">' + str(int(d["kol"])) + '</td>'
-                    '<td class="ce" style="' + _sty + '">' + str(_lg) + '</td></tr>')
-            st.markdown('<div class="adm-lbl">Porudžbina i lager</div>'
-                '<table class="adm-t"><thead><tr><th></th><th>Artikal</th><th style="text-align:center;">Porudžbina</th>'
-                '<th style="text-align:center;">Lager</th></tr></thead><tbody>' + _ar + '</tbody></table>', unsafe_allow_html=True)
+            st.markdown('<div class="adm-lbl">Porudžbina i lager · upiši „Njihovu por."</div>', unsafe_allow_html=True)
+            _arts = sorted(o["lst"], key=lambda x: (int(x["lager"]), -int(x["kol"])))
+            _njm = v.get("njihova") or {}
+            def _sd(lg):
+                lg = int(lg)
+                return "🔴" if lg == 0 else ("🟡" if lg <= 2 else "🟢")
+            _adf = pd.DataFrame([{
+                " ": _sd(a["lager"]),
+                "Artikal": str(a["naziv"]),
+                "Naša por.": int(a["kol"]),
+                "Lager": int(a["lager"]),
+                "Njihova por.": int(_njm.get(str(int(a["ida"])), 0)),
+            } for a in _arts])
+            _edited = st.data_editor(_adf, hide_index=True, use_container_width=True,
+                disabled=[" ", "Artikal", "Naša por.", "Lager"],
+                column_config={
+                    " ": st.column_config.TextColumn(" ", width="small"),
+                    "Naša por.": st.column_config.NumberColumn("Naša por.", help="Koliko bi trebalo da poruče (naš predlog)"),
+                    "Lager": st.column_config.NumberColumn("Lager"),
+                    "Njihova por.": st.column_config.NumberColumn("Njihova por.", help="Koliko su stvarno poručili", min_value=0, step=1),
+                }, key="ed_" + str(sel_id))
+            _njihova_new = {}
+            for _i, _a in enumerate(_arts):
+                try:
+                    _njihova_new[str(int(_a["ida"]))] = int(_edited.iloc[_i]["Njihova por."])
+                except Exception:
+                    _njihova_new[str(int(_a["ida"]))] = 0
         with _dc2:
             st.markdown('<div class="adm-lbl">Reakcija</div>', unsafe_allow_html=True)
             _loaded = list(v.get("reakcije", []))
@@ -578,7 +598,7 @@ def prikazi_administraciju():
                 st.caption("🔒 Otključava se kad izabereš bar jednu reakciju.")
             if st.button("Sačuvaj status", key="savest_" + str(sel_id), use_container_width=True, type="primary"):
                 try:
-                    sb_save_obrada(mesec_key, sistem, sel_id, react, _tip_val)
+                    sb_save_obrada(mesec_key, sistem, sel_id, react, _tip_val, _njihova_new)
                     st.success("Sačuvano ✓")
                     st.rerun()
                 except Exception as _e:
