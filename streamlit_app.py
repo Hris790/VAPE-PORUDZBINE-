@@ -97,6 +97,58 @@ def sb_pregled():
     res = cli.table("porudzbine").select("mesec,sistem,objavljeno").order("mesec", desc=True).execute()
     return res.data or []
 
+REAKCIJE_OPCIJE = ["Pozvala sam", "Poslala sam mejl", "Obavestila direktorku"]
+
+def _reak_short(r):
+    return {"Pozvala sam": "\U0001F4DE Pozvala", "Poslala sam mejl": "\u2709\uFE0F Mejl",
+            "Obavestila direktorku": "\U0001F454 Direktorka"}.get(r, r)
+
+def _zona_disp(nivo):
+    return {"crveno": ("z-red", "\U0001F534 Hitno pozvati", "\U0001F534"),
+            "zuto":   ("z-org", "\U0001F7E0 Iskontrolisati", "\U0001F7E0"),
+            "zeleno": ("z-grn", "\U0001F7E2 Dobra", "\U0001F7E2")}[nivo]
+
+def sb_load_obrada(mesec_key, sistem):
+    cli = _sb()
+    if cli is None:
+        return {}
+    res = cli.table("obrada").select("idk,reakcije,trebovali").eq("mesec", mesec_key).eq("sistem", sistem).execute()
+    out = {}
+    for r in (res.data or []):
+        out[int(r["idk"])] = {"reakcije": r.get("reakcije") or [], "trebovali": bool(r.get("trebovali"))}
+    return out
+
+def sb_save_obrada(mesec_key, sistem, idk, reakcije, trebovali):
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    cli.table("obrada").upsert({"mesec": mesec_key, "sistem": sistem, "idk": int(idk),
+        "reakcije": list(reakcije), "trebovali": bool(trebovali),
+        "azurirano": datetime.datetime.now().isoformat()}, on_conflict="mesec,sistem,idk").execute()
+
+def sb_load_plan(mesec_key):
+    cli = _sb()
+    if cli is None:
+        return None
+    res = cli.table("plan_objave").select("datum").eq("mesec", mesec_key).limit(1).execute()
+    if not res.data:
+        return None
+    return res.data[0].get("datum")
+
+def sb_save_plan(mesec_key, datum):
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    cli.table("plan_objave").upsert({"mesec": mesec_key, "datum": datum,
+        "azurirano": datetime.datetime.now().isoformat()}, on_conflict="mesec").execute()
+
+def sb_plan_meseci():
+    cli = _sb()
+    if cli is None:
+        return []
+    res = cli.table("plan_objave").select("mesec").execute()
+    return [r["mesec"] for r in (res.data or [])]
+
 # ---- HITNOST po objektu (na osnovu niskog lagera) ----
 # Pragovi su namerno apsolutni i lako se menjaju (dole dve brojke).
 HIT_CRVENO_KOM   = 15   # >= ovoliko kom/mesec na artiklima bez lagera -> HITNO
@@ -260,136 +312,261 @@ def prikazi_administraciju():
     st.set_page_config(page_title="VAPE — Porudžbine", page_icon="📦",
                        layout="wide", initial_sidebar_state="collapsed")
     _admin_css()
+    st.markdown("""<style>
+    .adm-kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:4px 0 8px; }
+    .adm-kpi { background:#fff; border-radius:15px; padding:14px 18px; box-shadow:0 3px 14px rgba(124,58,237,.07);
+        position:relative; overflow:hidden; }
+    .adm-kpi::before { content:""; position:absolute; left:0; top:0; bottom:0; width:5px; }
+    .adm-kpi.k1::before{ background:linear-gradient(#a855f7,#7c3aed);} .adm-kpi.k2::before{ background:#ef4444;}
+    .adm-kpi.k3::before{ background:#f97316;} .adm-kpi.k4::before{ background:#10b981;}
+    .adm-kpi .v{ font-size:26px; font-weight:800; line-height:1; }
+    .adm-kpi.k1 .v{color:#7c3aed;} .adm-kpi.k2 .v{color:#ef4444;} .adm-kpi.k3 .v{color:#ea580c;} .adm-kpi.k4 .v{color:#059669;}
+    .adm-kpi .lab{ font-size:10.5px; color:#9188a5; font-weight:700; margin-top:6px; text-transform:uppercase; letter-spacing:.4px; }
+    .adm-prog{ background:#fff; border-radius:13px; padding:12px 18px; margin:8px 0 14px; box-shadow:0 3px 14px rgba(124,58,237,.06);
+        display:flex; align-items:center; gap:14px; }
+    .adm-prog .bar{ flex:1; height:9px; background:#efe9fb; border-radius:99px; overflow:hidden; }
+    .adm-prog .bar>div{ height:100%; background:linear-gradient(90deg,#a855f7,#ec4899); border-radius:99px; }
+    .adm-prog .txt{ font-size:13px; font-weight:700; color:#4c1d95; white-space:nowrap; }
+    .adm-tablecard{ background:#fff; border-radius:14px; box-shadow:0 3px 16px rgba(124,58,237,.07);
+        border:1px solid rgba(168,85,247,.1); overflow:hidden; }
+    table.adm-table{ width:100%; border-collapse:collapse; font-size:13px; }
+    table.adm-table th{ text-align:left; color:#8b80a3; font-size:10.5px; text-transform:uppercase; letter-spacing:.5px;
+        padding:12px 14px; background:#faf7ff; border-bottom:1px solid #efe9fb; font-weight:700; }
+    table.adm-table td{ padding:11px 14px; border-bottom:1px solid #f4f0fb; vertical-align:middle; }
+    table.adm-table td.idc{ font-weight:800; color:#3b0764; font-size:14px; }
+    table.adm-table td.ce{ text-align:center; }
+    table.adm-table td.an{ font-weight:600; color:#2a1a45; }
+    table.adm-table td.mut{ color:#a99bc7; }
+    .adm-zona{ font-size:11.5px; font-weight:700; padding:5px 12px; border-radius:99px; white-space:nowrap; display:inline-block; }
+    .adm-zona.z-red{ background:#fef2f4; color:#dc2626; border:1px solid #fbd0d6; }
+    .adm-zona.z-org{ background:#fff5eb; color:#ea580c; border:1px solid #fdd9b5; }
+    .adm-zona.z-grn{ background:#ecfdf5; color:#059669; border:1px solid #bbf0d6; }
+    .adm-chip{ display:inline-block; font-size:10.5px; font-weight:700; padding:3px 8px; border-radius:99px;
+        background:#ede9fe; color:#6d28d9; margin:1px 3px 1px 0; }
+    .adm-nb{ font-size:11px; font-weight:700; padding:4px 11px; border-radius:99px; background:#f1eefb; color:#a99bc7; }
+    .adm-empty{ background:#fff; border-radius:20px; box-shadow:0 8px 40px rgba(124,58,237,.10);
+        border:1px solid rgba(168,85,247,.12); padding:64px 40px; text-align:center; margin-top:8px; }
+    .adm-empty .ic{ width:92px; height:92px; margin:0 auto 18px; border-radius:24px;
+        background:linear-gradient(135deg,#f3ebff,#fde8f3); display:flex; align-items:center; justify-content:center; font-size:44px; }
+    .adm-empty h2{ font-size:25px; color:#3b0764; margin-bottom:8px; font-weight:700; }
+    .adm-empty .who2{ color:#9188a5; font-size:15px; margin-bottom:16px; }
+    .adm-plan{ display:inline-flex; align-items:center; gap:6px; background:linear-gradient(135deg,#f5f0ff,#fdf2f8);
+        color:#7c3aed; border:1px solid rgba(168,85,247,.25); border-radius:99px; padding:11px 22px; font-weight:700; font-size:15px; }
+    .adm-empty p{ color:#9188a5; font-size:14px; margin-top:16px; max-width:520px; margin-left:auto; margin-right:auto; }
+    .adm-dhead{ display:flex; align-items:center; gap:13px; flex-wrap:wrap; padding:14px 16px;
+        background:linear-gradient(135deg,#faf5ff,#fff); border:1px solid rgba(168,85,247,.12); border-radius:14px; margin-bottom:12px; }
+    .adm-dhead .did{ font-size:23px; font-weight:800; color:#3b0764; }
+    .adm-dhead .mut{ color:#a99bc7; }
+    .adm-sech{ font-size:12.5px; font-weight:700; color:#7c3aed; text-transform:uppercase; letter-spacing:.5px; margin:2px 0 8px; }
+    .adm-dot{ width:11px; height:11px; border-radius:50%; display:inline-block; }
+    .adm-dot.sd-red{ background:#ef4444; } .adm-dot.sd-yel{ background:#f59e0b; } .adm-dot.sd-grn{ background:#10b981; }
+    /* multiselect tagovi */
+    .stMultiSelect [data-baseweb="tag"]{ background:linear-gradient(135deg,#a855f7,#ec4899) !important; border:none !important;
+        border-radius:99px !important; color:#fff !important; font-weight:600 !important; }
+    .stMultiSelect [data-baseweb="tag"] span{ color:#fff !important; }
+    </style>""", unsafe_allow_html=True)
+
     _admin_header()
 
-    if st.button("🔓 Odjava"):
-        for k in ("authenticated", "role"):
-            st.session_state.pop(k, None)
-        st.rerun()
+    _top = st.columns([6, 1])
+    with _top[1]:
+        if st.button("🔓 Odjava", key="adm_odjava"):
+            for _k in ("authenticated", "role"):
+                st.session_state.pop(_k, None)
+            st.rerun()
 
     if not sb_dostupan():
         st.error("Veza sa bazom trenutno nije podešena. Javi se analitičaru.")
         return
 
-    meseci = sb_meseci()
-    if not meseci:
+    _pub = sb_meseci()
+    _mes_keys = [m["key"] for m in _pub]
+    for _k in sb_plan_meseci():
+        if _k not in _mes_keys:
+            _mes_keys.append(_k)
+    _mes_keys = sorted(set(_mes_keys), reverse=True)
+    if not _mes_keys:
         st.info("Još nema objavljenih podataka. Analitičar treba prvo da objavi bar jedan sistem.")
         return
 
-    c1, c2 = st.columns([1, 1])
-    labels = [m["label"] for m in meseci]
-    keys   = [m["key"] for m in meseci]
-    with c1:
-        sel_lbl = st.selectbox("📅 Mesec", labels, index=0)
-    mesec_key = keys[labels.index(sel_lbl)]
+    _c1, _c2 = st.columns(2)
+    _mlbls = [mesec_label(k) for k in _mes_keys]
+    with _c1:
+        _sel_lbl = st.selectbox("📅 Mesec", _mlbls, index=0, key="adm_mes")
+    mesec_key = _mes_keys[_mlbls.index(_sel_lbl)]
 
-    imaju = sb_sisteme(mesec_key)
-    svi   = sb_svi_sistemi()
-    zakljucani = [s for s in svi if s not in imaju]
-
-    with c2:
-        if imaju:
-            sistem = st.selectbox("🏢 Sistem", imaju, index=0)
+    _imaju = sb_sisteme(mesec_key)
+    _svi = sb_svi_sistemi()
+    _sis_opts = sorted(set(_svi) | set(_imaju))
+    with _c2:
+        if _sis_opts:
+            sistem = st.selectbox("🏢 Sistem", _sis_opts, index=0, key="adm_sis")
         else:
             sistem = None
-            st.selectbox("🏢 Sistem", ["(nema objavljenih sistema)"], index=0, disabled=True)
-
-    if zakljucani:
-        st.markdown(
-            "<div style='font-size:12.5px;color:#9ca3af;padding:2px 2px 8px 2px;'>🔒 Nisu uneti podaci za: "
-            + ", ".join(f"<b>{s}</b>" for s in zakljucani) + "</div>",
-            unsafe_allow_html=True)
+            st.selectbox("🏢 Sistem", ["(nema sistema)"], disabled=True)
 
     if not sistem:
-        st.warning("Za izabrani mesec još nije objavljen nijedan sistem.")
+        st.warning("Nema dostupnih sistema.")
         return
 
     podaci = sb_ucitaj(mesec_key, sistem)
+
+    # --- NIJE OBJAVLJEN: poruka preko celog ekrana ---
     if not podaci or not podaci.get("stavke"):
-        st.warning("Za ovaj sistem nema stavki za porudžbinu.")
+        _plan = sb_load_plan(mesec_key)
+        if _plan:
+            _planhtml = '<div class="adm-plan">⏳ Analitičar planira objavu do <b style="margin-left:4px;">' + str(_plan) + '</b></div>'
+        else:
+            _planhtml = '<div class="adm-plan">⏳ Datum objave još nije zakazan</div>'
+        st.markdown('<div class="adm-empty"><div class="ic">🗓️</div>'
+            '<h2>Izveštaj još nije objavljen</h2>'
+            '<div class="who2">' + sistem + ' · ' + _sel_lbl + '</div>'
+            + _planhtml +
+            '<p>Do tada isplanirajte obilaske. Kada analitičar objavi, ovde će se pojaviti lista objekata i porudžbine.</p></div>',
+            unsafe_allow_html=True)
         return
 
     stavke = podaci["stavke"]
-    meta = podaci.get("meta", {})
 
-    # grupisi po objektu
+    # --- grupisanje po objektu + zona ---
     po_obj = {}
     for s in stavke:
         po_obj.setdefault(int(s["idk"]), []).append(s)
-
-    redovi = []
+    objekti = []
     for idk, lst in po_obj.items():
         nivo, n_nula, izgub = hitnost_objekta(lst)
-        ukupno = sum(int(x["kol"]) for x in lst)
-        region = next((x.get("region", "") for x in lst if x.get("region")), "")
-        redovi.append({"idk": idk, "region": region, "artikala": len(lst),
-                       "ukupno": ukupno, "na_nuli": n_nula, "izgub": izgub,
-                       "nivo": nivo})
-    redovi.sort(key=lambda r: (HIT_RANG[r["nivo"]], -r["izgub"], -r["ukupno"]))
+        objekti.append({"idk": idk, "artikala": len(lst), "na_nuli": n_nula,
+                        "izgub": izgub, "nivo": nivo, "lst": lst})
+    objekti.sort(key=lambda r: (HIT_RANG[r["nivo"]], -r["izgub"]))
+    ids_sorted = [o["idk"] for o in objekti]
+    obj_by_id = {o["idk"]: o for o in objekti}
 
-    n_obj = len(redovi)
-    n_hitnih = sum(1 for r in redovi if r["nivo"] == "crveno")
-    n_kom = sum(r["ukupno"] for r in redovi)
+    obrada_map = sb_load_obrada(mesec_key, sistem)
+    reviewed = set(idk for idk, v in obrada_map.items() if v.get("reakcije"))
 
-    st.caption(f"📦 **{sistem}** · {sel_lbl}  ·  objavljeno stavki: {len(stavke)}"
-               + (f"  ·  predikcija: {meta.get('pred_label','')}" if meta.get("pred_label") else ""))
+    n_obj = len(objekti)
+    n_red = sum(1 for o in objekti if o["nivo"] == "crveno")
+    n_org = sum(1 for o in objekti if o["nivo"] == "zuto")
+    n_grn = sum(1 for o in objekti if o["nivo"] == "zeleno")
+    n_done = len([o for o in objekti if o["idk"] in reviewed])
 
-    m1, m2, m3 = st.columns(3)
-    def _kard(col, val, label, color):
-        col.markdown(f"""<div style="background:white;border-radius:12px;padding:14px 18px;
-            border-left:4px solid {color};box-shadow:0 2px 8px rgba(0,0,0,0.06);">
-            <div style="font-size:24px;font-weight:700;color:{color};">{val:,}</div>
-            <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.5px;">{label}</div>
-        </div>""", unsafe_allow_html=True)
-    _kard(m1, n_obj, "Objekata za porudžbinu", "#7c3aed")
-    _kard(m2, n_hitnih, "🔴 Hitno pozvati", "#ec4899")
-    _kard(m3, n_kom, "Ukupno komada", "#10b981")
+    st.caption("📦 **" + sistem + "** · " + _sel_lbl + " · objavljeno stavki: " + str(len(stavke)))
 
-    st.markdown("<div style='margin:14px 0 2px 0;'></div>", unsafe_allow_html=True)
+    st.markdown(
+        '<div class="adm-kpis">'
+        '<div class="adm-kpi k1"><div class="v">' + str(n_obj) + '</div><div class="lab">Objekata za porudžbinu</div></div>'
+        '<div class="adm-kpi k2"><div class="v">🔴 ' + str(n_red) + '</div><div class="lab">Hitno pozvati</div></div>'
+        '<div class="adm-kpi k3"><div class="v">🟠 ' + str(n_org) + '</div><div class="lab">Iskontrolisati</div></div>'
+        '<div class="adm-kpi k4"><div class="v">🟢 ' + str(n_grn) + '</div><div class="lab">Dobra</div></div>'
+        '</div>', unsafe_allow_html=True)
+    _pct = int(n_done / max(n_obj, 1) * 100)
+    st.markdown('<div class="adm-prog"><span class="txt">Pregledano ' + str(n_done) + ' / ' + str(n_obj) + '</span>'
+                '<div class="bar"><div style="width:' + str(_pct) + '%"></div></div></div>', unsafe_allow_html=True)
 
-    pretraga = st.text_input("🔎 Pretraga objekta (ID)", value="", placeholder="npr. 229").strip()
-    redovi_f = [r for r in redovi if (not pretraga) or (pretraga in str(r["idk"]))]
+    tab_lista, tab_detalj = st.tabs(["🗂️ Lista objekata", "🔍 Detalj / obrada"])
 
-    # --- lista objekata (sortirana po hitnosti) ---
-    df_lista = pd.DataFrame([{
-        "Hitnost": f'{HIT_EMOJI[r["nivo"]]} {HIT_TEKST[r["nivo"]]}',
-        "ID objekta": r["idk"],
-        "Region": r["region"],
-        "Artikala": r["artikala"],
-        "Ukupno kom": r["ukupno"],
-        "Na nuli": r["na_nuli"],
-        "Propušteno/mes": r["izgub"],
-    } for r in redovi_f])
-    st.markdown('<div style="font-size:15px;font-weight:600;color:#4c1d95;margin:6px 0;">🗂️ Objekti — sortirani po hitnosti</div>', unsafe_allow_html=True)
-    st.dataframe(df_lista, use_container_width=True, hide_index=True, height=min(430, 60 + 35*max(len(df_lista),1)))
+    # =================== LISTA ===================
+    with tab_lista:
+        _rows = ""
+        for o in objekti:
+            z = _zona_disp(o["nivo"])
+            v = obrada_map.get(o["idk"], {})
+            reak = v.get("reakcije", [])
+            treb = v.get("trebovali", False)
+            if reak:
+                stat = "".join('<span class="adm-chip">' + _reak_short(r) + '</span>' for r in reak)
+            else:
+                stat = '<span class="adm-nb">Nepregledano</span>'
+            if treb:
+                mark = "✓"; mc = "#059669"
+            elif o["idk"] in reviewed:
+                mark = "○"; mc = "#c9bce6"
+            else:
+                mark = "·"; mc = "#c9bce6"
+            _rows += ('<tr>'
+                '<td class="idc">' + str(o["idk"]) + '</td>'
+                '<td class="mut">— naknadno</td>'
+                '<td class="ce" style="color:#dc2626;font-weight:700;">' + str(o["na_nuli"]) + '</td>'
+                '<td class="ce" style="font-weight:700;color:#3b0764;">' + str(o["izgub"]) + '</td>'
+                '<td><span class="adm-zona ' + z[0] + '">' + z[1] + '</span></td>'
+                '<td>' + stat + '</td>'
+                '<td class="ce" style="color:' + mc + ';font-weight:800;">' + mark + '</td>'
+                '</tr>')
+        st.markdown('<div class="adm-tablecard"><table class="adm-table">'
+            '<thead><tr><th>ID</th><th>Naziv komitenta</th><th>Na nuli</th><th>Izgubljeno (kom)</th>'
+            '<th>Zona</th><th>Status</th><th style="text-align:center;">Trebovali</th></tr></thead>'
+            '<tbody>' + _rows + '</tbody></table></div>', unsafe_allow_html=True)
+        st.caption("Status i Trebovali se menjaju u kartici Detalj / obrada.")
 
-    # --- detalj jednog objekta ---
-    st.markdown('<div style="font-size:15px;font-weight:600;color:#4c1d95;margin:16px 0 4px 0;">🔍 Detalj objekta — porudžbina i lager</div>', unsafe_allow_html=True)
-    if not redovi_f:
-        st.info("Nema objekata za prikaz.")
-        return
-    opcije = {f'{HIT_EMOJI[r["nivo"]]} {r["idk"]} · {r["region"]} · {r["ukupno"]} kom': r["idk"] for r in redovi_f}
-    izbor = st.selectbox("Izaberi objekat", list(opcije.keys()), index=0)
-    idk_sel = opcije[izbor]
+    # =================== DETALJ ===================
+    with tab_detalj:
+        _labels = [_zona_disp(o["nivo"])[2] + "  " + str(o["idk"]) + "  ·  " + _zona_disp(o["nivo"])[1] for o in objekti]
+        _lab2id = {_labels[i]: ids_sorted[i] for i in range(len(objekti))}
+        _id2lab = {ids_sorted[i]: _labels[i] for i in range(len(objekti))}
+        if ("adm_pick" not in st.session_state) or (st.session_state.adm_pick not in _labels):
+            st.session_state.adm_pick = _labels[0]
 
-    det = sorted(po_obj[idk_sel], key=lambda x: (int(x["lager"]), -int(x["kol"])))
-    def _art_status(lg):
-        lg = int(lg)
-        if lg == 0: return "🔴 nema"
-        if lg <= 2: return "🟡 nisko"
-        return "🟢 ok"
-    df_det = pd.DataFrame([{
-        "Status": _art_status(s["lager"]),
-        "Artikal": s["naziv"],
-        "Grupa": s.get("grupa", ""),
-        "Porudžbina": int(s["kol"]),
-        "Lager": int(s["lager"]),
-        "Predikcija": int(s.get("pred", 0)),
-    } for s in det])
-    reg_sel = next((x.get("region","") for x in po_obj[idk_sel] if x.get("region")), "")
-    uk_sel = sum(int(x["kol"]) for x in po_obj[idk_sel])
-    st.markdown(f"<div style='font-size:13px;color:#555;margin-bottom:4px;'>Objekat <b>{idk_sel}</b> · {reg_sel} · ukupno <b>{uk_sel} kom</b></div>", unsafe_allow_html=True)
-    st.dataframe(df_det, use_container_width=True, hide_index=True, height=min(430, 60 + 35*max(len(df_det),1)))
+        def _next_unrev():
+            _cur = _lab2id.get(st.session_state.adm_pick, ids_sorted[0])
+            _idx = ids_sorted.index(_cur) if _cur in ids_sorted else -1
+            for _k in range(1, len(ids_sorted) + 1):
+                _cand = ids_sorted[(_idx + _k) % len(ids_sorted)]
+                if _cand not in reviewed:
+                    st.session_state.adm_pick = _id2lab[_cand]
+                    return
+
+        _nc1, _nc2 = st.columns([3, 1])
+        with _nc1:
+            st.selectbox("🔎 Izaberi / pretraži objekat (ukucaj ID)", _labels, key="adm_pick")
+        with _nc2:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            st.button("⏭️ Sledeći nepregledan", on_click=_next_unrev, use_container_width=True, key="adm_next")
+
+        sel_id = _lab2id[st.session_state.adm_pick]
+        o = obj_by_id[sel_id]
+        z = _zona_disp(o["nivo"])
+        v = obrada_map.get(sel_id, {"reakcije": [], "trebovali": False})
+        if sel_id in reviewed:
+            _revb = '<span class="adm-zona z-grn">✓ Pregledano</span>'
+        else:
+            _revb = '<span class="adm-nb">Nepregledano</span>'
+        st.markdown('<div class="adm-dhead"><span class="did">' + str(sel_id) + '</span>'
+            '<span class="mut">naziv komitenta — naknadno</span>'
+            '<span class="adm-zona ' + z[0] + '">' + z[1] + '</span>'
+            '<span style="margin-left:auto;">' + _revb + '</span></div>', unsafe_allow_html=True)
+
+        _dc1, _dc2 = st.columns([1.6, 1])
+        with _dc1:
+            _ar = ""
+            for d in sorted(o["lst"], key=lambda x: (int(x["lager"]), -int(x["kol"]))):
+                _lg = int(d["lager"])
+                _dot = "sd-red" if _lg == 0 else ("sd-yel" if _lg <= 2 else "sd-grn")
+                _lst_style = 'color:#dc2626;font-weight:800;' if _lg == 0 else ''
+                _ar += ('<tr><td style="width:18px;"><span class="adm-dot ' + _dot + '"></span></td>'
+                    '<td class="an">' + str(d["naziv"]) + '</td>'
+                    '<td class="ce" style="color:#059669;font-weight:700;">' + str(int(d["kol"])) + '</td>'
+                    '<td class="ce" style="' + _lst_style + '">' + str(_lg) + '</td></tr>')
+            st.markdown('<div class="adm-sech">Porudžbina i lager po artiklu</div>'
+                '<div class="adm-tablecard"><table class="adm-table">'
+                '<thead><tr><th></th><th>Artikal</th><th>Porudžbina</th><th>Lager</th></tr></thead>'
+                '<tbody>' + _ar + '</tbody></table></div>', unsafe_allow_html=True)
+        with _dc2:
+            st.markdown('<div class="adm-sech">Reakcija (može više)</div>', unsafe_allow_html=True)
+            react = st.multiselect("Reakcija", REAKCIJE_OPCIJE, default=list(v.get("reakcije", [])),
+                                   key="react_" + str(sel_id), label_visibility="collapsed")
+            _can = len(react) > 0
+            treb = st.checkbox("Trebovali (naručili) nakon reakcije",
+                               value=bool(v.get("trebovali", False)) and _can,
+                               disabled=not _can, key="treb_" + str(sel_id))
+            if not _can:
+                st.caption("🔒 Trebovali se otključava kad izabereš bar jednu reakciju.")
+            if st.button("💾 Sačuvaj status", key="savest_" + str(sel_id), use_container_width=True):
+                try:
+                    sb_save_obrada(mesec_key, sistem, sel_id, react, bool(treb) and _can)
+                    st.success("Sačuvano ✓")
+                    st.rerun()
+                except Exception as _e:
+                    st.error("Greška: " + str(_e))
 
 
 # =====================================================================
@@ -1401,42 +1578,126 @@ with _co[1]:
             st.session_state.pop(_k, None)
         st.rerun()
 
+st.markdown("""<style>
+/* --- Tabovi kao pilule --- */
+div[data-baseweb="tab-list"] { gap: 8px; border-bottom: none !important; }
+button[data-baseweb="tab"] {
+    background:#fff; border:1px solid rgba(168,85,247,0.22); border-radius:12px;
+    padding:8px 20px; color:#6b21a8; font-weight:600; }
+button[data-baseweb="tab"][aria-selected="true"] {
+    background:linear-gradient(135deg,#a855f7,#ec4899); color:#fff; border-color:transparent;
+    box-shadow:0 4px 14px rgba(168,85,247,0.3); }
+div[data-baseweb="tab-highlight"], div[data-baseweb="tab-border"] { display:none !important; }
+/* --- Kartice (bordered container) --- */
+div[data-testid="stVerticalBlockBorderWrapper"] {
+    background:#fff !important; border:1px solid rgba(168,85,247,0.14) !important;
+    border-radius:14px !important; box-shadow:0 2px 12px rgba(124,58,237,0.07) !important;
+    padding:14px 18px !important; margin-bottom:10px !important; }
+/* --- File uploader dropzone --- */
+[data-testid="stFileUploaderDropzone"] {
+    background:#faf5ff !important; border:2px dashed rgba(168,85,247,0.35) !important;
+    border-radius:12px !important; }
+/* --- Objavi dugme zeleno --- */
+.st-key-obj_btn button {
+    background:linear-gradient(135deg,#10b981,#059669) !important;
+    box-shadow:0 4px 15px rgba(16,185,129,0.25) !important; }
+/* --- Naslovi kartica --- */
+.obj-title { font-size:15px; font-weight:600; color:#4c1d95; margin:0 0 10px 0; display:flex; align-items:center; gap:8px; }
+.obj-badge { background:linear-gradient(135deg,#a855f7,#ec4899); color:#fff; width:22px; height:22px;
+    border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; }
+.obj-badge.green { background:linear-gradient(135deg,#10b981,#059669); }
+.chip-ok { display:inline-block; background:#eafaf0; color:#059669; border:1px solid rgba(16,185,129,.25);
+    border-radius:99px; padding:5px 13px; font-size:12.5px; font-weight:600; margin:4px 5px 0 0; }
+.chip-no { display:inline-block; background:#f3f4f6; color:#9ca3af; border:1px dashed #d1d5db;
+    border-radius:99px; padding:5px 13px; font-size:12.5px; font-weight:600; margin:4px 5px 0 0; }
+</style>""", unsafe_allow_html=True)
+
 tab_obj, tab_ana = st.tabs(["📤 Objava izveštaja", "📊 Analitika"])
 
 with tab_obj:
-    if not sb_dostupan():
-        st.info("Supabase nije podešen — dodaj SUPABASE_URL i SUPABASE_KEY u Streamlit Secrets da bi objava radila.")
-    else:
-        _pmeseci = sb_meseci()
-        st.markdown('<div class="section-title">📋 Objavljeno za koleginice</div>', unsafe_allow_html=True)
-        if not _pmeseci:
-            st.caption("Još nijedan sistem nije objavljen.")
+    with st.container(border=True):
+        st.markdown('<div class="obj-title">📋 Objavljeno za koleginice</div>', unsafe_allow_html=True)
+        if not sb_dostupan():
+            st.info("Supabase nije podešen — dodaj SUPABASE_URL i SUPABASE_KEY u Streamlit Secrets da bi objava radila.")
         else:
-            _plabels = [m["label"] for m in _pmeseci]
-            _pkeys = [m["key"] for m in _pmeseci]
-            _psel = st.selectbox("Mesec", _plabels, index=0, key="obj_preg_mes")
-            _pmk = _pkeys[_plabels.index(_psel)]
-            _imaju = sb_sisteme(_pmk)
-            _svi = sb_svi_sistemi()
-            _chip = ""
-            for _s in _imaju:
-                _chip += '<span style="display:inline-block;background:#eafaf0;color:#059669;border:1px solid rgba(16,185,129,.25);border-radius:99px;padding:5px 13px;font-size:12.5px;font-weight:600;margin:4px 5px 0 0;">✓ ' + str(_s) + '</span>'
-            for _s in _svi:
-                if _s not in _imaju:
-                    _chip += '<span style="display:inline-block;background:#f3f4f6;color:#9ca3af;border:1px dashed #d1d5db;border-radius:99px;padding:5px 13px;font-size:12.5px;font-weight:600;margin:4px 5px 0 0;">○ ' + str(_s) + ' · nije objavljen</span>'
-            if not _chip:
-                _chip = '<span style="color:#9ca3af;font-size:13px;">Nema objavljenih sistema za ovaj mesec.</span>'
-            st.markdown(_chip, unsafe_allow_html=True)
+            _pmeseci = sb_meseci()
+            if not _pmeseci:
+                st.caption("Još nijedan sistem nije objavljen.")
+            else:
+                _plabels = [m["label"] for m in _pmeseci]
+                _pkeys = [m["key"] for m in _pmeseci]
+                _psel = st.selectbox("Mesec", _plabels, index=0, key="obj_preg_mes")
+                _pmk = _pkeys[_plabels.index(_psel)]
+                _imaju = sb_sisteme(_pmk)
+                _svi = sb_svi_sistemi()
+                _chip = ""
+                for _s in _imaju:
+                    _chip += '<span class="chip-ok">\u2713 ' + str(_s) + '</span>'
+                for _s in _svi:
+                    if _s not in _imaju:
+                        _chip += '<span class="chip-no">\u25cb ' + str(_s) + ' \u00b7 nije objavljen</span>'
+                if not _chip:
+                    _chip = '<span style="color:#9ca3af;font-size:13px;">Nema objavljenih sistema za ovaj mesec.</span>'
+                st.markdown(_chip, unsafe_allow_html=True)
 
-    st.markdown("<div style='margin:16px 0 2px 0;'></div>", unsafe_allow_html=True)
-    st.markdown('<div class="section-title">📤 Objavi novi izveštaj</div>', unsafe_allow_html=True)
-    up_o = st.file_uploader("Učitaj Excel jednog sistema", type=['xlsx', 'xls'], key="obj_upl")
+    with st.container(border=True):
+        st.markdown('<div class="obj-title">\U0001F5D3\uFE0F Plan objave (za koleginice)</div>', unsafe_allow_html=True)
+        if not sb_dostupan():
+            st.caption("Nedostupno dok Supabase nije podešen.")
+        else:
+            _today = datetime.date.today()
+            _mopts = []
+            _yy = _today.year; _mm = _today.month
+            for _i in range(6):
+                _mopts.append(str(_yy) + "-" + ("0" + str(_mm))[-2:])
+                _mm += 1
+                if _mm > 12:
+                    _mm = 1; _yy += 1
+            _pc1, _pc2, _pc3 = st.columns([1.3, 1, 1])
+            with _pc1:
+                _pmes = st.selectbox("Mesec", _mopts, format_func=mesec_label, key="plan_mes")
+            with _pc2:
+                _pdat = st.date_input("Objaviću do", value=_today, key="plan_dat", format="DD.MM.YYYY")
+            with _pc3:
+                st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+                if st.button("\U0001F4BE Sačuvaj plan", key="plan_btn", use_container_width=True):
+                    try:
+                        sb_save_plan(_pmes, _pdat.strftime("%d.%m.%Y"))
+                        st.success("Plan sačuvan: " + mesec_label(_pmes) + " \u2192 do " + _pdat.strftime("%d.%m.%Y"))
+                    except Exception as _e:
+                        st.error("Greška: " + str(_e))
+            _curplan = sb_load_plan(_pmes)
+            if _curplan:
+                st.caption("Trenutni plan za " + mesec_label(_pmes) + ": do " + str(_curplan))
+
+    with st.container(border=True):
+        st.markdown('<div class="obj-title"><span class="obj-badge">1</span> Učitaj Excel jednog sistema</div>', unsafe_allow_html=True)
+        up_o = st.file_uploader("Excel fajl (.xlsx)", type=['xlsx', 'xls'], key="obj_upl", label_visibility="collapsed")
+
     if up_o is not None:
         _obytes = up_o.read()
-        st.markdown(f'<div class="success-box">✅ Fajl <strong>{up_o.name}</strong> učitan ({len(_obytes)//1024} KB)</div>', unsafe_allow_html=True)
-        _odef = os.path.splitext(up_o.name)[0].strip()
-        _osist = st.text_input("Naziv sistema (kako će koleginice videti)", value=_odef, key="obj_sist")
-        with st.expander("⚙️ Parametri porudžbine", expanded=False):
+        st.markdown(f'<div class="success-box">\u2705 Fajl <strong>{up_o.name}</strong> učitan ({len(_obytes)//1024} KB)</div>', unsafe_allow_html=True)
+        _oy = None; _omn = None
+        try:
+            _x = pd.ExcelFile(io.BytesIO(_obytes))
+            _sm = {s.strip().lower(): s for s in _x.sheet_names}
+            _sp = None
+            for _nl, _no in _sm.items():
+                if 'prodaja' in _nl:
+                    _sp = _no; break
+            _pdf = pd.read_excel(_x, sheet_name=_sp)
+            _pdf.columns = [c.strip() for c in _pdf.columns]
+            _ms = sorted(_pdf[['Godina', 'Mesec']].drop_duplicates().values.tolist())
+            _oy = int(_ms[-1][0]); _omn = int(_ms[-1][1]) + 1
+            if _omn > 12:
+                _omn = 1; _oy += 1
+        except Exception:
+            _oy = None; _omn = None
+        _mk = (str(_oy) + "-" + ("0" + str(_omn))[-2:]) if _oy else None
+        _mlbl = mesec_label(_mk) if _mk else "automatski"
+
+        with st.container(border=True):
+            st.markdown('<div class="obj-title"><span class="obj-badge">2</span> Parametri porudžbine</div>', unsafe_allow_html=True)
             _oc1, _oc2, _oc3 = st.columns(3)
             with _oc1:
                 _o_ml = st.text_input("Min. lager po artiklu", value="", placeholder="prazno = bez ograničenja", key="obj_ml")
@@ -1445,7 +1706,7 @@ with tab_obj:
                 _o_mpa = st.text_input("Min. kom po artiklu (po stavci)", value="", placeholder="prazno = bez ograničenja", key="obj_mpa")
                 _o_tr = st.number_input("Ukupan trosak mkt (RSD)", min_value=0, value=0, step=10000, key="obj_tr")
             with _oc3:
-                _o_excl = st.text_area("Isključeni komitenti (ID, zarez)", value=DEFAULT_EXCLUDED, height=80, key="obj_excl")
+                _o_excl = st.text_area("Isključeni komitenti (ID, zarez)", value=DEFAULT_EXCLUDED, height=110, key="obj_excl")
         _o_min_lager = int(_o_ml) if _o_ml.strip().isdigit() else None
         _o_min_order = int(_o_mo) if _o_mo.strip().isdigit() else None
         _o_min_pa = int(_o_mpa) if _o_mpa.strip().isdigit() else None
@@ -1454,35 +1715,41 @@ with tab_obj:
             _p = _part.strip()
             if _p.isdigit():
                 _o_excluded.add(int(_p))
-        if not sb_dostupan():
-            st.info("Objava nije moguća dok Supabase nije podešen.")
-        elif st.button("📤 Objavi za koleginice", use_container_width=True, key="obj_btn"):
-            if not _osist.strip():
-                st.error("Upiši naziv sistema.")
-            else:
-                try:
-                    _pb = st.progress(0, "Računam porudžbinu...")
-                    _eng = PredictionEngine(_obytes, _o_excluded, alpha, beta, _o_min_lager, _o_min_order, _o_tr, None, _o_min_pa)
-                    _res = _eng.run(_pb)
-                    _pb.empty()
-                    _lg, _lm = _eng.meseci_order[-1]
-                    _om = int(_lm) + 1
-                    _oy = int(_lg)
-                    while _om > 12:
-                        _om -= 12
-                        _oy += 1
-                    _mk = f"{_oy}-{_om:02d}"
-                    _mlbl = mesec_label(_mk)
-                    _stavke = stavke_iz_rezultata(_res, _eng)
-                    _payload = {"mesec_label": _mlbl, "meta": {"pred_label": _eng.pred_label, "order_label": _eng.order_label, "min_lager": _eng.min_lager, "generisano": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"), "n_objekata": int(len({_s2['idk'] for _s2 in _stavke})), "ukupno_kom": int(sum(_s2['kol'] for _s2 in _stavke))}, "stavke": _stavke}
-                    sb_objavi(_mk, _osist, _payload)
-                    st.success(f"✅ Objavljeno: {_osist} — {_mlbl} · {len(_stavke)} stavki, {_payload['meta']['n_objekata']} objekata. Osveži stranicu (F5) da se ažurira lista gore.")
-                except Exception as _e:
-                    st.error(f"Greška pri objavi: {_e}")
-                    import traceback as _tb
-                    st.code(_tb.format_exc())
+
+        with st.container(border=True):
+            st.markdown('<div class="obj-title"><span class="obj-badge green">\u2713</span> Objavi za koleginice</div>', unsafe_allow_html=True)
+            _od1, _od2 = st.columns(2)
+            with _od1:
+                _osist = st.text_input("Naziv sistema (kako će koleginice videti)", value=os.path.splitext(up_o.name)[0].strip(), key="obj_sist")
+            with _od2:
+                st.text_input("Mesec porudžbine (automatski)", value=_mlbl, disabled=True, key="obj_mes_disp")
+            if not sb_dostupan():
+                st.info("Objava nije moguća dok Supabase nije podešen.")
+            elif st.button("📤 Objavi za koleginice", use_container_width=True, key="obj_btn"):
+                if not _osist.strip():
+                    st.error("Upiši naziv sistema.")
+                else:
+                    try:
+                        _pb = st.progress(0, "Računam porudžbinu...")
+                        _eng = PredictionEngine(_obytes, _o_excluded, alpha, beta, _o_min_lager, _o_min_order, _o_tr, None, _o_min_pa)
+                        _res = _eng.run(_pb)
+                        _pb.empty()
+                        _lg2, _lm2 = _eng.meseci_order[-1]
+                        _om2 = int(_lm2) + 1; _oy2 = int(_lg2)
+                        while _om2 > 12:
+                            _om2 -= 12; _oy2 += 1
+                        _mk2 = str(_oy2) + "-" + ("0" + str(_om2))[-2:]
+                        _mlbl2 = mesec_label(_mk2)
+                        _stavke = stavke_iz_rezultata(_res, _eng)
+                        _payload = {"mesec_label": _mlbl2, "meta": {"pred_label": _eng.pred_label, "order_label": _eng.order_label, "min_lager": _eng.min_lager, "generisano": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"), "n_objekata": int(len({_s2['idk'] for _s2 in _stavke})), "ukupno_kom": int(sum(_s2['kol'] for _s2 in _stavke))}, "stavke": _stavke}
+                        sb_objavi(_mk2, _osist, _payload)
+                        st.success(f"\u2705 Objavljeno: {_osist} \u2014 {_mlbl2} \u00b7 {len(_stavke)} stavki, {_payload['meta']['n_objekata']} objekata. Osveži (F5) da se ažurira lista gore.")
+                    except Exception as _e:
+                        st.error(f"Greška pri objavi: {_e}")
+                        import traceback as _tb
+                        st.code(_tb.format_exc())
     else:
-        st.caption("Učitaj Excel fajl da bi objavio porudžbinu za koleginice.")
+        st.caption("\u2191 Učitaj Excel fajl da bi objavio porudžbinu za koleginice.")
 
 with tab_ana:
     with st.expander("⚙️ Parametri analize", expanded=False):
