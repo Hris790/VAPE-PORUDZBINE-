@@ -104,33 +104,39 @@ def _reak_short(r):
             "Obavestila direktorku": "\U0001F454 Direktorka"}.get(r, r)
 
 def _zona_disp(nivo):
-    return {"crveno": ("z-red", "\U0001F534 Hitno pozvati", "\U0001F534"),
-            "zuto":   ("z-org", "\U0001F7E0 Iskontrolisati", "\U0001F7E0"),
-            "zeleno": ("z-grn", "\U0001F7E2 Dobra", "\U0001F7E2")}[nivo]
+    return {"crveno": ("z-red", "\U0001F534 Hitno pozvati", "\U0001F534", "Hitno pozvati"),
+            "zuto":   ("z-org", "\U0001F7E0 Iskontrolisati", "\U0001F7E0", "Iskontrolisati"),
+            "zeleno": ("z-grn", "\U0001F7E2 Dobra", "\U0001F7E2", "Dobra")}[nivo]
 
 def sb_load_obrada(mesec_key, sistem):
     cli = _sb()
     if cli is None:
         return {}
-    res = cli.table("obrada").select("idk,reakcije,trebovali").eq("mesec", mesec_key).eq("sistem", sistem).execute()
+    try:
+        res = cli.table("obrada").select("idk,reakcije,trebovali,trebovali_tip").eq("mesec", mesec_key).eq("sistem", sistem).execute()
+    except Exception:
+        return {}
     out = {}
     for r in (res.data or []):
-        out[int(r["idk"])] = {"reakcije": r.get("reakcije") or [], "trebovali": bool(r.get("trebovali"))}
+        out[int(r["idk"])] = {"reakcije": r.get("reakcije") or [], "trebovali_tip": r.get("trebovali_tip") or ""}
     return out
 
-def sb_save_obrada(mesec_key, sistem, idk, reakcije, trebovali):
+def sb_save_obrada(mesec_key, sistem, idk, reakcije, trebovali_tip):
     cli = _sb()
     if cli is None:
         raise RuntimeError("Supabase nije podešen.")
     cli.table("obrada").upsert({"mesec": mesec_key, "sistem": sistem, "idk": int(idk),
-        "reakcije": list(reakcije), "trebovali": bool(trebovali),
+        "reakcije": list(reakcije), "trebovali": bool(trebovali_tip), "trebovali_tip": trebovali_tip or "",
         "azurirano": datetime.datetime.now().isoformat()}, on_conflict="mesec,sistem,idk").execute()
 
 def sb_load_plan(mesec_key):
     cli = _sb()
     if cli is None:
         return None
-    res = cli.table("plan_objave").select("datum").eq("mesec", mesec_key).limit(1).execute()
+    try:
+        res = cli.table("plan_objave").select("datum").eq("mesec", mesec_key).limit(1).execute()
+    except Exception:
+        return None
     if not res.data:
         return None
     return res.data[0].get("datum")
@@ -146,7 +152,10 @@ def sb_plan_meseci():
     cli = _sb()
     if cli is None:
         return []
-    res = cli.table("plan_objave").select("mesec").execute()
+    try:
+        res = cli.table("plan_objave").select("mesec").execute()
+    except Exception:
+        return []
     return [r["mesec"] for r in (res.data or [])]
 
 # ---- HITNOST po objektu (na osnovu niskog lagera) ----
@@ -311,66 +320,77 @@ def _admin_header():
 def prikazi_administraciju():
     st.set_page_config(page_title="VAPE — Porudžbine", page_icon="📦",
                        layout="wide", initial_sidebar_state="collapsed")
-    _admin_css()
     st.markdown("""<style>
-    .adm-kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:4px 0 8px; }
-    .adm-kpi { background:#fff; border-radius:15px; padding:14px 18px; box-shadow:0 3px 14px rgba(124,58,237,.07);
-        position:relative; overflow:hidden; }
-    .adm-kpi::before { content:""; position:absolute; left:0; top:0; bottom:0; width:5px; }
-    .adm-kpi.k1::before{ background:linear-gradient(#a855f7,#7c3aed);} .adm-kpi.k2::before{ background:#ef4444;}
-    .adm-kpi.k3::before{ background:#f97316;} .adm-kpi.k4::before{ background:#10b981;}
-    .adm-kpi .v{ font-size:26px; font-weight:800; line-height:1; }
-    .adm-kpi.k1 .v{color:#7c3aed;} .adm-kpi.k2 .v{color:#ef4444;} .adm-kpi.k3 .v{color:#ea580c;} .adm-kpi.k4 .v{color:#059669;}
-    .adm-kpi .lab{ font-size:10.5px; color:#9188a5; font-weight:700; margin-top:6px; text-transform:uppercase; letter-spacing:.4px; }
-    .adm-prog{ background:#fff; border-radius:13px; padding:12px 18px; margin:8px 0 14px; box-shadow:0 3px 14px rgba(124,58,237,.06);
-        display:flex; align-items:center; gap:14px; }
-    .adm-prog .bar{ flex:1; height:9px; background:#efe9fb; border-radius:99px; overflow:hidden; }
-    .adm-prog .bar>div{ height:100%; background:linear-gradient(90deg,#a855f7,#ec4899); border-radius:99px; }
-    .adm-prog .txt{ font-size:13px; font-weight:700; color:#4c1d95; white-space:nowrap; }
-    .adm-tablecard{ background:#fff; border-radius:14px; box-shadow:0 3px 16px rgba(124,58,237,.07);
-        border:1px solid rgba(168,85,247,.1); overflow:hidden; }
-    table.adm-table{ width:100%; border-collapse:collapse; font-size:13px; }
-    table.adm-table th{ text-align:left; color:#8b80a3; font-size:10.5px; text-transform:uppercase; letter-spacing:.5px;
-        padding:12px 14px; background:#faf7ff; border-bottom:1px solid #efe9fb; font-weight:700; }
-    table.adm-table td{ padding:11px 14px; border-bottom:1px solid #f4f0fb; vertical-align:middle; }
-    table.adm-table td.idc{ font-weight:800; color:#3b0764; font-size:14px; }
-    table.adm-table td.ce{ text-align:center; }
-    table.adm-table td.an{ font-weight:600; color:#2a1a45; }
-    table.adm-table td.mut{ color:#a99bc7; }
-    .adm-zona{ font-size:11.5px; font-weight:700; padding:5px 12px; border-radius:99px; white-space:nowrap; display:inline-block; }
-    .adm-zona.z-red{ background:#fef2f4; color:#dc2626; border:1px solid #fbd0d6; }
-    .adm-zona.z-org{ background:#fff5eb; color:#ea580c; border:1px solid #fdd9b5; }
-    .adm-zona.z-grn{ background:#ecfdf5; color:#059669; border:1px solid #bbf0d6; }
-    .adm-chip{ display:inline-block; font-size:10.5px; font-weight:700; padding:3px 8px; border-radius:99px;
-        background:#ede9fe; color:#6d28d9; margin:1px 3px 1px 0; }
-    .adm-nb{ font-size:11px; font-weight:700; padding:4px 11px; border-radius:99px; background:#f1eefb; color:#a99bc7; }
-    .adm-empty{ background:#fff; border-radius:20px; box-shadow:0 8px 40px rgba(124,58,237,.10);
-        border:1px solid rgba(168,85,247,.12); padding:64px 40px; text-align:center; margin-top:8px; }
-    .adm-empty .ic{ width:92px; height:92px; margin:0 auto 18px; border-radius:24px;
-        background:linear-gradient(135deg,#f3ebff,#fde8f3); display:flex; align-items:center; justify-content:center; font-size:44px; }
-    .adm-empty h2{ font-size:25px; color:#3b0764; margin-bottom:8px; font-weight:700; }
-    .adm-empty .who2{ color:#9188a5; font-size:15px; margin-bottom:16px; }
-    .adm-plan{ display:inline-flex; align-items:center; gap:6px; background:linear-gradient(135deg,#f5f0ff,#fdf2f8);
-        color:#7c3aed; border:1px solid rgba(168,85,247,.25); border-radius:99px; padding:11px 22px; font-weight:700; font-size:15px; }
-    .adm-empty p{ color:#9188a5; font-size:14px; margin-top:16px; max-width:520px; margin-left:auto; margin-right:auto; }
-    .adm-dhead{ display:flex; align-items:center; gap:13px; flex-wrap:wrap; padding:14px 16px;
-        background:linear-gradient(135deg,#faf5ff,#fff); border:1px solid rgba(168,85,247,.12); border-radius:14px; margin-bottom:12px; }
-    .adm-dhead .did{ font-size:23px; font-weight:800; color:#3b0764; }
-    .adm-dhead .mut{ color:#a99bc7; }
-    .adm-sech{ font-size:12.5px; font-weight:700; color:#7c3aed; text-transform:uppercase; letter-spacing:.5px; margin:2px 0 8px; }
-    .adm-dot{ width:11px; height:11px; border-radius:50%; display:inline-block; }
-    .adm-dot.sd-red{ background:#ef4444; } .adm-dot.sd-yel{ background:#f59e0b; } .adm-dot.sd-grn{ background:#10b981; }
-    /* multiselect tagovi */
-    .stMultiSelect [data-baseweb="tag"]{ background:linear-gradient(135deg,#a855f7,#ec4899) !important; border:none !important;
-        border-radius:99px !important; color:#fff !important; font-weight:600 !important; }
-    .stMultiSelect [data-baseweb="tag"] span{ color:#fff !important; }
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    section[data-testid="stSidebar"]{display:none !important;}
+    header[data-testid="stHeader"]{display:none !important;}
+    #MainMenu{visibility:hidden !important;} footer{visibility:hidden !important;}
+    .stApp{background:#fbfbfd !important;font-family:'Inter',sans-serif;}
+    div[data-testid="stMainBlockContainer"]{padding:10px 26px 40px !important;max-width:100% !important;}
+    /* header */
+    .adm-hdr{display:flex;align-items:center;gap:11px;padding:16px 0 16px;border-bottom:1px solid #eef0f4;margin-bottom:22px;}
+    .adm-logo{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,#a855f7,#ec4899);display:flex;align-items:center;justify-content:center;}
+    .adm-logo div{width:9px;height:9px;background:#fff;border-radius:2px;}
+    .adm-hdr .t1{font-weight:700;font-size:16px;letter-spacing:-.2px;color:#1f2430;}
+    .adm-hdr .t2{color:#9ca3af;font-weight:500;font-size:13px;}
+    /* kpi */
+    .adm-kpi{display:flex;border:1px solid #eef0f4;border-radius:12px;background:#fff;overflow:hidden;margin:4px 0 14px;}
+    .adm-kpi .cell{flex:1;padding:15px 20px;border-right:1px solid #f2f3f7;}
+    .adm-kpi .cell:last-child{border-right:none;}
+    .adm-kpi .n{font-size:22px;font-weight:700;letter-spacing:-.5px;display:flex;align-items:center;gap:8px;color:#1f2430;}
+    .adm-kpi .n .d{width:8px;height:8px;border-radius:50%;}
+    .adm-kpi .n .d.r{background:#e5484d;} .adm-kpi .n .d.o{background:#f2820c;} .adm-kpi .n .d.g{background:#17a34a;} .adm-kpi .n .d.p{background:#7c3aed;}
+    .adm-kpi .k{font-size:12px;color:#9ca3af;margin-top:3px;font-weight:500;}
+    /* progress */
+    .adm-prog{display:flex;align-items:center;gap:12px;margin-bottom:8px;}
+    .adm-prog .t{font-size:12.5px;color:#6b7280;font-weight:600;white-space:nowrap;}
+    .adm-prog .bar{flex:1;height:5px;background:#eef0f4;border-radius:99px;overflow:hidden;}
+    .adm-prog .bar>div{height:100%;background:#7c3aed;border-radius:99px;}
+    /* tables */
+    table.adm-t{width:100%;border-collapse:collapse;}
+    table.adm-t th{text-align:left;font-size:11px;color:#b0b4bd;font-weight:600;text-transform:uppercase;letter-spacing:.5px;padding:0 14px 12px;}
+    table.adm-t td{padding:13px 14px;border-top:1px solid #f2f3f7;font-size:14px;vertical-align:middle;color:#2a2f3a;}
+    table.adm-t td.idc{font-weight:700;} table.adm-t td.ce{text-align:center;} table.adm-t td.mut{color:#b0b4bd;}
+    .zona{display:inline-flex;align-items:center;gap:7px;font-weight:600;font-size:13px;white-space:nowrap;}
+    .zona .zd{width:8px;height:8px;border-radius:50%;}
+    .z-red{color:#d33;} .z-red .zd{background:#e5484d;}
+    .z-org{color:#c66a00;} .z-org .zd{background:#f2820c;}
+    .z-grn{color:#158a3f;} .z-grn .zd{background:#17a34a;}
+    .stat{font-size:12.5px;color:#9ca3af;}
+    .stchip{display:inline-block;font-size:11.5px;color:#5b21b6;background:#f2effc;border-radius:6px;padding:2px 8px;margin:1px 3px 1px 0;}
+    .tb-nas{color:#158a3f;font-weight:600;font-size:12.5px;} .tb-nj{color:#c66a00;font-weight:600;font-size:12.5px;}
+    .np{color:#c4c7cf;}
+    .adot{width:9px;height:9px;border-radius:50%;display:inline-block;}
+    .ar-red{background:#e5484d;} .ar-yel{background:#f2820c;} .ar-grn{background:#17a34a;}
+    /* empty */
+    .adm-empty{text-align:center;padding:84px 20px;}
+    .adm-empty .ic{font-size:40px;opacity:.5;margin-bottom:14px;}
+    .adm-empty h2{font-size:19px;font-weight:600;color:#374151;margin-bottom:6px;}
+    .adm-empty .w{color:#9ca3af;font-size:14px;margin-bottom:14px;}
+    .adm-empty .plan{display:inline-block;color:#7c3aed;font-size:14px;font-weight:600;border:1px solid #ede9fe;background:#faf8ff;border-radius:99px;padding:8px 18px;}
+    .adm-empty p{color:#b0b4bd;font-size:13px;margin-top:14px;}
+    /* detail */
+    .adm-dh{display:flex;align-items:center;gap:14px;margin:6px 0 18px;}
+    .adm-dh .id{font-size:22px;font-weight:700;letter-spacing:-.5px;color:#1f2430;}
+    .adm-dh .mut{color:#b0b4bd;font-size:13px;}
+    .adm-lbl{font-size:11px;color:#b0b4bd;font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin:2px 0 8px;}
+    .revy{color:#158a3f;font-weight:600;font-size:12.5px;} .revn{color:#c4c7cf;font-weight:600;font-size:12.5px;}
+    /* streamlit kontrole suptilnije */
+    .stButton>button{border-radius:9px;font-weight:600;}
+    button[data-testid="baseButton-primary"]{background:#7c3aed !important;border-color:#7c3aed !important;color:#fff !important;}
+    .stButton button[kind="primary"]{background:#7c3aed !important;border-color:#7c3aed !important;color:#fff !important;}
+    .stMultiSelect [data-baseweb="tag"]{background:#f2effc !important;color:#5b21b6 !important;border:none !important;}
+    .stMultiSelect [data-baseweb="tag"] span{color:#5b21b6 !important;}
     </style>""", unsafe_allow_html=True)
 
-    _admin_header()
-
-    _top = st.columns([6, 1])
-    with _top[1]:
-        if st.button("🔓 Odjava", key="adm_odjava"):
+    _hc1, _hc2 = st.columns([6, 1])
+    with _hc1:
+        st.markdown('<div class="adm-hdr"><div class="adm-logo"><div></div></div>'
+                    '<span class="t1">VAPE Porudžbine</span><span class="t2">· Administracija</span></div>',
+                    unsafe_allow_html=True)
+    with _hc2:
+        st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+        if st.button("Odjava", key="adm_odjava"):
             for _k in ("authenticated", "role"):
                 st.session_state.pop(_k, None)
             st.rerun()
@@ -389,46 +409,39 @@ def prikazi_administraciju():
         st.info("Još nema objavljenih podataka. Analitičar treba prvo da objavi bar jedan sistem.")
         return
 
-    _c1, _c2 = st.columns(2)
+    _c1, _c2, _c3 = st.columns([1, 1, 3])
     _mlbls = [mesec_label(k) for k in _mes_keys]
     with _c1:
-        _sel_lbl = st.selectbox("📅 Mesec", _mlbls, index=0, key="adm_mes")
+        _sel_lbl = st.selectbox("Mesec", _mlbls, index=0, key="adm_mes")
     mesec_key = _mes_keys[_mlbls.index(_sel_lbl)]
-
     _imaju = sb_sisteme(mesec_key)
     _svi = sb_svi_sistemi()
     _sis_opts = sorted(set(_svi) | set(_imaju))
     with _c2:
         if _sis_opts:
-            sistem = st.selectbox("🏢 Sistem", _sis_opts, index=0, key="adm_sis")
+            sistem = st.selectbox("Sistem", _sis_opts, index=0, key="adm_sis")
         else:
             sistem = None
-            st.selectbox("🏢 Sistem", ["(nema sistema)"], disabled=True)
+            st.selectbox("Sistem", ["(nema)"], disabled=True)
 
     if not sistem:
         st.warning("Nema dostupnih sistema.")
         return
 
     podaci = sb_ucitaj(mesec_key, sistem)
-
-    # --- NIJE OBJAVLJEN: poruka preko celog ekrana ---
     if not podaci or not podaci.get("stavke"):
         _plan = sb_load_plan(mesec_key)
         if _plan:
-            _planhtml = '<div class="adm-plan">⏳ Analitičar planira objavu do <b style="margin-left:4px;">' + str(_plan) + '</b></div>'
+            _ph = '<div class="plan">Planirana objava do ' + str(_plan) + '.</div>'
         else:
-            _planhtml = '<div class="adm-plan">⏳ Datum objave još nije zakazan</div>'
+            _ph = '<div class="plan">Datum objave još nije zakazan.</div>'
         st.markdown('<div class="adm-empty"><div class="ic">🗓️</div>'
-            '<h2>Izveštaj još nije objavljen</h2>'
-            '<div class="who2">' + sistem + ' · ' + _sel_lbl + '</div>'
-            + _planhtml +
-            '<p>Do tada isplanirajte obilaske. Kada analitičar objavi, ovde će se pojaviti lista objekata i porudžbine.</p></div>',
-            unsafe_allow_html=True)
+                    '<h2>Izveštaj još nije objavljen</h2>'
+                    '<div class="w">' + sistem + ' · ' + _sel_lbl + '</div>' + _ph +
+                    '<p>Do tada isplanirajte obilaske.</p></div>', unsafe_allow_html=True)
         return
 
     stavke = podaci["stavke"]
-
-    # --- grupisanje po objektu + zona ---
     po_obj = {}
     for s in stavke:
         po_obj.setdefault(int(s["idk"]), []).append(s)
@@ -449,58 +462,54 @@ def prikazi_administraciju():
     n_org = sum(1 for o in objekti if o["nivo"] == "zuto")
     n_grn = sum(1 for o in objekti if o["nivo"] == "zeleno")
     n_done = len([o for o in objekti if o["idk"] in reviewed])
-
-    st.caption("📦 **" + sistem + "** · " + _sel_lbl + " · objavljeno stavki: " + str(len(stavke)))
+    _pct = int(n_done / max(n_obj, 1) * 100)
 
     st.markdown(
-        '<div class="adm-kpis">'
-        '<div class="adm-kpi k1"><div class="v">' + str(n_obj) + '</div><div class="lab">Objekata za porudžbinu</div></div>'
-        '<div class="adm-kpi k2"><div class="v">🔴 ' + str(n_red) + '</div><div class="lab">Hitno pozvati</div></div>'
-        '<div class="adm-kpi k3"><div class="v">🟠 ' + str(n_org) + '</div><div class="lab">Iskontrolisati</div></div>'
-        '<div class="adm-kpi k4"><div class="v">🟢 ' + str(n_grn) + '</div><div class="lab">Dobra</div></div>'
+        '<div class="adm-kpi">'
+        '<div class="cell"><div class="n"><span class="d p"></span>' + str(n_obj) + '</div><div class="k">Objekata za porudžbinu</div></div>'
+        '<div class="cell"><div class="n"><span class="d r"></span>' + str(n_red) + '</div><div class="k">Hitno pozvati</div></div>'
+        '<div class="cell"><div class="n"><span class="d o"></span>' + str(n_org) + '</div><div class="k">Iskontrolisati</div></div>'
+        '<div class="cell"><div class="n"><span class="d g"></span>' + str(n_grn) + '</div><div class="k">Dobra</div></div>'
         '</div>', unsafe_allow_html=True)
-    _pct = int(n_done / max(n_obj, 1) * 100)
-    st.markdown('<div class="adm-prog"><span class="txt">Pregledano ' + str(n_done) + ' / ' + str(n_obj) + '</span>'
+    st.markdown('<div class="adm-prog"><span class="t">Pregledano ' + str(n_done) + ' / ' + str(n_obj) + '</span>'
                 '<div class="bar"><div style="width:' + str(_pct) + '%"></div></div></div>', unsafe_allow_html=True)
 
-    tab_lista, tab_detalj = st.tabs(["🗂️ Lista objekata", "🔍 Detalj / obrada"])
+    def _treb_list_cell(tip, rev):
+        if tip == "nas":
+            return '<span class="tb-nas">✓ po našem</span>'
+        if tip == "njihov":
+            return '<span class="tb-nj">po njihovom</span>'
+        return '<span class="np">—</span>' if rev else '<span class="np">·</span>'
 
-    # =================== LISTA ===================
+    tab_lista, tab_detalj = st.tabs(["Lista objekata", "Detalj / obrada"])
+
     with tab_lista:
         _rows = ""
         for o in objekti:
             z = _zona_disp(o["nivo"])
             v = obrada_map.get(o["idk"], {})
             reak = v.get("reakcije", [])
-            treb = v.get("trebovali", False)
             if reak:
-                stat = "".join('<span class="adm-chip">' + _reak_short(r) + '</span>' for r in reak)
+                stat = "".join('<span class="stchip">' + _reak_short(r) + '</span>' for r in reak)
             else:
-                stat = '<span class="adm-nb">Nepregledano</span>'
-            if treb:
-                mark = "✓"; mc = "#059669"
-            elif o["idk"] in reviewed:
-                mark = "○"; mc = "#c9bce6"
-            else:
-                mark = "·"; mc = "#c9bce6"
+                stat = '<span class="stat">Nepregledano</span>'
             _rows += ('<tr>'
                 '<td class="idc">' + str(o["idk"]) + '</td>'
                 '<td class="mut">— naknadno</td>'
-                '<td class="ce" style="color:#dc2626;font-weight:700;">' + str(o["na_nuli"]) + '</td>'
-                '<td class="ce" style="font-weight:700;color:#3b0764;">' + str(o["izgub"]) + '</td>'
-                '<td><span class="adm-zona ' + z[0] + '">' + z[1] + '</span></td>'
+                '<td class="ce" style="color:#d33;">' + str(o["na_nuli"]) + '</td>'
+                '<td class="ce">' + str(o["izgub"]) + '</td>'
+                '<td><span class="zona ' + z[0] + '"><span class="zd"></span>' + z[3] + '</span></td>'
                 '<td>' + stat + '</td>'
-                '<td class="ce" style="color:' + mc + ';font-weight:800;">' + mark + '</td>'
+                '<td class="ce">' + _treb_list_cell(v.get("trebovali_tip", ""), o["idk"] in reviewed) + '</td>'
                 '</tr>')
-        st.markdown('<div class="adm-tablecard"><table class="adm-table">'
-            '<thead><tr><th>ID</th><th>Naziv komitenta</th><th>Na nuli</th><th>Izgubljeno (kom)</th>'
+        st.markdown('<table class="adm-t">'
+            '<thead><tr><th>ID</th><th>Naziv komitenta</th><th>Na nuli</th><th>Izgubljeno</th>'
             '<th>Zona</th><th>Status</th><th style="text-align:center;">Trebovali</th></tr></thead>'
-            '<tbody>' + _rows + '</tbody></table></div>', unsafe_allow_html=True)
-        st.caption("Status i Trebovali se menjaju u kartici Detalj / obrada.")
+            '<tbody>' + _rows + '</tbody></table>', unsafe_allow_html=True)
+        st.caption("Status i trebovanje se menjaju u kartici Detalj / obrada.")
 
-    # =================== DETALJ ===================
     with tab_detalj:
-        _labels = [_zona_disp(o["nivo"])[2] + "  " + str(o["idk"]) + "  ·  " + _zona_disp(o["nivo"])[1] for o in objekti]
+        _labels = [_zona_disp(o["nivo"])[2] + "  " + str(o["idk"]) + "  ·  " + _zona_disp(o["nivo"])[3] for o in objekti]
         _lab2id = {_labels[i]: ids_sorted[i] for i in range(len(objekti))}
         _id2lab = {ids_sorted[i]: _labels[i] for i in range(len(objekti))}
         if ("adm_pick" not in st.session_state) or (st.session_state.adm_pick not in _labels):
@@ -517,52 +526,59 @@ def prikazi_administraciju():
 
         _nc1, _nc2 = st.columns([3, 1])
         with _nc1:
-            st.selectbox("🔎 Izaberi / pretraži objekat (ukucaj ID)", _labels, key="adm_pick")
+            st.selectbox("Izaberi / pretraži objekat (ukucaj ID)", _labels, key="adm_pick")
         with _nc2:
             st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-            st.button("⏭️ Sledeći nepregledan", on_click=_next_unrev, use_container_width=True, key="adm_next")
+            st.button("Sledeći nepregledan →", on_click=_next_unrev, use_container_width=True, key="adm_next")
 
         sel_id = _lab2id[st.session_state.adm_pick]
         o = obj_by_id[sel_id]
         z = _zona_disp(o["nivo"])
-        v = obrada_map.get(sel_id, {"reakcije": [], "trebovali": False})
-        if sel_id in reviewed:
-            _revb = '<span class="adm-zona z-grn">✓ Pregledano</span>'
-        else:
-            _revb = '<span class="adm-nb">Nepregledano</span>'
-        st.markdown('<div class="adm-dhead"><span class="did">' + str(sel_id) + '</span>'
-            '<span class="mut">naziv komitenta — naknadno</span>'
-            '<span class="adm-zona ' + z[0] + '">' + z[1] + '</span>'
-            '<span style="margin-left:auto;">' + _revb + '</span></div>', unsafe_allow_html=True)
+        v = obrada_map.get(sel_id, {"reakcije": [], "trebovali_tip": ""})
+        _revb = '<span class="revy">✓ Pregledano</span>' if sel_id in reviewed else '<span class="revn">Nepregledano</span>'
+        st.markdown('<div class="adm-dh"><span class="id">' + str(sel_id) + '</span>'
+                    '<span class="zona ' + z[0] + '"><span class="zd"></span>' + z[3] + '</span>'
+                    '<span class="mut">— naziv naknadno</span>'
+                    '<span style="margin-left:auto;">' + _revb + '</span></div>', unsafe_allow_html=True)
 
-        _dc1, _dc2 = st.columns([1.6, 1])
+        _dc1, _dc2 = st.columns([1.7, 1])
         with _dc1:
             _ar = ""
             for d in sorted(o["lst"], key=lambda x: (int(x["lager"]), -int(x["kol"]))):
                 _lg = int(d["lager"])
-                _dot = "sd-red" if _lg == 0 else ("sd-yel" if _lg <= 2 else "sd-grn")
-                _lst_style = 'color:#dc2626;font-weight:800;' if _lg == 0 else ''
-                _ar += ('<tr><td style="width:18px;"><span class="adm-dot ' + _dot + '"></span></td>'
-                    '<td class="an">' + str(d["naziv"]) + '</td>'
-                    '<td class="ce" style="color:#059669;font-weight:700;">' + str(int(d["kol"])) + '</td>'
-                    '<td class="ce" style="' + _lst_style + '">' + str(_lg) + '</td></tr>')
-            st.markdown('<div class="adm-sech">Porudžbina i lager po artiklu</div>'
-                '<div class="adm-tablecard"><table class="adm-table">'
-                '<thead><tr><th></th><th>Artikal</th><th>Porudžbina</th><th>Lager</th></tr></thead>'
-                '<tbody>' + _ar + '</tbody></table></div>', unsafe_allow_html=True)
+                _dot = "ar-red" if _lg == 0 else ("ar-yel" if _lg <= 2 else "ar-grn")
+                _sty = 'color:#d33;font-weight:700;' if _lg == 0 else ''
+                _ar += ('<tr><td style="width:16px;"><span class="adot ' + _dot + '"></span></td>'
+                    '<td>' + str(d["naziv"]) + '</td>'
+                    '<td class="ce" style="color:#158a3f;font-weight:600;">' + str(int(d["kol"])) + '</td>'
+                    '<td class="ce" style="' + _sty + '">' + str(_lg) + '</td></tr>')
+            st.markdown('<div class="adm-lbl">Porudžbina i lager</div>'
+                '<table class="adm-t"><thead><tr><th></th><th>Artikal</th><th style="text-align:center;">Porudžbina</th>'
+                '<th style="text-align:center;">Lager</th></tr></thead><tbody>' + _ar + '</tbody></table>', unsafe_allow_html=True)
         with _dc2:
-            st.markdown('<div class="adm-sech">Reakcija (može više)</div>', unsafe_allow_html=True)
-            react = st.multiselect("Reakcija", REAKCIJE_OPCIJE, default=list(v.get("reakcije", [])),
-                                   key="react_" + str(sel_id), label_visibility="collapsed")
+            st.markdown('<div class="adm-lbl">Reakcija</div>', unsafe_allow_html=True)
+            _loaded = list(v.get("reakcije", []))
+            _r1 = st.checkbox("Pozvala sam", value=("Pozvala sam" in _loaded), key="r1_" + str(sel_id))
+            _r2 = st.checkbox("Poslala sam mejl", value=("Poslala sam mejl" in _loaded), key="r2_" + str(sel_id))
+            _r3 = st.checkbox("Obavestila direktorku", value=("Obavestila direktorku" in _loaded), key="r3_" + str(sel_id))
+            react = []
+            if _r1: react.append("Pozvala sam")
+            if _r2: react.append("Poslala sam mejl")
+            if _r3: react.append("Obavestila direktorku")
             _can = len(react) > 0
-            treb = st.checkbox("Trebovali (naručili) nakon reakcije",
-                               value=bool(v.get("trebovali", False)) and _can,
-                               disabled=not _can, key="treb_" + str(sel_id))
+            st.markdown('<div class="adm-lbl" style="margin-top:12px;">Trebovanje nakon reakcije</div>', unsafe_allow_html=True)
+            TREB_OPT = ["— nije trebovano", "Po našem sistemu", "Po njihovom sistemu (ne po našem)"]
+            TREB_CODE = {"— nije trebovano": "", "Po našem sistemu": "nas", "Po njihovom sistemu (ne po našem)": "njihov"}
+            _tip_cur = v.get("trebovali_tip", "") or ""
+            _tip_idx = ["", "nas", "njihov"].index(_tip_cur) if _tip_cur in ["", "nas", "njihov"] else 0
+            _treb_lbl = st.radio("Trebovanje", TREB_OPT, index=_tip_idx, disabled=not _can,
+                                 key="treb_" + str(sel_id), label_visibility="collapsed")
+            _tip_val = TREB_CODE.get(_treb_lbl, "") if _can else ""
             if not _can:
-                st.caption("🔒 Trebovali se otključava kad izabereš bar jednu reakciju.")
-            if st.button("💾 Sačuvaj status", key="savest_" + str(sel_id), use_container_width=True):
+                st.caption("🔒 Otključava se kad izabereš bar jednu reakciju.")
+            if st.button("Sačuvaj status", key="savest_" + str(sel_id), use_container_width=True, type="primary"):
                 try:
-                    sb_save_obrada(mesec_key, sistem, sel_id, react, bool(treb) and _can)
+                    sb_save_obrada(mesec_key, sistem, sel_id, react, _tip_val)
                     st.success("Sačuvano ✓")
                     st.rerun()
                 except Exception as _e:
