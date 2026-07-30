@@ -55,7 +55,7 @@ def sb_objavi(mesec_key, sistem, podaci):
     payload = {"mesec": mesec_key, "sistem": sistem.strip(), "podaci": podaci}
     cli.table("porudzbine").upsert(payload, on_conflict="mesec,sistem").execute()
     # osvezi kes da koleginice odmah vide
-    for fn in (sb_meseci, sb_sisteme, sb_svi_sistemi, sb_ucitaj):
+    for fn in (sb_meseci, sb_sisteme, sb_svi_sistemi, sb_ucitaj, sb_pregled):
         try: fn.clear()
         except Exception: pass
 
@@ -88,6 +88,14 @@ def sb_ucitaj(mesec_key, sistem):
     res = cli.table("porudzbine").select("podaci").eq("mesec", mesec_key).eq("sistem", sistem).limit(1).execute()
     if not res.data: return None
     return res.data[0]["podaci"]
+
+@st.cache_data(ttl=30)
+def sb_pregled():
+    """Lagani pregled svega objavljenog: mesec, sistem, kada (bez povlacenja stavki)."""
+    cli = _sb()
+    if cli is None: return []
+    res = cli.table("porudzbine").select("mesec,sistem,objavljeno").order("mesec", desc=True).execute()
+    return res.data or []
 
 # ---- HITNOST po objektu (na osnovu niskog lagera) ----
 # Pragovi su namerno apsolutni i lako se menjaju (dole dve brojke).
@@ -466,9 +474,8 @@ class PredictionEngine:
         lg,lm = self.meseci_order[-1]; nm=int(lm)+1; ng=int(lg)
         if nm>12: nm=1; ng+=1
         self.pred_label = f"{mn.get(nm,'?')} {ng}"
-        om=nm+1; og=ng
-        if om>12: om=1; og+=1
-        self.order_label = f"{mn.get(om,'?')} {og}"
+        # Porudzbina je za isti mesec kao i predikcija (poslednji mesec podataka + 1)
+        self.order_label = self.pred_label
         self.log(f"Meseci: {', '.join(self.mesec_labels)}")
         self.num_komitenti = self.prodaja['ID KOMITENTA'].nunique()
         self.trosak_po_objektu = self.mesecni_trosak / max(self.num_komitenti, 1) if self.mesecni_trosak > 0 else 0
@@ -1416,6 +1423,29 @@ excluded = set()
 for part in excluded_str.replace('\n', ',').split(','):
     p = part.strip()
     if p.isdigit(): excluded.add(int(p))
+if sb_dostupan():
+    with st.expander("📋 Već objavljeno za koleginice (pregled)", expanded=True):
+        _pregled = sb_pregled()
+        if not _pregled:
+            st.caption("Još ništa nije objavljeno.")
+        else:
+            _pr_rows = []
+            for _r in _pregled:
+                _kada = _r.get("objavljeno", "") or ""
+                try:
+                    _kada = datetime.datetime.fromisoformat(_kada.replace("Z", "+00:00")).strftime("%d.%m.%Y")
+                except Exception:
+                    _kada = str(_kada)[:10]
+                _pr_rows.append({"Mesec": mesec_label(_r["mesec"]), "Sistem": _r["sistem"], "Objavljeno": _kada})
+            _pr_df = pd.DataFrame(_pr_rows).sort_values(["Mesec", "Sistem"]).reset_index(drop=True)
+            st.dataframe(_pr_df, use_container_width=True, hide_index=True)
+            _po_mes = {}
+            for _r in _pregled:
+                _po_mes.setdefault(mesec_label(_r["mesec"]), []).append(_r["sistem"])
+            _linije = [f"**{m}**: {', '.join(sorted(s))}" for m, s in _po_mes.items()]
+            st.caption("Objavljeno po mesecima → " + "  ·  ".join(_linije))
+        st.caption("Ako sistem nije na listi za neki mesec, znači da još nije objavljen. Objavljivanje je dole, posle analize.")
+
 uploaded = st.file_uploader("Učitaj Excel fajl sa podacima", type=['xlsx','xls'])
 if uploaded:
     file_bytes = uploaded.read()
@@ -2098,7 +2128,7 @@ Ostaju samo objekti koji su u plusu.</p>
                 st.info("Supabase još nije podešen — dodaj SUPABASE_URL i SUPABASE_KEY u Streamlit Secrets da bi objava radila.")
             else:
                 _lg, _lm = engine.meseci_order[-1]
-                _om = int(_lm) + 2; _oy = int(_lg)
+                _om = int(_lm) + 1; _oy = int(_lg)
                 while _om > 12:
                     _om -= 12; _oy += 1
                 _mesec_key = f"{_oy}-{_om:02d}"
