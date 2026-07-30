@@ -349,22 +349,25 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
     from reportlab.lib.units import mm
     from reportlab.lib import colors
     from reportlab.lib.styles import ParagraphStyle
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether
 
     FN, FB = _pdf_font()
-    H1 = ParagraphStyle('H1', fontName=FB, fontSize=18, textColor=colors.HexColor('#3b0764'), spaceAfter=2)
-    Hsub = ParagraphStyle('Hsub', fontName=FN, fontSize=10, textColor=colors.HexColor('#9188a5'), spaceAfter=14)
-    Hsys = ParagraphStyle('Hsys', fontName=FB, fontSize=14, textColor=colors.HexColor('#7c3aed'), spaceBefore=16, spaceAfter=6)
-    P = ParagraphStyle('P', fontName=FN, fontSize=10, textColor=colors.HexColor('#333333'), spaceAfter=6, leading=15)
-    Psmall = ParagraphStyle('Ps', fontName=FN, fontSize=9, textColor=colors.HexColor('#666666'))
+    C_PURPLE = colors.HexColor('#7c3aed')
+    C_RED = colors.HexColor('#d33333')
+    C_ORG = colors.HexColor('#c66a00')
+    C_GRN = colors.HexColor('#158a3f')
+    H1 = ParagraphStyle('H1', fontName=FB, fontSize=20, leading=24, textColor=colors.HexColor('#3b0764'), spaceAfter=2)
+    Hsub = ParagraphStyle('Hsub', fontName=FN, fontSize=10, leading=13, textColor=colors.HexColor('#9188a5'), spaceAfter=18)
+    Hsys = ParagraphStyle('Hsys', fontName=FB, fontSize=15, leading=18, textColor=C_PURPLE, spaceBefore=18, spaceAfter=8)
+    P = ParagraphStyle('P', fontName=FN, fontSize=10, textColor=colors.HexColor('#444444'), spaceAfter=8, leading=14)
 
     buf = _io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=16 * mm, bottomMargin=15 * mm,
-                            leftMargin=15 * mm, rightMargin=15 * mm)
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=18 * mm, bottomMargin=16 * mm,
+                            leftMargin=16 * mm, rightMargin=16 * mm)
     el = []
     el.append(Paragraph("Izveštaj administracije", H1))
     _dan = datetime.datetime.now().strftime("%d.%m.%Y")
-    el.append(Paragraph("Mesec: " + mesec_lbl + "  ·  generisano " + _dan, Hsub))
+    el.append(Paragraph("Mesec: " + mesec_lbl + "   ·   generisano " + _dan, Hsub))
 
     sistemi = sb_sisteme(mesec_key)
     if not sistemi:
@@ -372,10 +375,6 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
         doc.build(el)
         buf.seek(0)
         return buf.getvalue()
-
-    _treb_txt = {"": "—", "nas": "Po našem", "njihov": "Po njihovom"}
-    _zt = {"crveno": "Hitno", "zuto": "Iskontrolisati", "zeleno": "Dobra"}
-    _zc = {"crveno": colors.HexColor('#d33333'), "zuto": colors.HexColor('#c66a00'), "zeleno": colors.HexColor('#158a3f')}
 
     for _sis in sistemi:
         podaci = sb_ucitaj(mesec_key, _sis)
@@ -388,68 +387,63 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
         objekti = []
         for idk, lst in po.items():
             nivo, n0, izg = hitnost_objekta(lst)
-            objekti.append({"idk": idk, "nivo": nivo, "kom": sum(int(x["kol"]) for x in lst)})
-        objekti.sort(key=lambda o: (HIT_RANG[o["nivo"]], -o["kom"]))
+            objekti.append({"idk": idk, "nivo": nivo})
         obrada = sb_load_obrada(mesec_key, _sis)
-        rev = [o for o in objekti if obrada.get(o["idk"], {}).get("reakcije")]
+
+        def _reak_ima(o, naziv):
+            return naziv in (obrada.get(o["idk"], {}).get("reakcije") or [])
+
         n = len(objekti)
         nred = sum(1 for o in objekti if o["nivo"] == "crveno")
         norg = sum(1 for o in objekti if o["nivo"] == "zuto")
         ngrn = sum(1 for o in objekti if o["nivo"] == "zeleno")
+        rev = [o for o in objekti if obrada.get(o["idk"], {}).get("reakcije")]
         nrev = len(rev)
+        nPoz = sum(1 for o in objekti if _reak_ima(o, "Pozvala sam"))
+        nMej = sum(1 for o in objekti if _reak_ima(o, "Poslala sam mejl"))
+        nDir = sum(1 for o in objekti if _reak_ima(o, "Obavestila direktorku"))
         nnas = sum(1 for o in rev if obrada.get(o["idk"], {}).get("trebovali_tip") == "nas")
         nnj = sum(1 for o in rev if obrada.get(o["idk"], {}).get("trebovali_tip") == "njihov")
         nnije = sum(1 for o in rev if not obrada.get(o["idk"], {}).get("trebovali_tip"))
 
-        el.append(Paragraph("Sistem: " + str(_sis), Hsys))
-        _rec = ("Kontaktirano " + str(nrev) + " od " + str(n) + " objekata.  "
-                "Uspešno (poručili kod nas): " + str(nnas) + ".  "
-                "Poručili kod drugog: " + str(nnj) + ".  "
-                "Kontaktirano bez porudžbine: " + str(nnije) + ".  "
-                "Nije obrađeno: " + str(n - nrev) + ".")
-        el.append(Paragraph(_rec, P))
+        blok = []
+        blok.append(Paragraph(str(_sis) + ":", Hsys))
 
-        head = ["Ukupno", "Kontaktirano", "Uspešno\n(kod nas)", "Kod\ndrugog", "Bez\nporudžbine", "Neobrađeno"]
-        vals = [str(n), str(nrev), str(nnas), str(nnj), str(nnije), str(n - nrev)]
-        t = Table([head, vals], colWidths=[27 * mm] * 6)
-        t.setStyle(TableStyle([
-            ('FONTNAME', (0, 0), (-1, -1), FN), ('FONTSIZE', (0, 0), (-1, -1), 9),
-            ('FONTNAME', (0, 0), (-1, 0), FB), ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f2effc')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#5b21b6')),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e6e0f5')),
-            ('TOPPADDING', (0, 0), (-1, -1), 6), ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-            ('FONTNAME', (0, 1), (-1, 1), FB),
-            ('TEXTCOLOR', (2, 1), (2, 1), colors.HexColor('#158a3f')),
-            ('TEXTCOLOR', (3, 1), (3, 1), colors.HexColor('#c66a00')),
-        ]))
-        el.append(t)
-        el.append(Spacer(1, 6))
-        el.append(Paragraph("Zone:  Hitno " + str(nred) + "   ·   Iskontrolisati " + str(norg) + "   ·   Dobra " + str(ngrn), Psmall))
-        el.append(Spacer(1, 8))
-
-        rows = [["ID", "Zona", "Status", "Trebovanje", "Naša kom.", "Njihova kom."]]
-        sc = [
-            ('FONTNAME', (0, 0), (-1, -1), FN), ('FONTSIZE', (0, 0), (-1, -1), 8),
-            ('FONTNAME', (0, 0), (-1, 0), FB), ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#faf7ff')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#8b80a3')),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#fbfaff')]),
-            ('ALIGN', (0, 0), (0, -1), 'CENTER'), ('ALIGN', (4, 0), (5, -1), 'CENTER'),
-            ('TOPPADDING', (0, 0), (-1, -1), 4), ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-            ('LINEBELOW', (0, 0), (-1, 0), 0.7, colors.HexColor('#d9d0ef')),
+        rows = [
+            ["Ukupno objekata za porudžbinu", str(n), None],
+            ["Obrađeno (bilo koja reakcija)", str(nrev), None],
+            ["Nije obrađeno", str(n - nrev), None],
+            ["Zona — Hitno (crvena)", str(nred), C_RED],
+            ["Zona — Iskontrolisati (narandžasta)", str(norg), C_ORG],
+            ["Zona — Dobra (zelena)", str(ngrn), C_GRN],
+            ["Reakcija — Pozvano", str(nPoz), None],
+            ["Reakcija — Poslat mejl", str(nMej), None],
+            ["Reakcija — Prijavljeno direktorki", str(nDir), None],
+            ["Uspešno trebovanje (kod nas)", str(nnas), C_GRN],
+            ["Trebovali po svom (kod njih)", str(nnj), C_ORG],
+            ["Kontaktirano bez porudžbine", str(nnije), None],
         ]
-        for _ri, o in enumerate(objekti, start=1):
-            v = obrada.get(o["idk"], {})
-            reak = v.get("reakcije", [])
-            status = ", ".join(_reak_short(r) for r in reak) if reak else "Nepregledano"
-            tip = _treb_txt.get(v.get("trebovali_tip", "") or "", "—")
-            nj = v.get("njihova") or {}
-            nj_sum = sum(int(x) for x in nj.values()) if nj else 0
-            rows.append([str(o["idk"]), _zt[o["nivo"]], status, tip, str(o["kom"]), (str(nj_sum) if nj_sum else "—")])
-            sc.append(('TEXTCOLOR', (1, _ri), (1, _ri), _zc[o["nivo"]]))
-        tob = Table(rows, colWidths=[15 * mm, 24 * mm, 46 * mm, 26 * mm, 20 * mm, 22 * mm], repeatRows=1)
-        tob.setStyle(TableStyle(sc))
-        el.append(tob)
+        tdata = [[r[0], r[1]] for r in rows]
+        style = [
+            ('FONTNAME', (0, 0), (-1, -1), FN), ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('FONTNAME', (1, 0), (1, -1), FB),
+            ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TEXTCOLOR', (0, 0), (0, -1), colors.HexColor('#444444')),
+            ('ROWBACKGROUNDS', (0, 0), (-1, -1), [colors.white, colors.HexColor('#fbfaff')]),
+            ('LINEBELOW', (0, 0), (-1, -2), 0.3, colors.HexColor('#efeaf9')),
+            ('BOX', (0, 0), (-1, -1), 0.6, colors.HexColor('#e6e0f5')),
+            ('TOPPADDING', (0, 0), (-1, -1), 6), ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('LEFTPADDING', (0, 0), (-1, -1), 12), ('RIGHTPADDING', (0, 0), (-1, -1), 12),
+        ]
+        for _i, r in enumerate(rows):
+            if r[2] is not None:
+                style.append(('TEXTCOLOR', (1, _i), (1, _i), r[2]))
+                style.append(('TEXTCOLOR', (0, _i), (0, _i), r[2]))
+        t = Table(tdata, colWidths=[120 * mm, 30 * mm])
+        t.setStyle(TableStyle(style))
+        blok.append(t)
+        el.append(KeepTogether(blok))
 
     doc.build(el)
     buf.seek(0)
