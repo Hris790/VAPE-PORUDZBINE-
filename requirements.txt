@@ -2,5 +2,4 @@ streamlit
 pandas
 numpy
 openpyxl
-requests
-reportlab
+supabase
