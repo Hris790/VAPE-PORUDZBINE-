@@ -1,75 +1,171 @@
 import streamlit as st
 import streamlit.components.v1 as components
-import io, datetime, math, numpy as np, pandas as pd
+import io, os, datetime, math, json, numpy as np, pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
 from openpyxl.utils import get_column_letter
 
-# --- PASSWORD ZASTITA ---
-APP_PASSWORD = "vape2024"
+# =====================================================================
+# KONFIGURACIJA (secrets) + SUPABASE
+# =====================================================================
+try:
+    from supabase import create_client
+except Exception:
+    create_client = None
 
+def _cfg(key, default=None):
+    try:
+        if key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        pass
+    return default
+
+APP_PASSWORD   = _cfg("APP_PASSWORD", "vape2024")     # analiticar (pun pristup)
+ADMIN_PASSWORD = _cfg("ADMIN_PASSWORD", "aman2024")   # administracija (koleginice)
+SUPABASE_URL   = _cfg("SUPABASE_URL", "")
+SUPABASE_KEY   = _cfg("SUPABASE_KEY", "")
+
+MESEC_NAZIVI = {1:'Januar',2:'Februar',3:'Mart',4:'April',5:'Maj',6:'Jun',
+                7:'Jul',8:'Avgust',9:'Septembar',10:'Oktobar',11:'Novembar',12:'Decembar'}
+
+def mesec_label(key):
+    try:
+        y, m = str(key).split('-')
+        return f"{MESEC_NAZIVI.get(int(m), m)} {y}"
+    except Exception:
+        return str(key)
+
+@st.cache_resource
+def _sb():
+    if not (create_client and SUPABASE_URL and SUPABASE_KEY):
+        return None
+    try:
+        return create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception:
+        return None
+
+def sb_dostupan():
+    return _sb() is not None
+
+def sb_objavi(mesec_key, sistem, podaci):
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen (SUPABASE_URL / SUPABASE_KEY u secrets).")
+    payload = {"mesec": mesec_key, "sistem": sistem.strip(), "podaci": podaci}
+    cli.table("porudzbine").upsert(payload, on_conflict="mesec,sistem").execute()
+    # osvezi kes da koleginice odmah vide
+    for fn in (sb_meseci, sb_sisteme, sb_svi_sistemi, sb_ucitaj):
+        try: fn.clear()
+        except Exception: pass
+
+@st.cache_data(ttl=30)
+def sb_meseci():
+    cli = _sb()
+    if cli is None: return []
+    res = cli.table("porudzbine").select("mesec").execute()
+    keys = sorted({r["mesec"] for r in (res.data or [])}, reverse=True)
+    return [{"key": k, "label": mesec_label(k)} for k in keys]
+
+@st.cache_data(ttl=30)
+def sb_sisteme(mesec_key):
+    cli = _sb()
+    if cli is None: return []
+    res = cli.table("porudzbine").select("sistem").eq("mesec", mesec_key).execute()
+    return sorted({r["sistem"] for r in (res.data or [])})
+
+@st.cache_data(ttl=30)
+def sb_svi_sistemi():
+    cli = _sb()
+    if cli is None: return []
+    res = cli.table("porudzbine").select("sistem").execute()
+    return sorted({r["sistem"] for r in (res.data or [])})
+
+@st.cache_data(ttl=30)
+def sb_ucitaj(mesec_key, sistem):
+    cli = _sb()
+    if cli is None: return None
+    res = cli.table("porudzbine").select("podaci").eq("mesec", mesec_key).eq("sistem", sistem).limit(1).execute()
+    if not res.data: return None
+    return res.data[0]["podaci"]
+
+# ---- HITNOST po objektu (na osnovu niskog lagera) ----
+# Pragovi su namerno apsolutni i lako se menjaju (dole dve brojke).
+HIT_CRVENO_KOM   = 15   # >= ovoliko kom/mesec na artiklima bez lagera -> HITNO
+HIT_CRVENO_ART   = 8    # ILI >= ovoliko artikala na nuli -> HITNO
+HIT_ZUTO_KOM     = 5
+HIT_ZUTO_ART     = 3
+def hitnost_objekta(stavke_obj):
+    """stavke_obj = lista stavki za jedan objekat (sve imaju porudzbinu > 0).
+    izgubljeno = predvidjena mesecna prodaja na artiklima koji su TRENUTNO na 0 lagera
+    (koliko kom mesecno objekat propušta jer je polica prazna)."""
+    n_nula = sum(1 for s in stavke_obj if int(s.get('lager', 0)) == 0)
+    izgubljeno = sum(int(s.get('pred', 0)) for s in stavke_obj if int(s.get('lager', 0)) == 0)
+    if izgubljeno >= HIT_CRVENO_KOM or n_nula >= HIT_CRVENO_ART:
+        nivo = 'crveno'
+    elif izgubljeno >= HIT_ZUTO_KOM or n_nula >= HIT_ZUTO_ART:
+        nivo = 'zuto'
+    else:
+        nivo = 'zeleno'
+    return nivo, n_nula, izgubljeno
+
+HIT_EMOJI = {'crveno': '🔴', 'zuto': '🟡', 'zeleno': '🟢'}
+HIT_RANG  = {'crveno': 0, 'zuto': 1, 'zeleno': 2}
+HIT_TEKST = {'crveno': 'Hitno', 'zuto': 'Srednje', 'zeleno': 'Može da čeka'}
+
+def stavke_iz_rezultata(result, engine):
+    """Napravi listu stavki (samo Porudzbina_2 > 0) za cuvanje u Supabase."""
+    reg = engine.region_map if hasattr(engine, 'region_map') else {}
+    order = result[result['Porudzbina_2'] > 0]
+    stavke = []
+    for _, r in order.iterrows():
+        idk = int(r['ID KOMITENTA'])
+        stavke.append({
+            'idk': idk,
+            'region': str(reg.get(r['ID KOMITENTA'], '') or ''),
+            'ida': int(r['id artikla']),
+            'naziv': str(r['Naziv artikla']),
+            'grupa': str(r.get('Grupa', '') or ''),
+            'pred': int(r.get('Predikcija', 0)),
+            'lager': int(r.get('Lager_danas', 0)),
+            'kol': int(r['Porudzbina_2']),
+        })
+    return stavke
+
+# =====================================================================
+# PRIJAVA (dve uloge: analitika / administracija)
+# =====================================================================
 def check_password():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
-
     if st.session_state.authenticated:
         return True
-
     st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
-    html, body, .stApp {
-        background: #12002a !important;
-        font-family: 'Poppins', sans-serif;
-    }
-    .stApp {
-        background: linear-gradient(135deg, #12002a 0%, #1e0040 50%, #0d001f 100%) !important;
-    }
-    /* Sakrij streamlit elemente na login stranici */
+    html, body, .stApp { background: #12002a !important; font-family: 'Poppins', sans-serif; }
+    .stApp { background: linear-gradient(135deg, #12002a 0%, #1e0040 50%, #0d001f 100%) !important; }
     header[data-testid="stHeader"] { background: transparent !important; }
     .stDeployButton { display: none; }
     footer { display: none; }
     #MainMenu { display: none; }
-    /* Centriraj login karticu */
-    .block-container {
-        max-width: 460px !important;
-        margin: 0 auto !important;
-        padding-top: 80px !important;
-    }
-    /* Input stilovi za tamnu pozadinu */
+    .block-container { max-width: 460px !important; margin: 0 auto !important; padding-top: 80px !important; }
     .stTextInput > div > div > input {
-        background: rgba(255,255,255,0.08) !important;
-        border: 1px solid rgba(255,255,255,0.15) !important;
-        color: white !important;
-        border-radius: 12px !important;
-        padding: 12px 16px !important;
-        font-size: 15px !important;
-    }
+        background: rgba(255,255,255,0.08) !important; border: 1px solid rgba(255,255,255,0.15) !important;
+        color: white !important; border-radius: 12px !important; padding: 12px 16px !important; font-size: 15px !important; }
     .stTextInput > div > div > input::placeholder { color: rgba(255,255,255,0.35) !important; }
     .stTextInput > div > div > input:focus {
-        border-color: rgba(168,85,247,0.6) !important;
-        box-shadow: 0 0 0 3px rgba(168,85,247,0.15) !important;
-    }
-    /* Dugme */
+        border-color: rgba(168,85,247,0.6) !important; box-shadow: 0 0 0 3px rgba(168,85,247,0.15) !important; }
     .stButton > button {
-        background: linear-gradient(135deg, #a855f7 0%, #ec4899 100%) !important;
-        color: white !important;
-        border: none !important;
-        border-radius: 12px !important;
-        padding: 13px 32px !important;
-        font-weight: 700 !important;
-        font-size: 15px !important;
-        width: 100% !important;
-        box-shadow: 0 4px 20px rgba(168,85,247,0.35) !important;
-        transition: opacity 0.2s !important;
-    }
+        background: linear-gradient(135deg, #a855f7 0%, #ec4899 100%) !important; color: white !important;
+        border: none !important; border-radius: 12px !important; padding: 13px 32px !important;
+        font-weight: 700 !important; font-size: 15px !important; width: 100% !important;
+        box-shadow: 0 4px 20px rgba(168,85,247,0.35) !important; transition: opacity 0.2s !important; }
     .stButton > button:hover { opacity: 0.88 !important; }
-    /* Error poruka */
-    .stAlert { border-radius: 10px !important; background: rgba(220,38,38,0.15) !important; border: 1px solid rgba(220,38,38,0.3) !important; color: #fca5a5 !important; }
+    .stAlert { border-radius: 10px !important; background: rgba(220,38,38,0.15) !important;
+        border: 1px solid rgba(220,38,38,0.3) !important; color: #fca5a5 !important; }
     </style>
     """, unsafe_allow_html=True)
-
-    # Logo i naslov
     st.markdown("""
     <div style="text-align:center; margin-bottom: 36px;">
         <div style="display:inline-flex; align-items:center; gap:10px; margin-bottom: 24px;">
@@ -89,16 +185,19 @@ def check_password():
         </p>
     </div>
     """, unsafe_allow_html=True)
-
     pwd = st.text_input("Šifra", type="password", placeholder="Unesite šifru...", label_visibility="collapsed")
     btn = st.button("Prijavi se", use_container_width=True)
     if btn:
         if pwd == APP_PASSWORD:
             st.session_state.authenticated = True
+            st.session_state.role = "analitika"
+            st.rerun()
+        elif pwd == ADMIN_PASSWORD:
+            st.session_state.authenticated = True
+            st.session_state.role = "administracija"
             st.rerun()
         else:
             st.error("Pogrešna šifra")
-
     st.markdown("""
     <div style="text-align:center; margin-top:28px;">
         <p style="color:rgba(255,255,255,0.18); font-size:12px; margin:0;">
@@ -106,12 +205,196 @@ def check_password():
         </p>
     </div>
     """, unsafe_allow_html=True)
-
     return False
 
+
+# =====================================================================
+# PREGLED ZA KOLEGINICE (administracija)
+# =====================================================================
+def _admin_css():
+    st.markdown("""<style>
+    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
+    section[data-testid="stSidebar"] { display: none !important; }
+    header[data-testid="stHeader"] { display: none !important; }
+    #MainMenu { visibility: hidden !important; }
+    footer { visibility: hidden !important; }
+    .stApp { background: #f5f0ff !important; font-family: 'Poppins', sans-serif; }
+    div[data-testid="stMainBlockContainer"], .main .block-container {
+        padding: 12px 18px 0 18px !important; max-width: 100% !important; }
+    .stButton > button {
+        background: linear-gradient(135deg, #a855f7 0%, #ec4899 100%) !important; color: white !important;
+        border: none !important; border-radius: 10px !important; font-weight: 600 !important; }
+    </style>""", unsafe_allow_html=True)
+
+def _admin_header():
+    st.markdown('''<div style="background:#12002a;border-radius:16px;padding:0 28px;height:60px;
+        display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;
+        border-bottom:3px solid;border-image:linear-gradient(90deg,#a855f7,#ec4899) 1;
+        box-shadow:0 4px 20px rgba(18,0,42,0.18);">
+        <div style="display:flex;align-items:center;gap:12px;">
+            <div style="width:30px;height:30px;background:linear-gradient(135deg,#a855f7,#ec4899);
+                border-radius:8px;display:flex;align-items:center;justify-content:center;">
+                <div style="width:11px;height:11px;background:white;border-radius:3px;"></div>
+            </div>
+            <span style="font-size:18px;font-weight:700;color:white;">VAPE</span>
+            <span style="font-size:18px;font-weight:300;color:rgba(255,255,255,0.4);">Porudžbine</span>
+            <span style="font-size:11px;color:rgba(255,255,255,0.25);margin-left:8px;">·</span>
+            <span style="font-size:12px;color:rgba(255,255,255,0.35);">Pregled za administraciju</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+            <div style="width:8px;height:8px;border-radius:50%;background:rgba(168,85,247,0.7);"></div>
+            <div style="width:8px;height:8px;border-radius:50%;background:rgba(236,72,153,0.5);"></div>
+            <div style="width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,0.15);"></div>
+        </div>
+    </div>''', unsafe_allow_html=True)
+
+def prikazi_administraciju():
+    st.set_page_config(page_title="VAPE — Porudžbine", page_icon="📦",
+                       layout="wide", initial_sidebar_state="collapsed")
+    _admin_css()
+    _admin_header()
+
+    if st.button("🔓 Odjava"):
+        for k in ("authenticated", "role"):
+            st.session_state.pop(k, None)
+        st.rerun()
+
+    if not sb_dostupan():
+        st.error("Veza sa bazom trenutno nije podešena. Javi se analitičaru.")
+        return
+
+    meseci = sb_meseci()
+    if not meseci:
+        st.info("Još nema objavljenih podataka. Analitičar treba prvo da objavi bar jedan sistem.")
+        return
+
+    c1, c2 = st.columns([1, 1])
+    labels = [m["label"] for m in meseci]
+    keys   = [m["key"] for m in meseci]
+    with c1:
+        sel_lbl = st.selectbox("📅 Mesec", labels, index=0)
+    mesec_key = keys[labels.index(sel_lbl)]
+
+    imaju = sb_sisteme(mesec_key)
+    svi   = sb_svi_sistemi()
+    zakljucani = [s for s in svi if s not in imaju]
+
+    with c2:
+        if imaju:
+            sistem = st.selectbox("🏢 Sistem", imaju, index=0)
+        else:
+            sistem = None
+            st.selectbox("🏢 Sistem", ["(nema objavljenih sistema)"], index=0, disabled=True)
+
+    if zakljucani:
+        st.markdown(
+            "<div style='font-size:12.5px;color:#9ca3af;padding:2px 2px 8px 2px;'>🔒 Nisu uneti podaci za: "
+            + ", ".join(f"<b>{s}</b>" for s in zakljucani) + "</div>",
+            unsafe_allow_html=True)
+
+    if not sistem:
+        st.warning("Za izabrani mesec još nije objavljen nijedan sistem.")
+        return
+
+    podaci = sb_ucitaj(mesec_key, sistem)
+    if not podaci or not podaci.get("stavke"):
+        st.warning("Za ovaj sistem nema stavki za porudžbinu.")
+        return
+
+    stavke = podaci["stavke"]
+    meta = podaci.get("meta", {})
+
+    # grupisi po objektu
+    po_obj = {}
+    for s in stavke:
+        po_obj.setdefault(int(s["idk"]), []).append(s)
+
+    redovi = []
+    for idk, lst in po_obj.items():
+        nivo, n_nula, izgub = hitnost_objekta(lst)
+        ukupno = sum(int(x["kol"]) for x in lst)
+        region = next((x.get("region", "") for x in lst if x.get("region")), "")
+        redovi.append({"idk": idk, "region": region, "artikala": len(lst),
+                       "ukupno": ukupno, "na_nuli": n_nula, "izgub": izgub,
+                       "nivo": nivo})
+    redovi.sort(key=lambda r: (HIT_RANG[r["nivo"]], -r["izgub"], -r["ukupno"]))
+
+    n_obj = len(redovi)
+    n_hitnih = sum(1 for r in redovi if r["nivo"] == "crveno")
+    n_kom = sum(r["ukupno"] for r in redovi)
+
+    st.caption(f"📦 **{sistem}** · {sel_lbl}  ·  objavljeno stavki: {len(stavke)}"
+               + (f"  ·  predikcija: {meta.get('pred_label','')}" if meta.get("pred_label") else ""))
+
+    m1, m2, m3 = st.columns(3)
+    def _kard(col, val, label, color):
+        col.markdown(f"""<div style="background:white;border-radius:12px;padding:14px 18px;
+            border-left:4px solid {color};box-shadow:0 2px 8px rgba(0,0,0,0.06);">
+            <div style="font-size:24px;font-weight:700;color:{color};">{val:,}</div>
+            <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.5px;">{label}</div>
+        </div>""", unsafe_allow_html=True)
+    _kard(m1, n_obj, "Objekata za porudžbinu", "#7c3aed")
+    _kard(m2, n_hitnih, "🔴 Hitno pozvati", "#ec4899")
+    _kard(m3, n_kom, "Ukupno komada", "#10b981")
+
+    st.markdown("<div style='margin:14px 0 2px 0;'></div>", unsafe_allow_html=True)
+
+    pretraga = st.text_input("🔎 Pretraga objekta (ID)", value="", placeholder="npr. 229").strip()
+    redovi_f = [r for r in redovi if (not pretraga) or (pretraga in str(r["idk"]))]
+
+    # --- lista objekata (sortirana po hitnosti) ---
+    df_lista = pd.DataFrame([{
+        "Hitnost": f'{HIT_EMOJI[r["nivo"]]} {HIT_TEKST[r["nivo"]]}',
+        "ID objekta": r["idk"],
+        "Region": r["region"],
+        "Artikala": r["artikala"],
+        "Ukupno kom": r["ukupno"],
+        "Na nuli": r["na_nuli"],
+        "Propušteno/mes": r["izgub"],
+    } for r in redovi_f])
+    st.markdown('<div style="font-size:15px;font-weight:600;color:#4c1d95;margin:6px 0;">🗂️ Objekti — sortirani po hitnosti</div>', unsafe_allow_html=True)
+    st.dataframe(df_lista, use_container_width=True, hide_index=True, height=min(430, 60 + 35*max(len(df_lista),1)))
+
+    # --- detalj jednog objekta ---
+    st.markdown('<div style="font-size:15px;font-weight:600;color:#4c1d95;margin:16px 0 4px 0;">🔍 Detalj objekta — porudžbina i lager</div>', unsafe_allow_html=True)
+    if not redovi_f:
+        st.info("Nema objekata za prikaz.")
+        return
+    opcije = {f'{HIT_EMOJI[r["nivo"]]} {r["idk"]} · {r["region"]} · {r["ukupno"]} kom': r["idk"] for r in redovi_f}
+    izbor = st.selectbox("Izaberi objekat", list(opcije.keys()), index=0)
+    idk_sel = opcije[izbor]
+
+    det = sorted(po_obj[idk_sel], key=lambda x: (int(x["lager"]), -int(x["kol"])))
+    def _art_status(lg):
+        lg = int(lg)
+        if lg == 0: return "🔴 nema"
+        if lg <= 2: return "🟡 nisko"
+        return "🟢 ok"
+    df_det = pd.DataFrame([{
+        "Status": _art_status(s["lager"]),
+        "Artikal": s["naziv"],
+        "Grupa": s.get("grupa", ""),
+        "Porudžbina": int(s["kol"]),
+        "Lager": int(s["lager"]),
+        "Predikcija": int(s.get("pred", 0)),
+    } for s in det])
+    reg_sel = next((x.get("region","") for x in po_obj[idk_sel] if x.get("region")), "")
+    uk_sel = sum(int(x["kol"]) for x in po_obj[idk_sel])
+    st.markdown(f"<div style='font-size:13px;color:#555;margin-bottom:4px;'>Objekat <b>{idk_sel}</b> · {reg_sel} · ukupno <b>{uk_sel} kom</b></div>", unsafe_allow_html=True)
+    st.dataframe(df_det, use_container_width=True, hide_index=True, height=min(430, 60 + 35*max(len(df_det),1)))
+
+
+# =====================================================================
+# ROUTER: prijava -> uloga
+# =====================================================================
 if not check_password():
     st.stop()
-# --- KRAJ PASSWORD ZASTITE ---
+
+if st.session_state.get("role") == "administracija":
+    prikazi_administraciju()
+    st.stop()
+
+# --- od ovde nadole ide ANALITIČKI deo (pun pristup) ---
 
 WMA_WEIGHTS = np.array([0.03, 0.07, 0.12, 0.28, 0.50])
 HIST_WEIGHT = 0.03
@@ -125,9 +408,7 @@ class PredictionEngine:
         self.analitika_meseci = analitika_meseci
         self.logs = []; self.adjustments = []; self.has_history = False
         self.has_prices = False
-
     def log(self, msg): self.logs.append(msg)
-
     def run(self, progress_bar):
         progress_bar.progress(5, "Ucitavanje..."); self._load_sheets()
         progress_bar.progress(15, "Priprema..."); self._prepare_lookups()
@@ -138,7 +419,6 @@ class PredictionEngine:
         progress_bar.progress(80, "Porudzbine..."); self._compute_orders()
         progress_bar.progress(85, "Analitika..."); self._apply_min_order(); self._compute_analytics()
         progress_bar.progress(100, "Gotovo!"); return self.df_result
-
     def _load_sheets(self):
         xls = pd.ExcelFile(io.BytesIO(self.file_bytes))
         sm = {s.strip().lower(): s for s in xls.sheet_names}
@@ -194,7 +474,6 @@ class PredictionEngine:
         self.trosak_po_objektu = self.mesecni_trosak / max(self.num_komitenti, 1) if self.mesecni_trosak > 0 else 0
         if self.mesecni_trosak > 0:
             self.log(f"Ukupan trosak: {self.mesecni_trosak:,.0f} / {self.num_komitenti} objekata = {self.trosak_po_objektu:,.0f} po objektu za period")
-
     def _prepare_lookups(self):
         kp = self.prodaja[['ID KOMITENTA','id artikla','Naziv artikla','Grupa']].drop_duplicates()
         ks = self.startni[['ID KOMITENTA','id artikla','Naziv artikla','Grupa']].drop_duplicates()
@@ -269,7 +548,6 @@ class PredictionEngine:
                 self.profit_per_unit[int(ida)] = ppu_fin
                 self.price_info[int(ida)] = {'redovna': red, 'akcijska': akc, 'finalna': fin, 'nabavna': nab, 'profit_akcija': ppu_fin, 'profit_redovna': ppu_red}
         self.log(f"Kombinacija: {len(self.all_keys)}")
-
     def _compute_povrat(self):
         self.final_povrat={}; self.final_korekcija={}
         if not self.has_promet or not self.povrat_total: return
@@ -298,7 +576,6 @@ class PredictionEngine:
                 elif ap==0:
                     for i,v in pi.items(): self.final_korekcija[(i,ida,god,mes)]=v
                 for i,v in ni.items(): self.final_korekcija[(i,ida,god,mes)]=self.final_korekcija.get((i,ida,god,mes),0)+v
-
     def _build_monthly(self):
         rows=[]
         for _,k in self.all_keys.iterrows():
@@ -313,7 +590,6 @@ class PredictionEngine:
                 row[f'{lb}_Korekcija']=self.final_korekcija.get((idk,ida,god,mes),0); poc=lv
             rows.append(row)
         self.df_monthly=pd.DataFrame(rows)
-
     def _predict_all(self):
         analysis=[]
         for _,k in self.all_keys.iterrows():
@@ -394,7 +670,6 @@ class PredictionEngine:
         df_p['ar']=df_p['a'].apply(lambda x: round(x))
         self.pred_dict={r['k']:(int(r['pr']),int(r['ar']),int(r['pr']-r['ar']),r['avg5']) for _,r in df_p.iterrows()}
         self.log(f"Predikcija: {sum(v[0] for v in self.pred_dict.values())} kom")
-
     def _merge_lager(self):
         for _,k in self.all_keys.iterrows():
             idk,ida=k['ID KOMITENTA'],k['id artikla']; pred,avg,razl,avg5m=self.pred_dict.get((idk,ida),(0,0,0,0))
@@ -410,7 +685,6 @@ class PredictionEngine:
             self.df_monthly[col]=self.df_monthly[col].fillna(0).astype(int)
         if 'Avg5m' not in self.df_monthly.columns: self.df_monthly['Avg5m']=0
         self.df_monthly['Avg5m']=self.df_monthly['Avg5m'].fillna(0)
-
     def _compute_orders(self):
         self.df_result=self.df_monthly.copy()
         def p1(row):
@@ -427,16 +701,13 @@ class PredictionEngine:
             return dopuna
         self.df_result['Porudzbina_1']=self.df_result.apply(p1,axis=1).astype(int)
         self.df_result['Porudzbina_2']=self.df_result.apply(p2,axis=1).astype(int)
-
         last_label = self.mesec_labels[-1]
-
         def extra_buffer(prodaja_poslednji):
             if prodaja_poslednji <= 0: return 0
             elif prodaja_poslednji <= 5: return 2
             elif prodaja_poslednji <= 10: return 3
             elif prodaja_poslednji <= 15: return 4
             else: return 5
-
         def finalna_provera(row):
             if row['ID KOMITENTA'] in self.excluded: return int(row['Porudzbina_2'])
             p2_val = int(row['Porudzbina_2'])
@@ -446,16 +717,10 @@ class PredictionEngine:
                 dodatak = extra_buffer(prodaja_poslednji)
                 return p2_val + dodatak
             return p2_val
-
         self.df_result['Porudzbina_2'] = self.df_result.apply(finalna_provera, axis=1).astype(int)
         n_korigovano = (self.df_result['Porudzbina_2'] > self.df_result.apply(p2, axis=1)).sum()
         self.log(f"Finalna provera P2: {n_korigovano} kombinacija korigovano (porudzbina+lager <= prodaja poslednjeg meseca)")
-
-        # === MIN KOM PO ARTIKLU (po stavci porudzbine) ===
-        # Ako je porudzbina > 0 ali manja od minimuma, podigni je na minimum.
-        # Ako je 0, ostaje 0 - ne forsiramo slanje nepotrebnog artikla.
         if self.min_per_artikal is not None and self.min_per_artikal > 1:
-            # Porudzbina_2
             mask_p2 = (
                 (self.df_result['Porudzbina_2'] > 0) &
                 (self.df_result['Porudzbina_2'] < self.min_per_artikal) &
@@ -463,8 +728,6 @@ class PredictionEngine:
             )
             n_podignuto_p2 = int(mask_p2.sum())
             self.df_result.loc[mask_p2, 'Porudzbina_2'] = self.min_per_artikal
-
-            # Porudzbina_1 (osnovna) - ista logika
             mask_p1 = (
                 (self.df_result['Porudzbina_1'] > 0) &
                 (self.df_result['Porudzbina_1'] < self.min_per_artikal) &
@@ -472,25 +735,19 @@ class PredictionEngine:
             )
             n_podignuto_p1 = int(mask_p1.sum())
             self.df_result.loc[mask_p1, 'Porudzbina_1'] = self.min_per_artikal
-
             if n_podignuto_p2 > 0 or n_podignuto_p1 > 0:
                 self.log(f"Min po artiklu ({self.min_per_artikal} kom): P1={n_podignuto_p1}, P2={n_podignuto_p2} stavki podignuto na minimum")
-
     def _apply_min_order(self):
         self.adjustments = []
         if self.min_order is None or self.min_order <= 0: return
-
         grp = self.df_result.groupby('ID KOMITENTA')['Porudzbina_2'].sum()
         ima_nesto = grp[grp > 0]
         granica = self.min_order / 2
-
         premali = ima_nesto[ima_nesto < granica].index
         dopuni = ima_nesto[(ima_nesto >= granica) & (ima_nesto < self.min_order)].index
-
         mask_gasi = self.df_result['ID KOMITENTA'].isin(premali)
         n_gasi = len(premali)
         self.df_result.loc[mask_gasi, 'Porudzbina_2'] = 0
-
         n_dopuni = 0
         for komt_id in dopuni:
             mask_obj = (self.df_result['ID KOMITENTA'] == komt_id) & (self.df_result['Porudzbina_2'] > 0)
@@ -500,12 +757,10 @@ class PredictionEngine:
             idx_max = self.df_result.loc[mask_obj, 'Porudzbina_2'].idxmax()
             self.df_result.at[idx_max, 'Porudzbina_2'] += nedostaje
             n_dopuni += 1
-
         if n_gasi > 0:
             self.log(f"Min order ({self.min_order} kom): {n_gasi} objekata imalo premalo komada ukupno — postavljeno na 0")
         if n_dopuni > 0:
             self.log(f"Min order ({self.min_order} kom): {n_dopuni} objekata dopunjeno do minimuma {self.min_order} kom")
-
     def _compute_analytics(self):
         if not self.has_prices:
             self.df_oos = pd.DataFrame()
@@ -514,30 +769,24 @@ class PredictionEngine:
             self.analitika_labels = []
             return
         df = self.df_result; ml = self.mesec_labels
-
         if self.analitika_meseci and len(self.analitika_meseci) > 0:
             a_meseci = self.analitika_meseci
         else:
             a_meseci = self.meseci_order
-
         a_indices = []
         for i, (g, m) in enumerate(self.meseci_order):
             for ag, am in a_meseci:
                 if int(g) == int(ag) and int(m) == int(am):
                     a_indices.append(i); break
-
         if not a_indices:
             a_indices = list(range(len(self.meseci_order)))
-
         a_labels = [ml[i] for i in a_indices]
         a_meseci_order = [self.meseci_order[i] for i in a_indices]
         n_a = len(a_indices)
         self.analitika_labels = a_labels
         self.log(f"Analitika period: {', '.join(a_labels)} ({n_a} meseci)")
-
         a_set = set((int(g), int(m)) for g, m in a_meseci_order)
         prodaja_a = self.prodaja[self.prodaja.apply(lambda r: (int(r['Godina']), int(r['Mesec'])) in a_set, axis=1)]
-
         ppu_mesec = {}
         if self.has_prices:
             for (ida_v, god_v, mes_v), grp in self.prodaja.groupby(['id artikla','Godina','Mesec']):
@@ -547,7 +796,6 @@ class PredictionEngine:
                 else:
                     r0 = grp.iloc[0]
                     ppu_mesec[(int(ida_v), int(god_v), int(mes_v))] = r0['Finalna cena'] / 1.2 / 1.2 - r0['Nabavna vrednost']
-
         def get_ppu(ida_v, god_v, mes_v):
             key = (int(ida_v), int(god_v), int(mes_v))
             if key in ppu_mesec:
@@ -558,23 +806,6 @@ class PredictionEngine:
             target = int(god_v) * 12 + int(mes_v)
             best = min(art_keys, key=lambda x: abs(x[1] * 12 + x[2] - target))
             return ppu_mesec[best]
-
-        # ============================================================
-        # NOVA OOS LOGIKA - 3 USLOVA:
-        # OOS se racuna SAMO za "constrained" mesece. Za svaki tip drugacije:
-        #
-        # USLOV 1 - CIST OOS: poc=0 i ulaz=0
-        #   → izgubljeno_kom = avg_stocked (ceo prosek, nista nisu imali)
-        #
-        # USLOV 2 - RASPRODATO: kraj=0 i prodaja>0
-        #   → izgubljeno_kom = max(0, avg_stocked - prodaja)
-        #
-        # USLOV 3 - DOBILI I RASPRODALI: poc=0, ulaz>0, kraj=0
-        #   → izgubljeno_kom = max(0, avg_stocked - prodaja)
-        #
-        # Ako mesec nije ni u jednom uslovu (kraj > 0): OOS = 0
-        # avg_stocked = prosek prodaje u mesecima koji NISU constrained
-        # ============================================================
         oos_rows = []
         for _, k in self.all_keys.iterrows():
             idk, ida = k['ID KOMITENTA'], k['id artikla']
@@ -599,29 +830,23 @@ class PredictionEngine:
                     month_kraj.append(kraj)
                     month_gm.append((god, mes))
                 poc = kraj
-
-            # Identifikacija constrained meseci (3 uslova)
-            month_constrained_type = []  # 0=normal, 1=cist OOS, 2=rasprodato, 3=dobili-rasprodali
+            month_constrained_type = []
             for j in range(len(month_sales)):
                 p = month_poc[j]
                 u = month_ulaz[j]
                 kr = month_kraj[j]
                 pr = month_sales[j]
                 if p == 0 and u == 0:
-                    month_constrained_type.append(1)  # cist OOS
+                    month_constrained_type.append(1)
                 elif p == 0 and u > 0 and kr == 0:
-                    month_constrained_type.append(3)  # dobili i rasprodali
+                    month_constrained_type.append(3)
                 elif kr == 0 and pr > 0:
-                    month_constrained_type.append(2)  # rasprodato
+                    month_constrained_type.append(2)
                 else:
-                    month_constrained_type.append(0)  # normal
-
-            # Prosek prodaje samo iz "normalnih" meseci (gde nije bilo ogranicenja)
+                    month_constrained_type.append(0)
             normal_sales = [month_sales[j] for j in range(len(month_sales))
                             if month_constrained_type[j] == 0 and month_sales[j] > 0]
             avg_stocked = np.mean(normal_sales) if normal_sales else 0
-
-            # Racunamo OOS u komadima za svaki mesec po tipu
             month_oos_kom = []
             month_oos_flag = []
             total_lost_kom = 0
@@ -631,20 +856,15 @@ class PredictionEngine:
                 if avg_stocked == 0:
                     izgub_kom = 0
                 elif t == 1:
-                    # Cist OOS: ceo prosek je izgubljen
                     izgub_kom = avg_stocked
                 elif t == 2 or t == 3:
-                    # Rasprodato ili dobili-rasprodali: izgubljeno = prosek - prodaja
                     izgub_kom = max(0, avg_stocked - pr)
                 else:
-                    # Normalan mesec: nema OOS
                     izgub_kom = 0
                 month_oos_kom.append(izgub_kom)
                 month_oos_flag.append(1 if izgub_kom >= 0.5 else 0)
                 total_lost_kom += izgub_kom
-
             oos_count = sum(month_oos_flag)
-
             if total_lost_kom > 0 and avg_stocked > 0:
                 row = {
                     'ID KOMITENTA': idk, 'id artikla': ida,
@@ -672,9 +892,7 @@ class PredictionEngine:
         if len(self.df_oos) > 0:
             self.df_oos = self.df_oos.sort_values('Izgubljeni_profit', ascending=False)
             self.log(f"OOS analiza (nova logika - kom izgubljeno): {len(self.df_oos)} kombinacija, izgubljeno {self.df_oos['Izgubljeni_profit'].sum():,.0f} RSD")
-
         trosak_mes_po_obj = self.trosak_po_objektu / max(n_a, 1) if self.trosak_po_objektu > 0 else 0
-
         profit_rows = []
         for idk in self.prodaja['ID KOMITENTA'].unique():
             sub = prodaja_a[prodaja_a['ID KOMITENTA'] == idk]
@@ -705,7 +923,6 @@ class PredictionEngine:
             profit_rows.append(row_dict)
         self.trosak_mes_po_obj = trosak_mes_po_obj
         self.df_profit_obj = pd.DataFrame(profit_rows).sort_values('Neto_profit', ascending=True)
-
         promo_rows = []
         for ida in self.prodaja['id artikla'].unique():
             pi = self.price_info.get(int(ida), {})
@@ -763,7 +980,6 @@ class PredictionEngine:
             })
         self.df_promo = pd.DataFrame(promo_rows).sort_values('Obrt_x', ascending=False)
 
-
 def create_excel(engine):
     df=engine.df_result; ml=engine.mesec_labels; wb=Workbook()
     hf=PatternFill('solid',fgColor='2F5496'); hfn=Font(bold=True,color='FFFFFF',name='Arial',size=10)
@@ -778,7 +994,6 @@ def create_excel(engine):
     sf_p2=PatternFill('solid',fgColor='00B050'); pred_hdr=PatternFill('solid',fgColor='7030A0')
     ord_hdr=PatternFill('solid',fgColor='375623'); sf_hist=PatternFill('solid',fgColor='E2D5F1')
     nf_money='#,##0'
-
     SC=5; sub_h=['Pocetno stanje','Promet (ulaz)','Prodaja','Povrat','Korekcija']
     sub_f=[sf_poc,sf_prom,sf_prod,sf_pov,sf_kor]; col_suf=['_Pocetno','_Promet','_Prodaja','_Povrat','_Korekcija']
     ws1=wb.active; ws1.title="Pregled po objektima"
@@ -849,7 +1064,6 @@ def create_excel(engine):
     for j in range(3): ws1.column_dimensions[get_column_letter(os_c+j)].width=18
     ws1.freeze_panes=f'{get_column_letter(month_start)}3'
     ws1.auto_filter.ref=f"A2:{get_column_letter(ws1.max_column)}{ws1.max_row}"
-
     ws2=wb.create_sheet("Totali po mesecima")
     for c,h in enumerate(['Mesec','Promet (ulaz)','Prodaja','Stvarni povrat','Korekcija','Neto (Promet-Povrat)'],1):
         cell=ws2.cell(1,c,h); cell.font=hfn; cell.fill=hf; cell.alignment=caw; cell.border=tb
@@ -879,7 +1093,6 @@ def create_excel(engine):
         cell=ws2.cell(i,2,val); cell.font=Font(bold=True,name='Arial',size=11); cell.fill=fill; cell.alignment=ca; cell.border=tb; cell.number_format=nf_money
     ws2.column_dimensions['A'].width=32; ws2.column_dimensions['B'].width=18
     for c in 'CDEF': ws2.column_dimensions[c].width=18
-
     if engine.has_prices and len(engine.df_oos) > 0:
         ws_oos = wb.create_sheet("OOS Izgubljeni profit")
         oos_hdr = PatternFill('solid', fgColor='C00000')
@@ -919,7 +1132,6 @@ def create_excel(engine):
         ws_oos.column_dimensions[get_column_letter(last_col+1)].width=18
         ws_oos.freeze_panes='E2'
         ws_oos.auto_filter.ref=f"A1:{get_column_letter(len(all_h))}{len(engine.df_oos)+1}"
-
     if engine.has_prices and len(engine.df_profit_obj) > 0:
         ws_prof = wb.create_sheet("Profitabilnost objekata")
         prof_hdr = PatternFill('solid', fgColor='1F4E79')
@@ -949,7 +1161,6 @@ def create_excel(engine):
         for i in range(len(a_ml)): ws_prof.column_dimensions[get_column_letter(9+i)].width=14
         ws_prof.freeze_panes='B2'
         ws_prof.auto_filter.ref=f"A1:{get_column_letter(len(headers))}{len(engine.df_profit_obj)+1}"
-
     if engine.has_prices and len(engine.df_promo) > 0:
         ws_akc = wb.create_sheet("Analiza akcije")
         akc_hdr = PatternFill('solid', fgColor='BF8F00')
@@ -985,7 +1196,6 @@ def create_excel(engine):
         a_ml2 = engine.analitika_labels if engine.analitika_labels else ml
         for i in range(len(a_ml2)): ws_akc.column_dimensions[get_column_letter(19+i)].width=11
         ws_akc.auto_filter.ref=f"A1:{get_column_letter(len(headers))}{len(engine.df_promo)+1}"
-
     ws3=wb.create_sheet("O modelu"); ws3.column_dimensions['A'].width=100
     info=["OPIS MODELA PREDIKCIJE I PORUDZBINE","",f"=== PREDIKCIJA ZA {engine.pred_label.upper()} ===","",
         "Model predvidja POTENCIJAL PRODAJE.","",
@@ -1029,15 +1239,10 @@ def create_excel(engine):
         if i==1: cell.font=Font(bold=True,name='Arial',size=14,color='375623')
         elif '===' in line: cell.font=Font(bold=True,name='Arial',size=12,color='7030A0')
         else: cell.font=Font(name='Arial',size=10)
-
     buf=io.BytesIO(); wb.save(buf); buf.seek(0); return buf
 
-
 DEFAULT_EXCLUDED = "1023, 1027, 1034, 1043, 1057, 1060, 1061, 1076, 1315, 1347, 1349, 1359"
-
 st.set_page_config(page_title="VAPE Analitika", page_icon="\U0001f4a8", layout="wide", initial_sidebar_state="collapsed")
-
-# --- Sakrij sidebar i suvisne streamlit kontrole ---
 st.markdown("""<style>
 section[data-testid="stSidebar"] { display: none !important; }
 header[data-testid="stHeader"] { display: none !important; }
@@ -1050,20 +1255,13 @@ div[data-testid="stMainBlockContainer"] {
     max-width: 100% !important;
 }
 </style>""", unsafe_allow_html=True)
-
-# =====================================================================
-# DIZAJN
-# =====================================================================
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
-
     .stApp {
         background: #f5f0ff !important;
         font-family: 'Poppins', sans-serif;
     }
-
-    /* --- INPUTI --- */
     .main .stTextInput > div > div > input,
     .main .stNumberInput > div > div > input {
         background: white !important;
@@ -1080,8 +1278,6 @@ st.markdown("""
         border-color: #a855f7 !important;
         box-shadow: 0 0 0 2px rgba(168,85,247,0.15) !important;
     }
-
-    /* --- METRIC KARTICE --- */
     .metric-card {
         background: white;
         border-radius: 14px;
@@ -1098,8 +1294,6 @@ st.markdown("""
     .metric-value-red { font-size: 26px; font-weight: 700; color: #dc2626; }
     .metric-value-green { font-size: 26px; font-weight: 700; color: #059669; }
     .metric-label { font-size: 11px; color: #888; margin-top: 4px; }
-
-    /* --- DUGMAD --- */
     .stButton > button {
         background: linear-gradient(135deg, #a855f7 0%, #ec4899 100%) !important;
         color: white !important;
@@ -1112,8 +1306,6 @@ st.markdown("""
         transition: opacity 0.2s !important;
     }
     .stButton > button:hover { opacity: 0.88 !important; }
-
-    /* --- DOWNLOAD DUGME --- */
     .stDownloadButton > button {
         background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
         color: white !important;
@@ -1123,8 +1315,6 @@ st.markdown("""
         font-weight: 700 !important;
         box-shadow: 0 4px 15px rgba(16,185,129,0.25) !important;
     }
-
-    /* --- MULTISELECT TAGOVI --- */
     .stMultiSelect [data-baseweb="tag"] {
         background: linear-gradient(135deg, #a855f7, #ec4899) !important;
         border: none !important;
@@ -1144,8 +1334,6 @@ st.markdown("""
         border-color: #a855f7 !important;
         box-shadow: 0 0 0 2px rgba(168,85,247,0.15) !important;
     }
-
-    /* --- SUCCESS / WARN BOXOVI --- */
     .success-box {
         background: linear-gradient(135deg, rgba(16,185,129,0.08), rgba(5,150,105,0.04));
         border: 1px solid rgba(16,185,129,0.2);
@@ -1164,23 +1352,17 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
-
 alpha = 0.4
 beta = 0.2
-
-# Default vrednosti parametara
 min_lager = None
 min_order = None
 min_per_artikal = None
 mesecni_trosak = 0
 excluded_str = DEFAULT_EXCLUDED
-
 excluded = set()
 for part in excluded_str.replace('\n', ',').split(','):
     p = part.strip()
     if p.isdigit(): excluded.add(int(p))
-
-# === HEADER ===
 def render_header(subtitle):
     st.markdown(f'''<div style="background:#12002a;border-radius:16px;padding:0 28px;height:60px;
         display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;
@@ -1204,14 +1386,13 @@ def render_header(subtitle):
             </div>
         </div>
     </div>''', unsafe_allow_html=True)
-
-
-# ============================================================
-# PROFITABILNOST OBJEKATA - GLAVNI EKRAN
-# ============================================================
 render_header("Predikcija prodaje · Profitabilnost · OOS analiza · Efekti akcije")
-
-# Parametri u expanderu
+c_odjava = st.columns([6,1])
+with c_odjava[1]:
+    if st.button("🔓 Odjava"):
+        for _k in ("authenticated","role"):
+            st.session_state.pop(_k, None)
+        st.rerun()
 with st.expander("⚙️ Parametri analize", expanded=False):
     pc1, pc2, pc3 = st.columns(3)
     with pc1:
@@ -1231,14 +1412,11 @@ with st.expander("⚙️ Parametri analize", expanded=False):
     with pc3:
         st.markdown("**⛔ Isključeni komitenti**")
         excluded_str = st.text_area("ID-evi razdvojeni zarezom", value=DEFAULT_EXCLUDED, height=80)
-
 excluded = set()
 for part in excluded_str.replace('\n', ',').split(','):
     p = part.strip()
     if p.isdigit(): excluded.add(int(p))
-
 uploaded = st.file_uploader("Učitaj Excel fajl sa podacima", type=['xlsx','xls'])
-
 if uploaded:
     file_bytes = uploaded.read()
     st.markdown(f'<div class="success-box">✅ Fajl <strong>{uploaded.name}</strong> učitan ({len(file_bytes)//1024} KB)</div>', unsafe_allow_html=True)
@@ -1265,23 +1443,22 @@ if uploaded:
             selected_labels = []; selected_meseci = []
     except:
         selected_labels = []; selected_meseci = []
-
     if st.button("🚀 POKRENI ANALIZU", use_container_width=True):
         progress_bar = st.progress(0)
         try:
             engine = PredictionEngine(file_bytes, excluded, alpha, beta, min_lager, min_order, mesecni_trosak, selected_meseci, min_per_artikal)
             result = engine.run(progress_bar)
-
+            st.session_state["last_engine"] = engine
+            st.session_state["last_result"] = result
+            st.session_state["last_filename"] = uploaded.name
             st.markdown("---")
             tp = int(result['Predikcija'].sum()); tl = int(result['Lager_danas'].sum())
             t1 = int(result[~result['ID KOMITENTA'].isin(excluded)]['Porudzbina_1'].sum())
             t2 = int(result[~result['ID KOMITENTA'].isin(excluded)]['Porudzbina_2'].sum())
-
             if engine.has_prices:
                 tab1, tab2 = st.tabs(["📦 Porudžbina", "💰 Profitabilnost objekata & OOS"])
             else:
                 tab1, = st.tabs(["📦 Porudžbina"])
-
             with tab1:
                 n_obj_salji = int(result[result['Porudzbina_2'] > 0]['ID KOMITENTA'].nunique())
                 tp_prosek = int(result['Prosek'].sum())
@@ -1292,12 +1469,9 @@ if uploaded:
                 m4.markdown(f'<div class="metric-card"><div class="metric-value">{n_obj_salji:,}</div><div class="metric-label">Objekata prima robu</div></div>', unsafe_allow_html=True)
                 m5.markdown(f'<div class="metric-card"><div class="metric-value">{tl:,}</div><div class="metric-label">Lager danas</div></div>', unsafe_allow_html=True)
                 st.markdown("")
-
                 st.markdown("<div style='margin:24px 0 4px 0;'></div>", unsafe_allow_html=True)
-
                 ml = engine.mesec_labels
                 df_r = engine.df_result.copy()
-
                 kom_mes = {}
                 for lb in ml:
                     col_lb = f'{lb}_Prodaja'
@@ -1306,24 +1480,18 @@ if uploaded:
                         for kid, v in grp.items():
                             if kid not in kom_mes: kom_mes[kid] = {}
                             kom_mes[kid][lb] = int(v)
-
                 import numpy as _np2
-
                 def _is_rastuci(vals5, dozvoljeni_sum=1):
                     padovi = sum(1 for i in range(1, len(vals5)) if vals5[i] < vals5[i-1])
                     return padovi <= dozvoljeni_sum and vals5[-1] > vals5[0] and sum(vals5) >= 10
-
                 def _is_padajuci(vals5, dozvoljeni_sum=1):
                     rasti = sum(1 for i in range(1, len(vals5)) if vals5[i] > vals5[i-1])
                     return rasti <= dozvoljeni_sum and vals5[-1] < vals5[0] and sum(vals5) >= 10
-
                 def _rast_pct(vals5):
                     first = vals5[0] if vals5[0] > 0 else 1
                     return (vals5[-1] - vals5[0]) / first * 100
-
                 rastuci_list = []
                 padajuci_list = []
-
                 for kid, mes_vals in kom_mes.items():
                     vals_all = [mes_vals.get(lb, 0) for lb in ml]
                     vals5 = vals_all[-5:] if len(vals_all) >= 5 else vals_all
@@ -1342,10 +1510,8 @@ if uploaded:
                             'Pad': _rast_pct(vals5),
                             'Zadnji': vals5[-1], 'Prvi': vals5[0],
                         })
-
                 rastuci_list = sorted(rastuci_list, key=lambda x: x['Rast'], reverse=True)[:10]
                 padajuci_list = sorted(padajuci_list, key=lambda x: x['Pad'])[:10]
-
                 def _render_trend_section(title, icon, color, items, is_rast):
                     label_color = "#10b981" if is_rast else "#ef4444"
                     label_bg = "#f0fdf4" if is_rast else "#fef2f2"
@@ -1392,7 +1558,6 @@ if uploaded:
                         </div>
                         {rows_html}
                     </body></html>""", height=h_px)
-
                 def _render_oos_section(items, max_val):
                     if not items:
                         components.html('''<!DOCTYPE html><html><body style="margin:0;padding:4px 0;font-family:sans-serif;">
@@ -1432,15 +1597,12 @@ if uploaded:
                         </div>
                         {rows_html}
                     </body></html>""", height=h_px)
-
                 col_rast, col_pad = st.columns(2)
                 with col_rast:
                     _render_trend_section("Rastući trendovi", "📈", "#a855f7", rastuci_list, True)
                 with col_pad:
                     _render_trend_section("Padajući trendovi", "📉", "#ec4899", padajuci_list, False)
-
                 st.markdown("<div style='margin:20px 0 4px 0;'></div>", unsafe_allow_html=True)
-
                 if engine.has_prices and len(engine.df_oos) > 0:
                     oos_k = engine.df_oos.copy()
                     if 'Lager_danas' in oos_k.columns:
@@ -1453,17 +1615,14 @@ if uploaded:
                     oos_max = int(oos_top['Izgubljeno'].max()) if len(oos_top) > 0 else 1
                 else:
                     oos_items = []; oos_max = 1
-
                 col_oos2, col_empty = st.columns(2)
                 with col_oos2:
                     _render_oos_section(oos_items, oos_max)
-
             if engine.has_prices:
                 with tab2:
                     period_str2 = ", ".join(engine.analitika_labels) if engine.analitika_labels else "svi meseci"
                     n_mes = len(engine.analitika_labels) if engine.analitika_labels else len(engine.mesec_labels)
                     n_obj = engine.num_komitenti
-
                     prof = engine.df_profit_obj.copy()
                     total_bruto = int(prof['Bruto_profit'].sum())
                     total_neto = int(prof['Neto_profit'].sum())
@@ -1473,9 +1632,7 @@ if uploaded:
                     mes_bruto = total_bruto / max(n_mes, 1)
                     mes_neto = total_neto / max(n_mes, 1)
                     mes_oos = total_oos_izgubljen / max(n_mes, 1)
-
                     st.caption(f"📅 Period analize: **{period_str2}** · {n_obj} objekata · {n_mes} meseci")
-
                     ka, kb, kc, kd = st.columns(4)
                     def _kard(col, label, total, mes, color, prefix=""):
                         col.markdown(f"""
@@ -1489,12 +1646,9 @@ if uploaded:
                     _kard(kb, f"Bruto profit · {n_mes} meseci", total_bruto, mes_bruto, "#10b981")
                     _kard(kc, f"Neto profit · {n_mes} meseci", total_neto, mes_neto, "#7c3aed" if total_neto > 0 else "#ec4899")
                     _kard(kd, f"OOS izgubljen · {n_mes} meseci", total_oos_izgubljen, mes_oos, "#ec4899", prefix="-")
-
                     st.markdown("<div style='margin:20px 0 4px 0;'></div>", unsafe_allow_html=True)
-
                     a_labels_trend = engine.analitika_labels if engine.analitika_labels else engine.mesec_labels
                     a_meseci_trend = engine.analitika_meseci if (engine.analitika_meseci and len(engine.analitika_meseci) > 0) else engine.meseci_order
-
                     bruto_po_mes = []
                     neto_po_mes = []
                     for i, lb in enumerate(a_labels_trend):
@@ -1504,7 +1658,6 @@ if uploaded:
                         neto_val = prof[col_neto].sum() if col_neto in prof.columns else 0
                         bruto_po_mes.append((lb, bruto_val))
                         neto_po_mes.append((lb, neto_val))
-
                     def _trend_recenica(podaci, naziv):
                         vals = [v for _, v in podaci]
                         if len(vals) < 2: return ""
@@ -1515,7 +1668,6 @@ if uploaded:
                         smer = "porastao" if promena_pct > 0 else "pao"
                         boja = "#10b981" if promena_pct > 0 else "#ec4899"
                         return f'<span style="color:{boja};font-weight:600;">{naziv} je {smer} za {abs(promena_pct):.0f}%</span> — od <b>{prvi_v:,.0f} RSD</b> ({prvi_lb}) do <b>{posl_v:,.0f} RSD</b> ({posl_lb}).'
-
                     def _bar_chart_html(podaci, max_val, color_pos, color_neg):
                         bars = ""
                         for lb, val in podaci:
@@ -1532,30 +1684,23 @@ if uploaded:
                                 <div style="width:110px;font-size:11px;color:#555;font-weight:600;flex-shrink:0;">{val_fmt}</div>
                             </div>"""
                         return f'<div style="padding:4px 0;">{bars}</div>'
-
                     max_bruto = max(abs(v) for _, v in bruto_po_mes) if bruto_po_mes else 1
                     max_neto = max(abs(v) for _, v in neto_po_mes) if neto_po_mes else 1
-
                     col_bruto, col_neto = st.columns(2)
-
                     with col_bruto:
                         st.markdown('<div class="section-title">📈 Mesečni trend bruto profita</div>', unsafe_allow_html=True)
                         rec_b = _trend_recenica(bruto_po_mes, "Bruto profit")
                         if rec_b: st.markdown(f'<p style="font-size:13px;color:#555;margin-bottom:6px;">{rec_b}</p>', unsafe_allow_html=True)
                         chart_b = _bar_chart_html(bruto_po_mes, max_bruto, "#a855f7", "#ec4899")
                         components.html(f'<!DOCTYPE html><html><body style="margin:0;padding:8px 12px;font-family:sans-serif;">{chart_b}</body></html>', height=len(bruto_po_mes)*28+20)
-
                     with col_neto:
                         st.markdown('<div class="section-title">📉 Mesečni trend neto profita</div>', unsafe_allow_html=True)
                         rec_n = _trend_recenica(neto_po_mes, "Neto profit")
                         if rec_n: st.markdown(f'<p style="font-size:13px;color:#555;margin-bottom:6px;">{rec_n}</p>', unsafe_allow_html=True)
                         chart_n = _bar_chart_html(neto_po_mes, max_neto, "#7c3aed", "#ec4899")
                         components.html(f'<!DOCTYPE html><html><body style="margin:0;padding:8px 12px;font-family:sans-serif;">{chart_n}</body></html>', height=len(neto_po_mes)*28+20)
-
                     st.markdown("<div style='margin:20px 0 4px 0;'></div>", unsafe_allow_html=True)
-
                     st.markdown('<div class="section-title">🏪 Profitabilnost po objektima</div>', unsafe_allow_html=True)
-
                     ukupno_obj = len(prof)
                     neto_neg = prof[prof['Neto_profit'] <= 0]
                     n_neto_neg = len(neto_neg)
@@ -1569,12 +1714,10 @@ if uploaded:
                     usteda_trosak = n_pravi_neg * trosak_po_obj
                     usteda_gubitak = abs(pravi_neg['Neto_profit'].sum()) if n_pravi_neg > 0 else 0
                     usteda_mes = (usteda_trosak + usteda_gubitak) / max(n_mes, 1)
-
                     n_profitabilni = ukupno_obj - n_neto_neg
                     pct_prof = n_profitabilni / max(ukupno_obj, 1)
                     pct_oos_neg_v = n_oos_neg / max(ukupno_obj, 1)
                     pct_pravi_v = n_pravi_neg / max(ukupno_obj, 1)
-
                     cx, cy, r_out, r_in = 110, 110, 90, 60
                     def _arc_path(cx, cy, r, start_deg, end_deg):
                         s = math.radians(start_deg - 90)
@@ -1593,14 +1736,12 @@ if uploaded:
                         x2o,y2o = cx+ro*math.cos(s2), cy+ro*math.sin(s2)
                         x1o,y1o = cx+ro*math.cos(s1), cy+ro*math.sin(s1)
                         return f'<path d="{oa} L {x_ie:.1f} {y_ie:.1f} A {ri} {ri} 0 {large} 0 {x_is:.1f} {y_is:.1f} Z" fill="{color}"/>'
-
                     deg_prof = pct_prof * 360
                     deg_oos = pct_oos_neg_v * 360
                     deg_pravi = pct_pravi_v * 360
                     seg1 = _donut_seg(cx, cy, r_out, r_in, 0, deg_prof, "#10b981")
                     seg2 = _donut_seg(cx, cy, r_out, r_in, deg_prof, deg_prof+deg_pravi, "#ec4899")
                     seg3 = _donut_seg(cx, cy, r_out, r_in, deg_prof+deg_pravi, deg_prof+deg_pravi+deg_oos, "#a855f7")
-
                     donut_svg = f"""<svg width="220" height="220" xmlns="http://www.w3.org/2000/svg">
                         {seg1}{seg2}{seg3}
                         <circle cx="{cx}" cy="{cy}" r="{r_in}" fill="white"/>
@@ -1621,17 +1762,14 @@ if uploaded:
                             <span style="color:#555;"><strong>{n_oos_neg} neto-neg. OOS</strong> potencijal</span>
                         </div>
                     </div>"""
-
                     tekst = f"""
 <div style="background:white;border-radius:12px;padding:20px 24px;box-shadow:0 2px 8px rgba(0,0,0,0.06);margin-bottom:16px;font-size:14px;line-height:1.8;color:#333;">
 <p>Od <strong>{ukupno_obj} objekata</strong>, <strong>{n_neto_neg}</strong> je neto negativno.
 Medjutim, <strong>{n_oos_neg}</strong> od njih ima negativan neto isključivo zbog OOS-a — kada se uračuna izgubljena zarada,
 njihov potencijal je pozitivan. Ovi objekti nisu problem, samo nisu imali robu.</p>
-
 <p>Pravih neprofitabilnih je <strong>{n_pravi_neg}</strong> ({pct_pravi}% ukupne mreže) — negativni čak i po potencijalu.
 Trošak po objektu je <strong>{trosak_po_obj:,.0f} RSD</strong> za {n_mes} {'mesec' if n_mes==1 else 'meseci'} /
 <strong>{trosak_mes_obj:,.0f} RSD</strong> mesečno.</p>
-
 <p>Zatvaranjem <strong>{n_pravi_neg} pravih neprofitabilnih</strong> skidamo trošak
 <strong>{n_pravi_neg} × {trosak_po_obj:,.0f} RSD = {usteda_trosak:,.0f} RSD</strong>
 ({usteda_trosak/max(n_mes,1):,.0f} RSD/mes) i prestajemo da gubimo
@@ -1645,10 +1783,8 @@ Ostaju samo objekti koji su u plusu.</p>
                         components.html(f"""<!DOCTYPE html><html><body style="margin:0;padding:12px 8px;font-family:sans-serif;background:transparent;">
                             {donut_svg}
                         </body></html>""", height=310)
-
                     a_labels_trend2 = engine.analitika_labels if engine.analitika_labels else engine.mesec_labels
                     a_meseci_trend2 = engine.analitika_meseci if (engine.analitika_meseci and len(engine.analitika_meseci) > 0) else engine.meseci_order
-
                     chart_mes_data = []
                     for i, (lb, (g, m)) in enumerate(zip(a_labels_trend2, a_meseci_trend2)):
                         col_neto_lb = f'Neto_{lb}'
@@ -1658,7 +1794,6 @@ Ostaju samo objekti koji su u plusu.</p>
                         else:
                             n_prof_mes = 0; n_nepr_mes = 0
                         chart_mes_data.append((lb, n_prof_mes, n_nepr_mes))
-
                     if chart_mes_data:
                         max_obj_mes = max(a + b for _, a, b in chart_mes_data) if chart_mes_data else 1
                         bar_w = max(30, min(60, 700 // max(len(chart_mes_data), 1)))
@@ -1697,18 +1832,14 @@ Ostaju samo objekti koji su u plusu.</p>
                         st.markdown('''<p style="font-size:12px;color:#9ca3af;margin-top:4px;">
                         ℹ️ Grafikon prikazuje profitabilnost po potencijalu <strong>za svaki mesec posebno</strong> — razlikuje se od ukupnih brojeva iznad koji se odnose na <strong>ceo analizirani period</strong>. Na primer, objekat koji je u poslednjem mesecu neprofitabilan može biti profitabilan gledano kroz ceo period.
                         </p>''', unsafe_allow_html=True)
-
                     st.markdown("<div style='margin:20px 0 4px 0;'></div>", unsafe_allow_html=True)
-
                     st.markdown('<div class="section-title">🔴 OOS — Izgubljena zarada zbog nedostatka robe</div>', unsafe_allow_html=True)
                     if len(engine.df_oos) > 0:
                         a_labels_oos = engine.analitika_labels if engine.analitika_labels else engine.mesec_labels
-
                         oos_ukupno = int(engine.df_oos['Izgubljeni_profit'].sum())
                         oos_mes_avg = oos_ukupno // max(n_mes, 1)
                         oos_kombinacija = int((engine.df_oos['OOS_meseci'] > 0).sum()) if 'OOS_meseci' in engine.df_oos.columns else len(engine.df_oos)
                         oos_0_danas = int((engine.df_oos.get('Lager_danas', 0) == 0).sum()) if 'Lager_danas' in engine.df_oos.columns else oos_kombinacija
-
                         o1, o2, o3 = st.columns(3)
                         def _oos_kard(col, label, val, suffix=""):
                             col.markdown(f"""<div style="background:white;border-radius:12px;padding:16px 18px;
@@ -1719,9 +1850,7 @@ Ostaju samo objekti koji su u plusu.</p>
                         _oos_kard(o1, f"Izgubljen profit · {n_mes} meseci (RSD)", oos_ukupno)
                         _oos_kard(o2, "Prosečno mesečno (RSD)", oos_mes_avg)
                         _oos_kard(o3, "Kombinacija na 0 lagera danas", oos_0_danas)
-
                         st.markdown("<div style='margin:18px 0 4px 0;'></div>", unsafe_allow_html=True)
-
                         mes_izgub = []
                         mes_oos_count = []
                         for lb in a_labels_oos:
@@ -1731,7 +1860,6 @@ Ostaju samo objekti koji su u plusu.</p>
                             v_oos = int((engine.df_oos[col_oos] > 0).sum()) if col_oos in engine.df_oos.columns else 0
                             mes_izgub.append(v_izgub)
                             mes_oos_count.append(v_oos)
-
                         if any(v > 0 for v in mes_izgub):
                             max_izgub = max(mes_izgub) if mes_izgub else 1
                             chart_w = 860
@@ -1740,14 +1868,11 @@ Ostaju samo objekti koji su u plusu.</p>
                             plot_w = chart_w - pad_l - pad_r
                             plot_h = chart_h - pad_t - pad_b
                             n_pts = len(a_labels_oos)
-
                             def px(i): return pad_l + int(i / max(n_pts-1,1) * plot_w)
                             def py(v): return pad_t + plot_h - int(v / max(max_izgub,1) * plot_h)
-
                             pts_area = " ".join(f"{px(i)},{py(v)}" for i, v in enumerate(mes_izgub))
                             pts_area = f"{px(0)},{pad_t+plot_h} " + pts_area + f" {px(n_pts-1)},{pad_t+plot_h}"
                             pts_line = " ".join(f"{px(i)},{py(v)}" for i, v in enumerate(mes_izgub))
-
                             dots = ""
                             labels_svg = ""
                             x_labels = ""
@@ -1758,7 +1883,6 @@ Ostaju samo objekti koji su u plusu.</p>
                                 labels_svg += f'<text x="{x}" y="{y-10}" text-anchor="middle" font-size="10" font-weight="700" fill="#7c3aed">{v_k}</text>'
                                 labels_svg += f'<text x="{x}" y="{y+20}" text-anchor="middle" font-size="9" fill="#999">({vc})</text>'
                                 x_labels += f'<text x="{x}" y="{chart_h-6}" text-anchor="middle" font-size="9" fill="#aaa">{lb}</text>'
-
                             svg = f"""<svg width="{chart_w}" height="{chart_h}" xmlns="http://www.w3.org/2000/svg" style="font-family:sans-serif;">
                                 <text x="{pad_l-5}" y="{pad_t-8}" font-size="10" fill="#888">Izgubljen profit (RSD)</text>
                                 <text x="{chart_w-pad_r}" y="{pad_t-8}" font-size="10" fill="#aaa" text-anchor="end">Broj OOS kombinacija u zagradama</text>
@@ -1767,11 +1891,9 @@ Ostaju samo objekti koji su u plusu.</p>
                                 {dots}{labels_svg}{x_labels}
                             </svg>"""
                             components.html(f'<!DOCTYPE html><html><body style="margin:0;padding:0;background:white;">{svg}</body></html>', height=chart_h+10)
-
                         oos_art = engine.df_oos.groupby(['id artikla','Naziv artikla']).agg(
                             Izgubljeni_profit=('Izgubljeni_profit','sum')
                         ).reset_index().sort_values('Izgubljeni_profit', ascending=False).head(5)
-
                         bar_colors = ["#a855f7","#ec4899","#7c3aed","#c084fc","#f472b6"]
                         top5_max = int(oos_art['Izgubljeni_profit'].max()) if len(oos_art) > 0 else 1
                         bars5 = ""
@@ -1788,12 +1910,10 @@ Ostaju samo objekti koji su u plusu.</p>
                                 </div>
                                 <div style="width:110px;font-size:12px;font-weight:700;color:{color};flex-shrink:0;">{val:,} RSD</div>
                             </div>"""
-
                         st.markdown("**Top 5 artikala po izgubljenom profitu:**")
                         components.html(f"""<!DOCTYPE html><html><body style="margin:0;padding:8px 12px;font-family:sans-serif;background:white;">
                             {bars5}
                         </body></html>""", height=len(oos_art)*42+20)
-
                         with st.expander("📋 Svi artikli po izgubljenom profitu"):
                             oos_art_all = engine.df_oos.groupby(['id artikla','Naziv artikla']).agg(
                                 Objekata=('ID KOMITENTA','nunique'),
@@ -1804,27 +1924,20 @@ Ostaju samo objekti koji su u plusu.</p>
                             st.dataframe(oos_art_all, use_container_width=True, height=300)
                     else:
                         st.success("Nema OOS problema!")
-
                     st.markdown("<div style='margin:24px 0 4px 0;'></div>", unsafe_allow_html=True)
                     st.markdown('<div class="section-title">⚡ Scenario: Optimalna mreža</div>', unsafe_allow_html=True)
-
                     prof2 = engine.df_profit_obj.copy()
                     oos_ukupno2 = int(engine.df_oos['Izgubljeni_profit'].sum()) if len(engine.df_oos) > 0 else 0
-
                     pozitivni = prof2[prof2['Potencijalni_profit'] > 0]
                     neto_pozitivnih = int(pozitivni['Neto_profit'].sum())
-
                     pravi_neg2 = prof2[(prof2['Neto_profit'] <= 0) & (prof2['Potencijalni_profit'] <= 0)]
                     n_pravi_neg2 = len(pravi_neg2)
                     usteda_trosak2 = int(n_pravi_neg2 * engine.trosak_po_objektu)
                     usteda_gubitak2 = int(abs(pravi_neg2['Neto_profit'].sum()))
-
                     ukupni_potencijal = neto_pozitivnih + usteda_trosak2 + usteda_gubitak2 + oos_ukupno2
                     stvarni_neto = int(prof2['Neto_profit'].sum())
                     razlika = ukupni_potencijal - stvarni_neto
-
                     period_sc = period_str2
-
                     def _red(label, val, color="#10b981", bold_val=True):
                         val_str = f"+{val:,} RSD" if val >= 0 else f"{val:,} RSD"
                         v_style = f"font-weight:{'700' if bold_val else '400'};color:{color};"
@@ -1833,7 +1946,6 @@ Ostaju samo objekti koji su u plusu.</p>
                             <span style="font-size:13px;color:#555;">{label}</span>
                             <span style="{v_style}font-size:13px;">{val_str}</span>
                         </div>"""
-
                     def _red_bold(label, val, color="#111"):
                         val_str = f"= {val:,} RSD"
                         return f"""<div style="display:flex;justify-content:space-between;align-items:center;
@@ -1841,7 +1953,6 @@ Ostaju samo objekti koji su u plusu.</p>
                             <span style="font-size:14px;font-weight:700;color:#111;">{label}</span>
                             <span style="font-size:14px;font-weight:700;color:{color};">{val_str}</span>
                         </div>"""
-
                     scenario_html = f"""
                     <div style="background:white;border-radius:12px;padding:20px 24px;
                         box-shadow:0 2px 8px rgba(0,0,0,0.07);font-family:sans-serif;">
@@ -1863,15 +1974,12 @@ Ostaju samo objekti koji su u plusu.</p>
                         {_red(f"Razlika — potencijal koji još nije ostvaren", razlika, "#a855f7")}
                     </div>"""
                     st.markdown(scenario_html, unsafe_allow_html=True)
-
                     if engine.region_map:
                         st.markdown("<div style='margin:28px 0 6px 0;'></div>", unsafe_allow_html=True)
                         st.markdown('<div class="section-title">🗺️ Profitabilnost po okruzima</div>', unsafe_allow_html=True)
-
                         prof_reg = prof.copy()
                         prof_reg['Region'] = prof_reg['ID KOMITENTA'].map(engine.region_map).fillna('Ostalo')
                         prof_reg['Profitabilan'] = prof_reg['Neto_profit'] > 0
-
                         reg_grp = prof_reg.groupby('Region').agg(
                             Ukupno=('ID KOMITENTA','count'),
                             Ostaje=('Profitabilan','sum'),
@@ -1880,7 +1988,6 @@ Ostaju samo objekti koji su u plusu.</p>
                         reg_grp = reg_grp.sort_values('Ukupno', ascending=False).reset_index(drop=True)
                         mali_okruzi_df = reg_grp[reg_grp['Ostaje'] < 5]
                         mali_okruzi = mali_okruzi_df['Region'].tolist()
-
                         rows_html = ""
                         for _, r in reg_grp.iterrows():
                             okrug = r['Region']
@@ -1905,7 +2012,6 @@ Ostaju samo objekti koji su u plusu.</p>
                                 </td>
                                 <td style="padding:7px 16px;">{bar}</td>
                             </tr>"""
-
                         uk_ukupno = int(reg_grp['Ukupno'].sum())
                         uk_ostaje = int(reg_grp['Ostaje'].sum())
                         uk_zatvara = int(reg_grp['Zatvara'].sum())
@@ -1919,14 +2025,12 @@ Ostaju samo objekti koji su u plusu.</p>
                             </td>
                             <td></td>
                         </tr>"""
-
                         header_html = """<tr style="background:#f9fafb;border-bottom:2px solid #e5e7eb;">
                             <th style="padding:9px 10px;font-size:11px;color:#888;font-weight:600;text-align:left;text-transform:uppercase;letter-spacing:.4px;">Okrug</th>
                             <th style="padding:9px 10px;font-size:11px;color:#888;font-weight:600;text-align:center;text-transform:uppercase;letter-spacing:.4px;">Ukupno obj.</th>
                             <th style="padding:9px 10px;font-size:11px;color:#888;font-weight:600;text-align:center;text-transform:uppercase;letter-spacing:.4px;">✓ Ostaje / ✗ Zatvara</th>
                             <th style="padding:9px 10px;font-size:11px;color:#888;font-weight:600;text-transform:uppercase;letter-spacing:.4px;"></th>
                         </tr>"""
-
                         tbl_height = len(reg_grp) * 34 + 80
                         components.html(f"""<!DOCTYPE html><html><body style="margin:0;padding:0;font-family:sans-serif;background:white;">
                         <table style="width:100%;border-collapse:collapse;">
@@ -1934,24 +2038,18 @@ Ostaju samo objekti koji su u plusu.</p>
                             <tbody>{rows_html}</tbody>
                         </table>
                         </body></html>""", height=tbl_height)
-
                         if mali_okruzi:
                             mali_str = ", ".join(mali_okruzi)
                             st.markdown(f'<div style="font-size:12px;color:#a855f7;padding:6px 4px;">* Okruzi sa manje od 5 profitabilnih objekata ({mali_str}): Ne preporučuje se angazovanje komercijalistu isključivo za ove okruge — broj preostalih objekata premali je da bi opravdao redovne obilaske.</div>', unsafe_allow_html=True)
-
                         if len(mali_okruzi_df) > 0:
                             st.markdown("<div style='margin:20px 0 6px 0;'></div>", unsafe_allow_html=True)
-
                             prof_reg_mali = prof_reg[prof_reg['Region'].isin(mali_okruzi) & (prof_reg['Neto_profit'] > 0)]
                             n_mali_prof = len(prof_reg_mali)
                             neto_mali_prof = int(prof_reg_mali['Neto_profit'].sum())
                             usteda_mali_trosak = int(n_mali_prof * engine.trosak_po_objektu)
-
                             scA_potencijal = ukupni_potencijal
                             scB_potencijal = scA_potencijal + usteda_mali_trosak - neto_mali_prof
-
                             period_label = period_str2
-
                             def _sc_red(label, val, color="#555", bold=False):
                                 sign = "+" if val >= 0 else ""
                                 fw = "700" if bold else "400"
@@ -1959,13 +2057,11 @@ Ostaju samo objekti koji su u plusu.</p>
                                     <span style="font-size:13px;color:#555;">{label}</span>
                                     <span style="font-size:13px;font-weight:{fw};color:{color};">{sign}{val:,} RSD</span>
                                 </div>"""
-
                             def _sc_total(label, val, color="#10b981"):
                                 return f"""<div style="display:flex;justify-content:space-between;padding:9px 0;border-top:2px solid #e5e7eb;margin-top:4px;">
                                     <span style="font-size:14px;font-weight:700;color:#111;">{label}</span>
                                     <span style="font-size:14px;font-weight:700;color:{color};">= {val:,} RSD</span>
                                 </div>"""
-
                             sc_html = f"""<div style="font-family:sans-serif;background:white;border-radius:12px;
                                 padding:20px 24px;box-shadow:0 2px 8px rgba(0,0,0,0.07);">
                                 <div style="font-size:12px;font-weight:600;color:#a855f7;text-transform:uppercase;
@@ -1976,7 +2072,6 @@ Ostaju samo objekti koji su u plusu.</p>
                                     Zatvaranjem {n_mali_prof} profitabilnih objekata u {len(mali_okruzi)} malih okruga
                                     štedimo trošak, ali gubimo deo zarade. Poređenje dva scenarija:
                                 </p>
-
                                 <div style="font-size:12px;font-weight:600;color:#7c3aed;margin:10px 0 6px 0;">
                                     Scenario A: Zatvaramo samo {n_pravi_neg2} neprofitabilnih + OOS eliminacija
                                 </div>
@@ -1984,7 +2079,6 @@ Ostaju samo objekti koji su u plusu.</p>
                                 {_sc_red(f"Ušteda: zatvaranje {n_pravi_neg2} neprofitabilnih ({n_mes}m)", usteda_trosak2 + usteda_gubitak2, "#10b981", False)}
                                 {_sc_red(f"Povraćaj OOS izgubljene zarade ({n_mes}m)", oos_ukupno2, "#10b981", False)}
                                 {_sc_total(f"POTENCIJAL SCENARIO A", scA_potencijal)}
-
                                 <div style="font-size:12px;font-weight:600;color:#ec4899;margin:16px 0 6px 0;">
                                     Scenario B: Scenario A + zatvaramo i {n_mali_prof} obj. iz malih okruga
                                 </div>
@@ -1995,18 +2089,59 @@ Ostaju samo objekti koji su u plusu.</p>
                             </div>"""
                             components.html(f'<!DOCTYPE html><html><body style="margin:0;padding:0;">{sc_html}</body></html>', height=420)
 
+            # ============================================================
+            #  OBJAVI ZA KOLEGINICE (Supabase)
+            # ============================================================
+            st.markdown("---")
+            st.markdown('<div class="section-title">📤 Objavi za koleginice (administracija)</div>', unsafe_allow_html=True)
+            if not sb_dostupan():
+                st.info("Supabase još nije podešen — dodaj SUPABASE_URL i SUPABASE_KEY u Streamlit Secrets da bi objava radila.")
+            else:
+                _lg, _lm = engine.meseci_order[-1]
+                _om = int(_lm) + 2; _oy = int(_lg)
+                while _om > 12:
+                    _om -= 12; _oy += 1
+                _mesec_key = f"{_oy}-{_om:02d}"
+                _mesec_lbl = mesec_label(_mesec_key)
+                _def_sistem = os.path.splitext(uploaded.name)[0].strip()
+                oc1, oc2 = st.columns([2, 1])
+                with oc1:
+                    _sistem_naziv = st.text_input("Naziv sistema (kako će koleginice videti)", value=_def_sistem)
+                with oc2:
+                    st.text_input("Mesec porudžbine", value=_mesec_lbl, disabled=True)
+                st.caption("Snima se samo porudžbina (stavke sa količinom > 0) + lager, za pregled u administraciji.")
+                if st.button("📤 Objavi porudžbinu za koleginice", use_container_width=True):
+                    if not _sistem_naziv.strip():
+                        st.error("Upiši naziv sistema.")
+                    else:
+                        try:
+                            _stavke = stavke_iz_rezultata(result, engine)
+                            _payload = {
+                                "mesec_label": _mesec_lbl,
+                                "meta": {
+                                    "pred_label": engine.pred_label,
+                                    "order_label": engine.order_label,
+                                    "min_lager": engine.min_lager,
+                                    "generisano": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
+                                    "n_objekata": int(len({s['idk'] for s in _stavke})),
+                                    "ukupno_kom": int(sum(s['kol'] for s in _stavke)),
+                                },
+                                "stavke": _stavke,
+                            }
+                            sb_objavi(_mesec_key, _sistem_naziv, _payload)
+                            st.success(f"✅ Objavljeno: **{_sistem_naziv}** — {_mesec_lbl}  ·  {len(_stavke)} stavki, {_payload['meta']['n_objekata']} objekata. Koleginice sada vide ovaj sistem.")
+                        except Exception as _e:
+                            st.error(f"Greška pri objavi: {_e}")
+
             st.markdown("---")
             excel_buf = create_excel(engine)
             fname_xl = f"ANALITIKA_{datetime.date.today().strftime('%Y%m%d')}.xlsx"
             st.download_button(f"📥 Preuzmi Excel — {fname_xl}", data=excel_buf, file_name=fname_xl,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-
         except Exception as e:
             st.error(f"Greska: {str(e)}")
             import traceback; st.code(traceback.format_exc())
-
 else:
-    # --- POČETNA STRANICA BEZ FAJLA ---
     components.html("""<!DOCTYPE html><html><head>
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
 </head><body style="margin:0;padding:0;background:transparent;font-family:'Poppins',sans-serif;">
