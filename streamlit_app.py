@@ -540,6 +540,15 @@ def prikazi_administraciju():
         o = obj_by_id[sel_id]
         z = _zona_disp(o["nivo"])
         v = obrada_map.get(sel_id, {"reakcije": [], "trebovali_tip": ""})
+        TREB_OPT = ["— nije trebovano", "Po našem sistemu", "Po njihovom sistemu (ne po našem)"]
+        TREB_CODE = {"— nije trebovano": "", "Po našem sistemu": "nas", "Po njihovom sistemu (ne po našem)": "njihov"}
+        _key_treb = "treb_" + str(sel_id)
+        _loaded_tip = v.get("trebovali_tip", "") or ""
+        if _key_treb in st.session_state:
+            _tip_now = TREB_CODE.get(st.session_state[_key_treb], "")
+        else:
+            _tip_now = _loaded_tip
+        _njihov_active = (_tip_now == "njihov")
         _revb = '<span class="revy">✓ Pregledano</span>' if sel_id in reviewed else '<span class="revn">Nepregledano</span>'
         st.markdown('<div class="adm-dh"><span class="id">' + str(sel_id) + '</span>'
                     '<span class="zona ' + z[0] + '"><span class="zd"></span>' + z[3] + '</span>'
@@ -561,8 +570,11 @@ def prikazi_administraciju():
                 "Lager": int(a["lager"]),
                 "Njihova por.": int(_njm.get(str(int(a["ida"])), 0)),
             } for a in _arts])
+            _dised = [" ", "Artikal", "Naša por.", "Lager"]
+            if not _njihov_active:
+                _dised.append("Njihova por.")
             _edited = st.data_editor(_adf, hide_index=True, use_container_width=True,
-                disabled=[" ", "Artikal", "Naša por.", "Lager"],
+                disabled=_dised,
                 column_config={
                     " ": st.column_config.TextColumn(" ", width="small"),
                     "Naša por.": st.column_config.NumberColumn("Naša por.", help="Koliko bi trebalo da poruče (naš predlog)"),
@@ -575,6 +587,8 @@ def prikazi_administraciju():
                     _njihova_new[str(int(_a["ida"]))] = int(_edited.iloc[_i]["Njihova por."])
                 except Exception:
                     _njihova_new[str(int(_a["ida"]))] = 0
+            if not _njihov_active:
+                st.caption("Njihova por. se unosi tek kad izabereš trebovanje Po njihovom sistemu.")
         with _dc2:
             st.markdown('<div class="adm-lbl">Reakcija</div>', unsafe_allow_html=True)
             _loaded = list(v.get("reakcije", []))
@@ -587,22 +601,22 @@ def prikazi_administraciju():
             if _r3: react.append("Obavestila direktorku")
             _can = len(react) > 0
             st.markdown('<div class="adm-lbl" style="margin-top:12px;">Trebovanje nakon reakcije</div>', unsafe_allow_html=True)
-            TREB_OPT = ["— nije trebovano", "Po našem sistemu", "Po njihovom sistemu (ne po našem)"]
-            TREB_CODE = {"— nije trebovano": "", "Po našem sistemu": "nas", "Po njihovom sistemu (ne po našem)": "njihov"}
-            _tip_cur = v.get("trebovali_tip", "") or ""
-            _tip_idx = ["", "nas", "njihov"].index(_tip_cur) if _tip_cur in ["", "nas", "njihov"] else 0
+            _tip_idx = ["", "nas", "njihov"].index(_loaded_tip) if _loaded_tip in ["", "nas", "njihov"] else 0
             _treb_lbl = st.radio("Trebovanje", TREB_OPT, index=_tip_idx, disabled=not _can,
-                                 key="treb_" + str(sel_id), label_visibility="collapsed")
+                                 key=_key_treb, label_visibility="collapsed")
             _tip_val = TREB_CODE.get(_treb_lbl, "") if _can else ""
             if not _can:
                 st.caption("🔒 Otključava se kad izabereš bar jednu reakciju.")
             if st.button("Sačuvaj status", key="savest_" + str(sel_id), use_container_width=True, type="primary"):
-                try:
-                    sb_save_obrada(mesec_key, sistem, sel_id, react, _tip_val, _njihova_new)
-                    st.success("Sačuvano ✓")
-                    st.rerun()
-                except Exception as _e:
-                    st.error("Greška: " + str(_e))
+                if _tip_val == "njihov" and sum(int(x) for x in _njihova_new.values()) == 0:
+                    st.error("Za opciju Po njihovom sistemu upiši koliko su poručili (Njihova por.) pre čuvanja.")
+                else:
+                    try:
+                        sb_save_obrada(mesec_key, sistem, sel_id, react, _tip_val, _njihova_new)
+                        st.success("Sačuvano ✓")
+                        st.rerun()
+                    except Exception as _e:
+                        st.error("Greška: " + str(_e))
 
 
 # =====================================================================
