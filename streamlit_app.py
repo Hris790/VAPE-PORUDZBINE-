@@ -101,7 +101,8 @@ REAKCIJE_OPCIJE = ["Pozvala sam", "Poslala sam mejl", "Obavestila direktorku"]
 
 def _reak_short(r):
     return {"Pozvala sam": "\U0001F4DE Pozvala", "Poslala sam mejl": "\u2709\uFE0F Mejl",
-            "Obavestila direktorku": "\U0001F454 Direktorka"}.get(r, r)
+            "Obavestila direktorku": "\U0001F454 Direktorka",
+            "Ubačena porudžbina": "\U0001F4E6 Ubačena porudžbina"}.get(r, r)
 
 def _zona_disp(nivo):
     return {"crveno": ("z-red", "\U0001F534 Hitno pozvati", "\U0001F534", "Hitno pozvati"),
@@ -113,22 +114,39 @@ def sb_load_obrada(mesec_key, sistem):
     if cli is None:
         return {}
     try:
-        res = cli.table("obrada").select("idk,reakcije,trebovali,trebovali_tip,njihova").eq("mesec", mesec_key).eq("sistem", sistem).execute()
+        res = cli.table("obrada").select("idk,reakcije,trebovali,trebovali_tip,njihova,napomena").eq("mesec", mesec_key).eq("sistem", sistem).execute()
     except Exception:
         return {}
     out = {}
     for r in (res.data or []):
-        out[int(r["idk"])] = {"reakcije": r.get("reakcije") or [], "trebovali_tip": r.get("trebovali_tip") or "", "njihova": r.get("njihova") or {}}
+        out[int(r["idk"])] = {"reakcije": r.get("reakcije") or [], "trebovali_tip": r.get("trebovali_tip") or "", "njihova": r.get("njihova") or {}, "napomena": r.get("napomena") or ""}
     return out
 
-def sb_save_obrada(mesec_key, sistem, idk, reakcije, trebovali_tip, njihova=None):
+def sb_save_obrada(mesec_key, sistem, idk, reakcije, trebovali_tip, njihova=None, napomena=""):
     cli = _sb()
     if cli is None:
         raise RuntimeError("Supabase nije podešen.")
     cli.table("obrada").upsert({"mesec": mesec_key, "sistem": sistem, "idk": int(idk),
         "reakcije": list(reakcije), "trebovali": bool(trebovali_tip), "trebovali_tip": trebovali_tip or "",
-        "njihova": dict(njihova or {}),
+        "njihova": dict(njihova or {}), "napomena": napomena or "",
         "azurirano": datetime.datetime.now().isoformat()}, on_conflict="mesec,sistem,idk").execute()
+
+def sb_bulk_ubaci(mesec_key, sistem, ids):
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    _now = datetime.datetime.now().isoformat()
+    rows = [{"mesec": mesec_key, "sistem": sistem, "idk": int(i),
+             "reakcije": ["Ubačena porudžbina"], "trebovali": True, "trebovali_tip": "nas",
+             "njihova": {}, "napomena": "", "azurirano": _now} for i in ids]
+    if rows:
+        cli.table("obrada").upsert(rows, on_conflict="mesec,sistem,idk").execute()
+
+def sb_bulk_reset(mesec_key, sistem):
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    cli.table("obrada").delete().eq("mesec", mesec_key).eq("sistem", sistem).execute()
 
 def sb_load_plan(mesec_key):
     cli = _sb()
@@ -345,33 +363,53 @@ def _pdf_font():
 
 def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
     import io as _io
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as _plt
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
     from reportlab.lib import colors
     from reportlab.lib.styles import ParagraphStyle
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, KeepTogether, HRFlowable
 
     FN, FB = _pdf_font()
-    C_PURPLE = colors.HexColor('#7c3aed')
-    C_RED = colors.HexColor('#d33333')
-    C_ORG = colors.HexColor('#c66a00')
-    C_GRN = colors.HexColor('#158a3f')
-    H1 = ParagraphStyle('H1', fontName=FB, fontSize=20, leading=24, textColor=colors.HexColor('#3b0764'), spaceAfter=2)
-    Hsub = ParagraphStyle('Hsub', fontName=FN, fontSize=10, leading=13, textColor=colors.HexColor('#9188a5'), spaceAfter=18)
-    Hsys = ParagraphStyle('Hsys', fontName=FB, fontSize=15, leading=18, textColor=C_PURPLE, spaceBefore=18, spaceAfter=8)
-    P = ParagraphStyle('P', fontName=FN, fontSize=10, textColor=colors.HexColor('#444444'), spaceAfter=8, leading=14)
+    H1 = ParagraphStyle('H1', fontName=FB, fontSize=19, leading=23, textColor=colors.HexColor('#3b0764'), spaceAfter=2)
+    Hsub = ParagraphStyle('Hsub', fontName=FN, fontSize=10, leading=13, textColor=colors.HexColor('#9188a5'), spaceAfter=14)
+    Hsys = ParagraphStyle('Hsys', fontName=FB, fontSize=13, leading=16, textColor=colors.HexColor('#7c3aed'), spaceBefore=2, spaceAfter=4)
+    Nar = ParagraphStyle('Nar', fontName=FN, fontSize=10, leading=14.5, textColor=colors.HexColor('#333333'))
+
+    def _chart(nred, norg, ngrn, n, nnas, nnj, nnije, neob, nrev):
+        fig, ax = _plt.subplots(1, 2, figsize=(9.0, 2.15))
+        ax[0].pie([nred, norg, ngrn], colors=['#e5484d', '#f2820c', '#17a34a'], startangle=90,
+                  counterclock=False, wedgeprops=dict(width=0.44, edgecolor='white', linewidth=1.6))
+        ax[0].text(0, 0, str(n), ha='center', va='center', fontsize=12, fontweight='bold', color='#3b0764')
+        ax[0].set_title('Zone', fontsize=9.5, fontweight='bold', color='#3b0764', pad=3)
+        ax[0].legend(["Hitno (" + str(nred) + ")", "Iskontrolisati (" + str(norg) + ")", "Dobra (" + str(ngrn) + ")"],
+                     loc='center left', bbox_to_anchor=(0.94, 0.5), frameon=False, fontsize=7.5, handlelength=1)
+        ax[1].pie([max(nnas, 0), max(nnj, 0), max(nnije, 0), max(neob, 0)],
+                  colors=['#17a34a', '#f2820c', '#c9b8ec', '#e5e2ee'], startangle=90,
+                  counterclock=False, wedgeprops=dict(width=0.44, edgecolor='white', linewidth=1.6))
+        ax[1].text(0, 0, str(nrev), ha='center', va='center', fontsize=12, fontweight='bold', color='#3b0764')
+        ax[1].set_title('Trebovanje', fontsize=9.5, fontweight='bold', color='#3b0764', pad=3)
+        ax[1].legend(["Prema našem predlogu (" + str(nnas) + ")", "Po njihovom (" + str(nnj) + ")",
+                      "Bez porudžbine (" + str(nnije) + ")", "Neobrađeno (" + str(neob) + ")"],
+                     loc='center left', bbox_to_anchor=(0.94, 0.5), frameon=False, fontsize=7.5, handlelength=1)
+        fig.subplots_adjust(left=0.01, right=0.72, top=0.84, bottom=0.04, wspace=1.7)
+        b = _io.BytesIO()
+        fig.savefig(b, format='png', dpi=200, facecolor='white')
+        _plt.close(fig)
+        b.seek(0)
+        return b
 
     buf = _io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=18 * mm, bottomMargin=16 * mm,
-                            leftMargin=16 * mm, rightMargin=16 * mm)
-    el = []
-    el.append(Paragraph("Izveštaj administracije", H1))
-    _dan = datetime.datetime.now().strftime("%d.%m.%Y")
-    el.append(Paragraph("Mesec: " + mesec_lbl + "   ·   generisano " + _dan, Hsub))
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=16 * mm, bottomMargin=14 * mm,
+                            leftMargin=18 * mm, rightMargin=18 * mm)
+    el = [Paragraph("Izveštaj administracije", H1),
+          Paragraph("Mesec: " + mesec_lbl + "   ·   generisano " + datetime.datetime.now().strftime("%d.%m.%Y"), Hsub)]
 
     sistemi = sb_sisteme(mesec_key)
     if not sistemi:
-        el.append(Paragraph("Nema objavljenih sistema za ovaj mesec.", P))
+        el.append(Paragraph("Nema objavljenih sistema za ovaj mesec.", Nar))
         doc.build(el)
         buf.seek(0)
         return buf.getvalue()
@@ -390,8 +428,8 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
             objekti.append({"idk": idk, "nivo": nivo})
         obrada = sb_load_obrada(mesec_key, _sis)
 
-        def _reak_ima(o, naziv):
-            return naziv in (obrada.get(o["idk"], {}).get("reakcije") or [])
+        def _ima(o, naz):
+            return naz in (obrada.get(o["idk"], {}).get("reakcije") or [])
 
         n = len(objekti)
         nred = sum(1 for o in objekti if o["nivo"] == "crveno")
@@ -399,51 +437,32 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
         ngrn = sum(1 for o in objekti if o["nivo"] == "zeleno")
         rev = [o for o in objekti if obrada.get(o["idk"], {}).get("reakcije")]
         nrev = len(rev)
-        nPoz = sum(1 for o in objekti if _reak_ima(o, "Pozvala sam"))
-        nMej = sum(1 for o in objekti if _reak_ima(o, "Poslala sam mejl"))
-        nDir = sum(1 for o in objekti if _reak_ima(o, "Obavestila direktorku"))
+        nPoz = sum(1 for o in objekti if _ima(o, "Pozvala sam"))
+        nMej = sum(1 for o in objekti if _ima(o, "Poslala sam mejl"))
+        nDir = sum(1 for o in objekti if _ima(o, "Obavestila direktorku"))
         nnas = sum(1 for o in rev if obrada.get(o["idk"], {}).get("trebovali_tip") == "nas")
         nnj = sum(1 for o in rev if obrada.get(o["idk"], {}).get("trebovali_tip") == "njihov")
         nnije = sum(1 for o in rev if not obrada.get(o["idk"], {}).get("trebovali_tip"))
+        neob = n - nrev
+        pct = round(nrev / max(n, 1) * 100)
 
-        blok = []
-        blok.append(Paragraph(str(_sis) + ":", Hsys))
-
-        rows = [
-            ["Ukupno objekata za porudžbinu", str(n), None],
-            ["Obrađeno (bilo koja reakcija)", str(nrev), None],
-            ["Nije obrađeno", str(n - nrev), None],
-            ["Zona — Hitno (crvena)", str(nred), C_RED],
-            ["Zona — Iskontrolisati (narandžasta)", str(norg), C_ORG],
-            ["Zona — Dobra (zelena)", str(ngrn), C_GRN],
-            ["Reakcija — Pozvano", str(nPoz), None],
-            ["Reakcija — Poslat mejl", str(nMej), None],
-            ["Reakcija — Prijavljeno direktorki", str(nDir), None],
-            ["Uspešno trebovanje (kod nas)", str(nnas), C_GRN],
-            ["Trebovali po svom (kod njih)", str(nnj), C_ORG],
-            ["Kontaktirano bez porudžbine", str(nnije), None],
-        ]
-        tdata = [[r[0], r[1]] for r in rows]
-        style = [
-            ('FONTNAME', (0, 0), (-1, -1), FN), ('FONTSIZE', (0, 0), (-1, -1), 10),
-            ('FONTNAME', (1, 0), (1, -1), FB),
-            ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('TEXTCOLOR', (0, 0), (0, -1), colors.HexColor('#444444')),
-            ('ROWBACKGROUNDS', (0, 0), (-1, -1), [colors.white, colors.HexColor('#fbfaff')]),
-            ('LINEBELOW', (0, 0), (-1, -2), 0.3, colors.HexColor('#efeaf9')),
-            ('BOX', (0, 0), (-1, -1), 0.6, colors.HexColor('#e6e0f5')),
-            ('TOPPADDING', (0, 0), (-1, -1), 6), ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-            ('LEFTPADDING', (0, 0), (-1, -1), 12), ('RIGHTPADDING', (0, 0), (-1, -1), 12),
-        ]
-        for _i, r in enumerate(rows):
-            if r[2] is not None:
-                style.append(('TEXTCOLOR', (1, _i), (1, _i), r[2]))
-                style.append(('TEXTCOLOR', (0, _i), (0, _i), r[2]))
-        t = Table(tdata, colWidths=[120 * mm, 30 * mm])
-        t.setStyle(TableStyle(style))
-        blok.append(t)
-        el.append(KeepTogether(blok))
+        narr = ("Od <b>" + str(n) + "</b> objekata za porudžbinu, <b><font color='#d33'>" + str(nred) +
+                "</font></b> je u hitnoj zoni, " + str(norg) + " za kontrolu i " + str(ngrn) + " u dobroj. "
+                "Obrađeno je <b>" + str(nrev) + "</b> (" + str(pct) + "%) — pozvano " + str(nPoz) +
+                ", mejlova " + str(nMej) + ", direktorki " + str(nDir) + ". "
+                "Trebovanje: <b><font color='#158a3f'>" + str(nnas) + " prema našem predlogu</font></b>, "
+                "<font color='#c66a00'>" + str(nnj) + " po njihovom</font>, " + str(nnije) +
+                " bez porudžbine; <b>" + str(neob) + "</b> neobrađeno.")
+        img = Image(_chart(nred, norg, ngrn, n, nnas, nnj, nnije, neob, nrev), width=150 * mm, height=150 * mm * 2.15 / 9.0)
+        img.hAlign = 'CENTER'
+        el.append(KeepTogether([
+            Paragraph(str(_sis), Hsys),
+            Paragraph(narr, Nar),
+            Spacer(1, 2),
+            img,
+            Spacer(1, 4),
+            HRFlowable(width="100%", thickness=0.6, color=colors.HexColor('#eae4f7'), spaceAfter=6),
+        ]))
 
     doc.build(el)
     buf.seek(0)
@@ -626,6 +645,26 @@ def prikazi_administraciju():
     st.markdown('<div class="adm-prog"><span class="t">Pregledano ' + str(n_done) + ' / ' + str(n_obj) + '</span>'
                 '<div class="bar"><div style="width:' + str(_pct) + '%"></div></div></div>', unsafe_allow_html=True)
 
+    with st.expander("📦 Porudžbina ubačena za ceo sistem (grupna akcija)"):
+        st.caption("Za sisteme gde mi direktno ubacujemo porudžbine (npr. BB TRADE, KNEZ) — jednim klikom se svi objekti označe kao Ubačena porudžbina i postaju pregledani. Ne koristiti za sisteme gde se objekti zovu pojedinačno.")
+        _bc1, _bc2 = st.columns(2)
+        with _bc1:
+            if st.button("✅ Označi sve: porudžbina ubačena", key="bulk_ubaci", use_container_width=True):
+                try:
+                    sb_bulk_ubaci(mesec_key, sistem, ids_sorted)
+                    st.success("Sve označeno kao ubačena porudžbina.")
+                    st.rerun()
+                except Exception as _e:
+                    st.error("Greška: " + str(_e))
+        with _bc2:
+            if st.button("↩️ Poništi obradu celog sistema", key="bulk_reset", use_container_width=True):
+                try:
+                    sb_bulk_reset(mesec_key, sistem)
+                    st.success("Obrada sistema poništena.")
+                    st.rerun()
+                except Exception as _e:
+                    st.error("Greška: " + str(_e))
+
     def _treb_list_cell(tip, rev):
         if tip == "nas":
             return '<span class="tb-nas">✓ po našem</span>'
@@ -738,6 +777,8 @@ def prikazi_administraciju():
             if not _njihov_active:
                 st.caption("Njihova por. se unosi tek kad izabereš trebovanje Po njihovom sistemu.")
         with _dc2:
+            if "Ubačena porudžbina" in (v.get("reakcije") or []):
+                st.info("📦 Porudžbina je ubačena za ceo sistem (grupno).")
             st.markdown('<div class="adm-lbl">Reakcija</div>', unsafe_allow_html=True)
             _loaded = list(v.get("reakcije", []))
             _r1 = st.checkbox("Pozvala sam", value=("Pozvala sam" in _loaded), key="r1_" + str(sel_id))
@@ -755,12 +796,18 @@ def prikazi_administraciju():
             _tip_val = TREB_CODE.get(_treb_lbl, "") if _can else ""
             if not _can:
                 st.caption("🔒 Otključava se kad izabereš bar jednu reakciju.")
+            st.markdown('<div class="adm-lbl" style="margin-top:12px;">Napomena (interno)</div>', unsafe_allow_html=True)
+            _nap = st.text_area("Napomena", value=(v.get("napomena", "") or ""), key="nap_" + str(sel_id),
+                                height=72, label_visibility="collapsed",
+                                placeholder="npr. zvati posle 15h, tražiti vlasnika...")
             if st.button("Sačuvaj status", key="savest_" + str(sel_id), use_container_width=True, type="primary"):
-                if _tip_val == "njihov" and sum(int(x) for x in _njihova_new.values()) == 0:
+                if not _can:
+                    st.error("Izaberi bar jednu reakciju — ne može da se sačuva samo napomena.")
+                elif _tip_val == "njihov" and sum(int(x) for x in _njihova_new.values()) == 0:
                     st.error("Za opciju Po njihovom sistemu upiši koliko su poručili (Njihova por.) pre čuvanja.")
                 else:
                     try:
-                        sb_save_obrada(mesec_key, sistem, sel_id, react, _tip_val, _njihova_new)
+                        sb_save_obrada(mesec_key, sistem, sel_id, react, _tip_val, _njihova_new, _nap)
                         st.success("Sačuvano ✓")
                         st.rerun()
                     except Exception as _e:
