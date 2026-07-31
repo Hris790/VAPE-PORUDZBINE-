@@ -613,6 +613,9 @@ def prikazi_administraciju():
         return
 
     stavke = podaci["stavke"]
+    meta = podaci.get("meta", {}) or {}
+    _mes_kol = meta.get("meseci")
+    _por_lbl = ("Porudžbina (" + str(_mes_kol).replace(".", ",") + " mes)") if _mes_kol else "Porudžbina"
     po_obj = {}
     for s in stavke:
         po_obj.setdefault(int(s["idk"]), []).append(s)
@@ -754,17 +757,19 @@ def prikazi_administraciju():
                 " ": _sd(a["lager"]),
                 "Artikal": str(a["naziv"]),
                 "Naša por.": int(a["kol"]),
+                "Predikcija": int(a.get("pred", 0)),
                 "Lager": int(a["lager"]),
                 "Njihova por.": int(_njm.get(str(int(a["ida"])), 0)),
             } for a in _arts])
-            _dised = [" ", "Artikal", "Naša por.", "Lager"]
+            _dised = [" ", "Artikal", "Naša por.", "Predikcija", "Lager"]
             if not _njihov_active:
                 _dised.append("Njihova por.")
             _edited = st.data_editor(_adf, hide_index=True, use_container_width=True,
                 disabled=_dised,
                 column_config={
                     " ": st.column_config.TextColumn(" ", width="small"),
-                    "Naša por.": st.column_config.NumberColumn("Naša por.", help="Koliko bi trebalo da poruče (naš predlog)"),
+                    "Naša por.": st.column_config.NumberColumn(_por_lbl, help="Predlog porudžbine za zadati broj meseci"),
+                    "Predikcija": st.column_config.NumberColumn("Predikcija (mesec)", help="Predviđena prodaja za mesec dana"),
                     "Lager": st.column_config.NumberColumn("Lager"),
                     "Njihova por.": st.column_config.NumberColumn("Njihova por.", help="Koliko su stvarno poručili", min_value=0, step=1),
                 }, key="ed_" + str(sel_id))
@@ -830,10 +835,11 @@ WMA_WEIGHTS = np.array([0.03, 0.07, 0.12, 0.28, 0.50])
 HIST_WEIGHT = 0.03
 
 class PredictionEngine:
-    def __init__(self, file_bytes, excluded_ids, alpha, beta, min_lager, min_order, mesecni_trosak=0, analitika_meseci=None, min_per_artikal=None):
+    def __init__(self, file_bytes, excluded_ids, alpha, beta, min_lager, min_order, mesecni_trosak=0, analitika_meseci=None, min_per_artikal=None, meseci=1.0):
         self.file_bytes = file_bytes; self.excluded = excluded_ids
         self.alpha = alpha; self.beta = beta; self.min_lager = min_lager; self.min_order = min_order
         self.min_per_artikal = min_per_artikal
+        self.meseci = meseci if (meseci and meseci > 0) else 1.0
         self.mesecni_trosak = mesecni_trosak
         self.analitika_meseci = analitika_meseci
         self.logs = []; self.adjustments = []; self.has_history = False
@@ -1118,11 +1124,12 @@ class PredictionEngine:
         self.df_result=self.df_monthly.copy()
         def p1(row):
             if row['ID KOMITENTA'] in self.excluded: return 0
-            return max(int(row['Predikcija'])-int(row['Lager_danas']),0)
+            pred_o=int(round(int(row['Predikcija'])*self.meseci))
+            return max(pred_o-int(row['Lager_danas']),0)
         def p2(row):
             if row['ID KOMITENTA'] in self.excluded: return 0
-            pred=int(row['Predikcija']); lager=int(row['Lager_danas']); prosek=int(row['Prosek'])
-            osnova=max(pred-lager,0)
+            pred=int(row['Predikcija']); pred_o=int(round(pred*self.meseci)); lager=int(row['Lager_danas']); prosek=int(row['Prosek'])
+            osnova=max(pred_o-lager,0)
             if self.min_lager is not None and lager < self.min_lager and pred > 0:
                 dopuna = max(self.min_lager - lager, osnova)
             else:
@@ -1945,6 +1952,7 @@ with tab_obj:
             st.markdown('<div class="obj-title"><span class="obj-badge">2</span> Parametri porudžbine</div>', unsafe_allow_html=True)
             _oc1, _oc2, _oc3 = st.columns(3)
             with _oc1:
+                _o_mes = st.number_input("Broj meseci za porudžbinu", min_value=0.5, value=1.5, step=0.5, format="%.1f", key="obj_mes_num", help="Porudžbina pokriva ovoliko meseci predviđene prodaje (može 1.0, 1.5, 2.0...).")
                 _o_ml = st.text_input("Min. lager po artiklu", value="", placeholder="prazno = bez ograničenja", key="obj_ml")
                 _o_mo = st.text_input("Min. ukupna porudžbina po objektu", value="", placeholder="prazno = bez ograničenja", key="obj_mo")
             with _oc2:
@@ -1976,7 +1984,7 @@ with tab_obj:
                 else:
                     try:
                         _pb = st.progress(0, "Računam porudžbinu...")
-                        _eng = PredictionEngine(_obytes, _o_excluded, alpha, beta, _o_min_lager, _o_min_order, _o_tr, None, _o_min_pa)
+                        _eng = PredictionEngine(_obytes, _o_excluded, alpha, beta, _o_min_lager, _o_min_order, _o_tr, None, _o_min_pa, meseci=float(_o_mes))
                         _res = _eng.run(_pb)
                         _pb.empty()
                         _lg2, _lm2 = _eng.meseci_order[-1]
@@ -1986,7 +1994,7 @@ with tab_obj:
                         _mk2 = str(_oy2) + "-" + ("0" + str(_om2))[-2:]
                         _mlbl2 = mesec_label(_mk2)
                         _stavke = stavke_iz_rezultata(_res, _eng)
-                        _payload = {"mesec_label": _mlbl2, "meta": {"pred_label": _eng.pred_label, "order_label": _eng.order_label, "min_lager": _eng.min_lager, "generisano": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"), "n_objekata": int(len({_s2['idk'] for _s2 in _stavke})), "ukupno_kom": int(sum(_s2['kol'] for _s2 in _stavke))}, "stavke": _stavke}
+                        _payload = {"mesec_label": _mlbl2, "meta": {"pred_label": _eng.pred_label, "order_label": _eng.order_label, "min_lager": _eng.min_lager, "meseci": round(float(_o_mes), 1), "generisano": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"), "n_objekata": int(len({_s2['idk'] for _s2 in _stavke})), "ukupno_kom": int(sum(_s2['kol'] for _s2 in _stavke))}, "stavke": _stavke}
                         sb_objavi(_mk2, _osist, _payload)
                         st.success(f"\u2705 Objavljeno: {_osist} \u2014 {_mlbl2} \u00b7 {len(_stavke)} stavki, {_payload['meta']['n_objekata']} objekata. Osveži (F5) da se ažurira lista gore.")
                     except Exception as _e:
@@ -2001,6 +2009,8 @@ with tab_ana:
         pc1, pc2, pc3 = st.columns(3)
         with pc1:
             st.markdown("**📦 Porudžbina**")
+            meseci_ana = st.number_input("Broj meseci za porudžbinu", min_value=0.5, value=1.5, step=0.5, format="%.1f",
+                                         help="Porudžbina pokriva ovoliko meseci predviđene prodaje (može 1.0, 1.5, 2.0...).")
             _ml_str = st.text_input("Minimalni lager po artiklu", value="", placeholder="prazno = bez ograničenja")
             min_lager = int(_ml_str) if _ml_str.strip().isdigit() else None
             _mo_str = st.text_input("Min. ukupna porudžbina po objektu", value="", placeholder="prazno = bez ograničenja")
@@ -2050,7 +2060,7 @@ with tab_ana:
         if st.button("🚀 POKRENI ANALIZU", use_container_width=True):
             progress_bar = st.progress(0)
             try:
-                engine = PredictionEngine(file_bytes, excluded, alpha, beta, min_lager, min_order, mesecni_trosak, selected_meseci, min_per_artikal)
+                engine = PredictionEngine(file_bytes, excluded, alpha, beta, min_lager, min_order, mesecni_trosak, selected_meseci, min_per_artikal, meseci=float(meseci_ana))
                 result = engine.run(progress_bar)
                 st.session_state["last_engine"] = engine
                 st.session_state["last_result"] = result
