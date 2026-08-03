@@ -840,6 +840,84 @@ def admin_istorija_komitenta(id_kupca, naziv, datum_od, datum_do, max_por=40):
         return ([], "Greška pri čitanju istorije: " + str(_e))
 
 
+def _datum_sort_key(_o):
+    """Sortiranje porudžbina po datumu (najnovije prvo)."""
+    import datetime as _d
+    _s = (_o.get("datum") or "").split(" ")[0]
+    try:
+        return _d.datetime.strptime(_s, "%d.%m.%Y")
+    except Exception:
+        return _d.datetime.min
+
+
+def admin_istorija_bulk(idk_naziv, cutoff_date, max_details=800):
+    """Za ceo sistem odjednom: jedan login + jedan /orders POST, pa detalji SAMO za
+    porudžbine >= cutoff_date koje se poklapaju sa objektima (po nazivu, potvrda idUser).
+    idk_naziv: {idk: naziv}. Vrati ({idk: [ {id,datum,status,cena,stavke} ]}, greska)."""
+    import re, html as _h, datetime as _dt
+    s, base, err = _admin_session()
+    if err:
+        return ({}, err)
+    name_items = []
+    for _idk, _nz in idk_naziv.items():
+        _n = _clean_komitent_naziv(_nz or "")
+        if _n:
+            name_items.append((int(_idk), _n))
+    want_ids = set(int(x) for x in idk_naziv.keys())
+    try:
+        resp = s.post(base + "/orders", data={
+            "orderStatuses": ["1", "10", "20", "30", "40", "50", "60", "70", "80", "90", "95"],
+            "keyword": "", "idLoad": "", "startDate": "", "endDate": ""},
+            headers={"Referer": base + "/orders", "X-Requested-With": "XMLHttpRequest"}, timeout=120)
+        body = resp.text or ""
+        cand = []
+        for _row in re.findall(r'<tr[^>]*>(.*?)</tr>', body, re.S):
+            if '/order/details/' not in _row:
+                continue
+            _rowtxt = _norm_ws(_h.unescape(_row))
+            _md = re.search(r'(\d{2}\.\d{2}\.\d{4})(?:\s+(\d{2}:\d{2}))?', _rowtxt)
+            if cutoff_date:
+                if not _md:
+                    continue
+                try:
+                    if _dt.datetime.strptime(_md.group(1), "%d.%m.%Y").date() < cutoff_date:
+                        continue
+                except Exception:
+                    continue
+            _hit = None
+            for _idk, _n in name_items:
+                if _n in _rowtxt:
+                    _hit = _idk
+                    break
+            if _hit is None:
+                continue
+            _mid = re.search(r'/order/details/(\d+)', _row)
+            if not _mid:
+                continue
+            _oid = _mid.group(1)
+            _datum = (_md.group(1) + ((" " + _md.group(2)) if _md.group(2) else "")) if _md else ""
+            _ms = re.search(r'labelOrderStatus[^"]*"[^>]*>([^<]+)</span>', _row)
+            _status = _norm_ws(_h.unescape(_ms.group(1))) if _ms else ""
+            _mc = re.search(r'price-cell">\s*([\d.]+)\s*RSD', _row)
+            _cena = (_mc.group(1) + " RSD") if _mc else ""
+            cand.append((_hit, _oid, _datum, _status, _cena))
+        cand = cand[:max_details]
+        out = {}
+        for (_hit, _oid, _datum, _status, _cena) in cand:
+            try:
+                det = s.get(base + "/order/details/" + _oid, timeout=45)
+                _st, _iu = _parse_order_items(det.text)
+                _final = _iu if (_iu in want_ids) else _hit
+            except Exception:
+                _st = []
+                _final = _hit
+            out.setdefault(_final, []).append(
+                {"id": _oid, "datum": _datum, "status": _status, "cena": _cena, "stavke": _st})
+        return (out, "")
+    except Exception as _e:
+        return ({}, "Greška pri čitanju istorije: " + str(_e))
+
+
 def _to_int_kol(s):
     """Parsiraj količinu iz stringa (npr. '12', '12,00', '12.0') u int."""
     import re
@@ -1072,22 +1150,41 @@ def prikazi_administraciju():
     st.markdown('<div class="adm-prog"><span class="t">Pregledano ' + str(n_done) + ' / ' + str(n_obj) + '</span>'
                 '<div class="bar"><div style="width:' + str(_pct) + '%"></div></div></div>', unsafe_allow_html=True)
 
+    # --- Globalno dugme: povuci SVE iz admina za ceo sistem odjednom ---
     _bez_naziva = [o["idk"] for o in objekti if not ((komfull.get(int(o["idk"]), {}) or {}).get("naziv"))]
-    if _bez_naziva:
-        _fc1, _fc2 = st.columns([2, 1])
-        with _fc1:
-            st.caption("ℹ️ " + str(len(_bez_naziva)) + " objekata nema naziv u šifarniku. "
-                       "Ako si ubacila fajl, klikni Osveži (F5); ostatak se može povući iz admina.")
-        with _fc2:
-            if st.button("🔗 Poveži nazive iz admina", key="fill_names", use_container_width=True):
-                with st.spinner("Čitam nazive iz admina..."):
-                    _bn, _be = admin_build_komitenti(only_ids=_bez_naziva)
-                if _bn == 0:
-                    st.error(_be or "Nije uspelo.")
-                else:
-                    st.session_state["_komfull"] = sb_komitenti_full()
-                    st.success("Povučeno " + str(_bn) + " naziva iz admina.")
-                    st.rerun()
+    _gc1, _gc2 = st.columns([2, 1])
+    with _gc2:
+        if st.button("🔄 Ažuriraj podatke iz admina", key="refresh_all_admin",
+                     use_container_width=True, type="primary"):
+            try:
+                _cut_all = datetime.date(int(str(mesec_key).split("-")[0]), int(str(mesec_key).split("-")[1]), 1)
+            except Exception:
+                _cut_all = None
+            with st.spinner("Povlačim sve iz admina za ceo sistem (nazivi + prethodne porudžbine + dopuna)... može potrajati par minuta."):
+                if _bez_naziva:
+                    admin_build_komitenti(only_ids=_bez_naziva)
+                _kf = sb_komitenti_full()
+                st.session_state["_komfull"] = _kf
+                _idk_naziv = {o["idk"]: (_kf.get(int(o["idk"]), {}) or {}).get("naziv", "") for o in objekti}
+                _bulk, _be_all = admin_istorija_bulk(_idk_naziv, _cut_all)
+            if _be_all and not _bulk:
+                st.error(_be_all)
+            else:
+                _n_hist = 0
+                for o in objekti:
+                    _lst = sorted(_bulk.get(o["idk"], []), key=_datum_sort_key, reverse=True)
+                    st.session_state["hist_" + str(sistem) + "_" + str(o["idk"])] = {"lst": _lst, "err": ""}
+                    if _lst:
+                        _n_hist += 1
+                st.success("✅ Ažurirano iz admina. Objekata sa porudžbinama posle 01.: " + str(_n_hist)
+                           + ". Prethodne porudžbine i dodatna porudžbina su spremni u svakom objektu.")
+                st.rerun()
+    with _gc1:
+        if _bez_naziva:
+            st.caption("ℹ️ " + str(len(_bez_naziva)) + " objekata bez naziva. "
+                       "Klikni Ažuriraj podatke iz admina — povuče nazive, prethodne porudžbine i dopunu za ceo sistem.")
+        else:
+            st.caption("Klikni Ažuriraj podatke iz admina da se za ceo sistem povuku prethodne porudžbine i izračuna dopuna (trebovano posle 01.).")
 
     with st.expander("📦 Porudžbina ubačena za ceo sistem (grupna akcija)"):
         st.caption("Za sisteme gde mi direktno ubacujemo porudžbine (npr. BB TRADE, KNEZ) — jednim klikom se svi objekti označe kao Ubačena porudžbina i postaju pregledani. Ne koristiti za sisteme gde se objekti zovu pojedinačno.")
@@ -1338,18 +1435,24 @@ def prikazi_administraciju():
                 st.caption("ℹ️ Klikni Ažuriraj iz admina (gore) da se količine umanje za već poručeno posle 01.")
             else:
                 st.caption("Za proveru trebovanja posle 01. učitaj šifarnik komitenata (potreban je naziv).")
-            # Upadljiv (zeleni) prikaz dodatne porudžbine koja se šalje u admin
-            if _nase_rows:
-                _naz_by_ida = {int(a["ida"]): str(a["naziv"]) for a in _arts}
-                _tot_send = sum(_q for (_k, _a, _q) in _nase_rows)
+            # Upadljiv (zeleni) prikaz porudžbine koja se šalje u admin.
+            # Zavisi od izabranog trebovanja: „po njihovom" -> njihova kolona; inače naša (umanjena).
+            if _njihov_active:
+                _box_rows = _njih_rows
+                _title = "➡️ NJIHOVO TREBOVANJE — šalje se u admin"
+            else:
+                _box_rows = _nase_rows
                 _title = ("➡️ DODATNA PORUDŽBINA — šalje se (umanjeno za već poručeno)"
                           if (_treb_loaded and _treb_total > 0)
-                          else "➡️ PORUDŽBINA — šalje se u admin")
+                          else "➡️ NAŠE TREBOVANJE — šalje se u admin")
+            if _box_rows:
+                _naz_by_ida = {int(a["ida"]): str(a["naziv"]) for a in _arts}
+                _tot_send = sum(_q for (_k, _a, _q) in _box_rows)
                 _items_html = "".join(
                     '<div style="display:flex;justify-content:space-between;padding:2px 0;border-top:1px solid #bbf7d0;">'
                     '<span>' + _h_escape(_naz_by_ida.get(_a, str(_a))) + '</span>'
                     '<span style="font-weight:800;">' + str(_q) + ' kom</span></div>'
-                    for (_k, _a, _q) in _nase_rows)
+                    for (_k, _a, _q) in _box_rows)
                 st.markdown(
                     '<div style="background:#e7f9ee;border:2px solid #22c55e;border-radius:10px;'
                     'padding:10px 14px;margin:8px 0 12px;">'
