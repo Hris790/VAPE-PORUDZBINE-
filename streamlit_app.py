@@ -68,6 +68,17 @@ def sb_objavi(mesec_key, sistem, podaci, xlsx_b64=None):
         except Exception: pass
 
 
+def sb_obrisi(mesec_key, sistem):
+    """Obriši objavljeni izveštaj (mesec + sistem) iz baze. Trajno."""
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    cli.table("porudzbine").delete().eq("mesec", mesec_key).eq("sistem", sistem).execute()
+    for fn in (sb_meseci, sb_sisteme, sb_svi_sistemi, sb_ucitaj, sb_pregled, sb_ucitaj_xlsx):
+        try: fn.clear()
+        except Exception: pass
+
+
 @st.cache_data(ttl=60)
 def sb_ucitaj_xlsx(mesec_key, sistem):
     """Vrati base64 analitika Excel-a za sistem/mesec (ili None). Odvojen upit da ne
@@ -2308,30 +2319,44 @@ def prikazi_direktore():
                     st.caption("Analitika (Excel) za ovaj sistem biće dostupna čim se sistem ponovo objavi.")
         st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
 
-        d = podaci.get("direktor")
-        if d and d.get("prodaja_trend"):
+        d = podaci.get("direktor") or {}
+        if not isinstance(d, dict):
+            d = {}
+        _pf = d.get("profit")  # profitabilnost iz sačuvane analitike (ako je sistem objavljen novom verzijom)
+
+        # Prodaju/trend/grupe uzimamo prvenstveno iz tabele prodaje (18 meseci, lepši trend);
+        # profitabilnost uvek iz sačuvane analitike ovog sistema.
+        _izvp = sb_ucitaj_izvestaj_prodaje()
+        try:
+            _sales = json.loads(_izvp["prodaja_json"]) if (_izvp and _izvp.get("prodaja_json")) else {}
+        except Exception:
+            _sales = {}
+        _dsales = _direktor_blok_iz_prodaje(sistem, _sales)
+
+        if _dsales:
+            _part = _partial_iz_stavki(podaci.get("stavke") or [])
+            _dsales["oos"] = _part.get("oos")
+            _dsales["oos_po_artiklu"] = _part.get("oos_po_artiklu")
+            if _pf:
+                _dsales["profit"] = _pf
+            st.caption("Prodaja i trend su iz tabele prodaje (poslednji objavljeni Izveštaj prodaje).")
+            _render_sistem_report(_dsales, True)
+        elif d.get("prodaja_trend"):
             _render_sistem_report(d, True)
         else:
-            # Pokušaj iz tabele prodaje (Izveštaj prodaje) — bez ponovne objave.
-            # Čitamo sveže svaki put (sb_ucitaj_izvestaj_prodaje je keširan 60s na nivou podataka).
-            _izvp = sb_ucitaj_izvestaj_prodaje()
-            try:
-                _sales = json.loads(_izvp["prodaja_json"]) if (_izvp and _izvp.get("prodaja_json")) else {}
-            except Exception:
-                _sales = {}
-            _dsales = _direktor_blok_iz_prodaje(sistem, _sales)
-            if _dsales:
-                _part = _partial_iz_stavki(podaci.get("stavke") or [])
-                _dsales["oos"] = _part.get("oos")
-                _dsales["oos_po_artiklu"] = _part.get("oos_po_artiklu")
-                st.caption("Prodaja i trend su iz tabele prodaje (poslednji objavljeni Izveštaj prodaje). "
-                           "Out-of-stock je iz porudžbine ovog sistema.")
-                _render_sistem_report(_dsales, True)
+            _base = _partial_iz_stavki(podaci.get("stavke") or [])
+            if _pf:
+                _base["profit"] = _pf
             else:
                 st.info("Prodaja i trend se pojave kad objaviš Izveštaj prodaje (ako tabela prodaje sadrži ovaj sistem), "
-                        "ili kad ponovo objaviš ovaj sistem. Ispod je što je već dostupno "
-                        "(out-of-stock i predlog porudžbine po grupama).")
-                _render_sistem_report(_partial_iz_stavki(podaci.get("stavke") or []), False)
+                        "ili kad ponovo objaviš ovaj sistem. Ispod je što je već dostupno.")
+            _render_sistem_report(_base, False)
+
+        if not _pf:
+            st.markdown("<div style='margin-top:10px;padding:11px 14px;background:#fff7ed;border:1px solid #fed7aa;"
+                        "border-radius:10px;font-size:12.5px;color:#9a5b1e;'>💰 Deo <b>Profitabilnost</b> se pojavi čim "
+                        "ponovo objaviš ovaj sistem — tek pri objavi (novom verzijom aplikacije) se profit sačuva. "
+                        "Fajl je isti kao i do sad.</div>", unsafe_allow_html=True)
         return
 
     # ---------- KARTICA 3: IZVEŠTAJ PRODAJE (dashboard, pun ekran) ----------
@@ -3448,6 +3473,25 @@ with tab_obj:
                 if not _chip:
                     _chip = '<span style="color:#9ca3af;font-size:13px;">Nema objavljenih sistema za ovaj mesec.</span>'
                 st.markdown(_chip, unsafe_allow_html=True)
+
+                # --- Brisanje objavljenih izve\u0161taja za ovaj mesec ---
+                if _imaju:
+                    with st.expander("\uD83D\uDDD1\uFE0F Obri\u0161i objavljeni izve\u0161taj (" + _psel + ")"):
+                        st.caption("Izaberi sistem(e) za ovaj mesec koje \u017Eeli\u0161 da obri\u0161e\u0161, pa potvrdi. "
+                                   "Brisanje je trajno \u2014 posle mo\u017Ee\u0161 da objavi\u0161 nove.")
+                        _del_sel = st.multiselect("Sistemi za brisanje", _imaju, key="del_sis_" + _pmk)
+                        _del_ok = st.checkbox("Potvr\u0111ujem brisanje izabranih", key="del_ok_" + _pmk)
+                        if st.button("\uD83D\uDDD1\uFE0F Obri\u0161i izabrano", key="del_btn_" + _pmk,
+                                     disabled=not (_del_sel and _del_ok), use_container_width=True):
+                            _nbr = 0
+                            for _s in _del_sel:
+                                try:
+                                    sb_obrisi(_pmk, _s); _nbr += 1
+                                except Exception as _e:
+                                    st.error("Gre\u0161ka pri brisanju \u201E" + str(_s) + "\u201C: " + str(_e))
+                            if _nbr:
+                                st.success("Obrisano: " + str(_nbr) + " izve\u0161taj(a). Sad mo\u017Ee\u0161 da objavi\u0161 nove.")
+                                st.rerun()
 
     with st.container(border=True):
         st.markdown('<div class="obj-title">\U0001F5D3\uFE0F Plan objave (za koleginice)</div>', unsafe_allow_html=True)
