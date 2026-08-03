@@ -898,6 +898,9 @@ def admin_istorija_bulk(idk_naziv, cutoff_date, max_details=800):
             _datum = (_md.group(1) + ((" " + _md.group(2)) if _md.group(2) else "")) if _md else ""
             _ms = re.search(r'labelOrderStatus[^"]*"[^>]*>([^<]+)</span>', _row)
             _status = _norm_ws(_h.unescape(_ms.group(1))) if _ms else ""
+            _sl = _status.lower()
+            if ("otkaz" in _sl) or ("storn" in _sl) or ("odbij" in _sl) or ("ponist" in _sl) or ("poništ" in _sl):
+                continue  # otkazane/stornirane ne prikazujemo
             _mc = re.search(r'price-cell">\s*([\d.]+)\s*RSD', _row)
             _cena = (_mc.group(1) + " RSD") if _mc else ""
             cand.append((_hit, _oid, _datum, _status, _cena))
@@ -1033,22 +1036,27 @@ def prikazi_administraciju():
     [class*="st-key-axj_"] button{background:#f59e0b !important;border-color:#f59e0b !important;color:#fff !important;font-weight:600 !important;font-size:13px !important;padding:7px 12px !important;border-radius:8px !important;box-shadow:none !important;}
     [class*="st-key-axj_"] button:hover{background:#d97706 !important;border-color:#d97706 !important;}
     .stButton button[kind="primary"]{background:#7c3aed !important;border-color:#7c3aed !important;color:#fff !important;font-size:13.5px !important;padding:8px 14px !important;border-radius:8px !important;font-weight:600 !important;}
+    /* zaglavlje: mala, uredna dugmad */
+    [class*="st-key-adm_odjava"] button{font-size:12.5px !important;padding:5px 10px !important;border-radius:8px !important;min-height:0 !important;background:#fff !important;border:1px solid #e5e7eb !important;color:#6b7280 !important;font-weight:600 !important;box-shadow:none !important;}
+    [class*="st-key-adm_odjava"] button:hover{background:#f9fafb !important;color:#374151 !important;}
+    [class*="st-key-refresh_all_admin"] button{font-size:12.5px !important;padding:5px 10px !important;border-radius:8px !important;min-height:0 !important;background:#7c3aed !important;border-color:#7c3aed !important;color:#fff !important;font-weight:600 !important;box-shadow:none !important;}
+    [class*="st-key-refresh_all_admin"] button:hover{background:#6d28d9 !important;border-color:#6d28d9 !important;}
     .stMultiSelect [data-baseweb="tag"]{background:#f2effc !important;color:#5b21b6 !important;border:none !important;}
     .stMultiSelect [data-baseweb="tag"] span{color:#5b21b6 !important;}
     </style>""", unsafe_allow_html=True)
 
-    _hc1, _hc2 = st.columns([5, 1.7])
+    _hc1, _hc2 = st.columns([6.5, 1.4])
     with _hc1:
         st.markdown('<div class="adm-hdr"><div class="adm-logo"><div></div></div>'
                     '<span class="t1">VAPE Porudžbine</span><span class="t2">· Administracija</span></div>',
                     unsafe_allow_html=True)
     with _hc2:
-        st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
         if st.button("Odjava", key="adm_odjava", use_container_width=True):
             for _k in ("authenticated", "role"):
                 st.session_state.pop(_k, None)
             st.rerun()
-        if st.button("🔄 Ažuriraj podatke iz admina", key="refresh_all_admin",
+        if st.button("🔄 Ažuriraj iz admina", key="refresh_all_admin",
                      use_container_width=True, type="primary"):
             st.session_state["_req_refresh_admin"] = True
 
@@ -1182,8 +1190,6 @@ def prikazi_administraciju():
     if _rf and _rf.get("sis") == sistem and _rf.get("mes") == mesec_key:
         st.success("✅ Ažurirano iz admina — prethodne porudžbine i dopuna su spremni u svakom objektu. "
                    "Objekata sa porudžbinama posle 01.: " + str(_rf.get("n", 0)) + ".")
-    elif _bez_naziva:
-        st.caption("ℹ️ " + str(len(_bez_naziva)) + " objekata bez naziva. Klikni Ažuriraj podatke iz admina gore desno (ispod Odjave).")
 
     with st.expander("📦 Porudžbina ubačena za ceo sistem (grupna akcija)"):
         st.caption("Za sisteme gde mi direktno ubacujemo porudžbine (npr. BB TRADE, KNEZ) — jednim klikom se svi objekti označe kao Ubačena porudžbina i postaju pregledani. Ne koristiti za sisteme gde se objekti zovu pojedinačno.")
