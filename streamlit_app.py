@@ -49,16 +49,39 @@ def _sb():
 def sb_dostupan():
     return _sb() is not None
 
-def sb_objavi(mesec_key, sistem, podaci):
+def sb_objavi(mesec_key, sistem, podaci, xlsx_b64=None):
     cli = _sb()
     if cli is None:
         raise RuntimeError("Supabase nije podešen (SUPABASE_URL / SUPABASE_KEY u secrets).")
     payload = {"mesec": mesec_key, "sistem": sistem.strip(), "podaci": podaci}
-    cli.table("porudzbine").upsert(payload, on_conflict="mesec,sistem").execute()
+    if xlsx_b64:
+        payload["analitika_xlsx"] = xlsx_b64
+    try:
+        cli.table("porudzbine").upsert(payload, on_conflict="mesec,sistem").execute()
+    except Exception:
+        # kolona 'analitika_xlsx' možda ne postoji -> objavi bez nje (ne ruši objavu)
+        payload.pop("analitika_xlsx", None)
+        cli.table("porudzbine").upsert(payload, on_conflict="mesec,sistem").execute()
     # osvezi kes da koleginice odmah vide
-    for fn in (sb_meseci, sb_sisteme, sb_svi_sistemi, sb_ucitaj, sb_pregled):
+    for fn in (sb_meseci, sb_sisteme, sb_svi_sistemi, sb_ucitaj, sb_pregled, sb_ucitaj_xlsx):
         try: fn.clear()
         except Exception: pass
+
+
+@st.cache_data(ttl=60)
+def sb_ucitaj_xlsx(mesec_key, sistem):
+    """Vrati base64 analitika Excel-a za sistem/mesec (ili None). Odvojen upit da ne
+    opterećuje običan sb_ucitaj."""
+    cli = _sb()
+    if cli is None:
+        return None
+    try:
+        res = cli.table("porudzbine").select("analitika_xlsx").eq("mesec", mesec_key).eq("sistem", sistem).limit(1).execute()
+        if not res.data:
+            return None
+        return res.data[0].get("analitika_xlsx")
+    except Exception:
+        return None
 
 @st.cache_data(ttl=30)
 def sb_meseci():
@@ -331,44 +354,47 @@ def check_password():
     st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
-    html, body, .stApp { background: #12002a !important; font-family: 'Poppins', sans-serif; }
-    .stApp { background: linear-gradient(135deg, #12002a 0%, #1e0040 50%, #0d001f 100%) !important; }
+    html, body, .stApp { background: #f4f1fb !important; font-family: 'Poppins', sans-serif; }
+    .stApp { background: linear-gradient(135deg, #f7f5fc 0%, #efeaf8 55%, #f7f5fc 100%) !important; }
     header[data-testid="stHeader"] { background: transparent !important; }
     .stDeployButton { display: none; }
     footer { display: none; }
     #MainMenu { display: none; }
-    .block-container { max-width: 460px !important; margin: 0 auto !important; padding-top: 80px !important; }
+    .block-container { max-width: 440px !important; margin: 0 auto !important; padding-top: 90px !important; }
+    .login-card-wrap { background:#ffffff; border:1px solid #ece7f6; border-radius:20px; padding:34px 30px;
+        box-shadow:0 10px 40px rgba(124,58,237,0.10); }
     .stTextInput > div > div > input {
-        background: rgba(255,255,255,0.08) !important; border: 1px solid rgba(255,255,255,0.15) !important;
-        color: white !important; border-radius: 12px !important; padding: 12px 16px !important; font-size: 15px !important; }
-    .stTextInput > div > div > input::placeholder { color: rgba(255,255,255,0.35) !important; }
+        background: #ffffff !important; border: 1px solid #e3e0ee !important;
+        color: #1f2430 !important; border-radius: 12px !important; padding: 13px 16px !important; font-size: 15px !important; }
+    .stTextInput > div > div > input::placeholder { color: #9aa0ad !important; }
     .stTextInput > div > div > input:focus {
-        border-color: rgba(168,85,247,0.6) !important; box-shadow: 0 0 0 3px rgba(168,85,247,0.15) !important; }
+        border-color: #a855f7 !important; box-shadow: 0 0 0 3px rgba(168,85,247,0.14) !important; }
     .stButton > button {
         background: linear-gradient(135deg, #a855f7 0%, #ec4899 100%) !important; color: white !important;
         border: none !important; border-radius: 12px !important; padding: 13px 32px !important;
         font-weight: 700 !important; font-size: 15px !important; width: 100% !important;
-        box-shadow: 0 4px 20px rgba(168,85,247,0.35) !important; transition: opacity 0.2s !important; }
-    .stButton > button:hover { opacity: 0.88 !important; }
-    .stAlert { border-radius: 10px !important; background: rgba(220,38,38,0.15) !important;
-        border: 1px solid rgba(220,38,38,0.3) !important; color: #fca5a5 !important; }
+        box-shadow: 0 6px 20px rgba(168,85,247,0.28) !important; transition: opacity 0.2s !important; }
+    .stButton > button:hover { opacity: 0.9 !important; }
+    .stAlert { border-radius: 10px !important; background: #fdecec !important;
+        border: 1px solid #f6c9c9 !important; color: #b42318 !important; }
     </style>
     """, unsafe_allow_html=True)
     st.markdown("""
-    <div style="text-align:center; margin-bottom: 36px;">
-        <div style="display:inline-flex; align-items:center; gap:10px; margin-bottom: 24px;">
-            <div style="width:36px; height:36px; background:linear-gradient(135deg,#a855f7,#ec4899);
-                border-radius:9px; display:inline-flex; align-items:center; justify-content:center;">
-                <div style="width:12px; height:12px; background:white; border-radius:3px; opacity:0.95;"></div>
+    <div style="text-align:center; margin-bottom: 32px;">
+        <div style="display:inline-flex; align-items:center; gap:10px; margin-bottom: 22px;">
+            <div style="width:38px; height:38px; background:linear-gradient(135deg,#a855f7,#ec4899);
+                border-radius:10px; display:inline-flex; align-items:center; justify-content:center;
+                box-shadow:0 6px 18px rgba(168,85,247,0.3);">
+                <div style="width:13px; height:13px; background:white; border-radius:3px; opacity:0.95;"></div>
             </div>
-            <span style="font-size:22px; font-weight:700; color:white; letter-spacing:0.5px;">VAPE</span>
-            <span style="font-size:22px; font-weight:300; color:rgba(255,255,255,0.45);">Analitika</span>
+            <span style="font-size:22px; font-weight:800; color:#1f2430; letter-spacing:0.3px;">Vape Shop</span>
+            <span style="font-size:22px; font-weight:300; color:#a99bd1;">Porudžbine</span>
         </div>
-        <div style="height:1px; background:linear-gradient(90deg, transparent, rgba(255,255,255,0.12), transparent); margin-bottom:28px;"></div>
-        <h2 style="color:white; font-size:24px; font-weight:700; margin:0 0 8px 0; line-height:1.35;">
-            Dobrodošli u aplikaciju<br>Vape Shop-a!
+        <div style="height:1px; background:linear-gradient(90deg, transparent, #e3ddf2, transparent); margin-bottom:26px;"></div>
+        <h2 style="color:#1f2430; font-size:23px; font-weight:700; margin:0 0 8px 0; line-height:1.35;">
+            Dobrodošli 👋
         </h2>
-        <p style="color:rgba(255,255,255,0.4); font-size:14px; margin:0;">
+        <p style="color:#8b8fa0; font-size:14px; margin:0;">
             Unesite šifru za pristup sistemu
         </p>
     </div>
@@ -392,8 +418,8 @@ def check_password():
             st.error("Pogrešna šifra")
     st.markdown("""
     <div style="text-align:center; margin-top:28px;">
-        <p style="color:rgba(255,255,255,0.18); font-size:12px; margin:0;">
-            AMAN d.o.o. · Analitički sistem
+        <p style="color:#b9b3c9; font-size:12px; margin:0;">
+            Vape Shop · Sistem porudžbina
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -1707,119 +1733,286 @@ def prikazi_direktore():
         st.info("Još nema objavljenih izveštaja.")
         return
 
-    _c1, _c2 = st.columns([1, 1])
     _mlbls = [mesec_label(k) for k in _mes_keys]
-    with _c1:
-        _sel_lbl = st.selectbox("Mesec", _mlbls, index=0, key="dir_mes")
-    mesec_key = _mes_keys[_mlbls.index(_sel_lbl)]
-    _sisteme = sb_sisteme(mesec_key)
-    with _c2:
-        if not _sisteme:
-            st.info("Nema objavljenih sistema za ovaj mesec.")
+    _view = st.session_state.get("dir_view", "dash")
+
+    # ---- Render izveštaja po sistemu (isti prikaz za pune i delimične podatke) ----
+    def _render_sistem_report(dd, puno):
+        if puno:
+            tek = dd.get("prodaja_tekuci", {}) or {}
+            tek_kom = int(tek.get("kom", 0))
+            comp = dd.get("poredjenja", {}) or {}
+
+            def _delta_html(base):
+                if base and base.get("kom"):
+                    p = (tek_kom - int(base["kom"])) / int(base["kom"]) * 100.0
+                    arrow = "▲" if p >= 0 else "▼"
+                    col = "#16a34a" if p >= 0 else "#dc2626"
+                    return ('<span style="color:' + col + ';">' + arrow + " "
+                            + (("%.1f" % abs(p)).replace(".", ",")) + "%</span>")
+                return '<span style="color:#c4c7cf;">— nema podataka</span>'
+
+            _kpi = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:22px;">'
+            for (v, k) in [
+                (_fmt(tek_kom) + " <span style='font-size:13px;color:#9aa0ad;'>kom</span>", "Prodaja — " + str(tek.get("mesec", ""))),
+                (_delta_html(comp.get("prosli_mesec")), "vs prošli mesec"),
+                (_delta_html(comp.get("isti_mesec_lani")), "vs isti mesec lani"),
+                (_delta_html(comp.get("prosek_6m")), "vs 6-mesečni prosek"),
+            ]:
+                _kpi += ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:15px;padding:16px 18px;'
+                         'box-shadow:0 2px 12px rgba(80,40,140,.06);">'
+                         '<div style="font-size:22px;font-weight:800;color:#1f2430;">' + v + '</div>'
+                         '<div style="font-size:11.5px;color:#8b8fa0;margin-top:5px;font-weight:600;">' + k + '</div></div>')
+            _kpi += '</div>'
+            st.markdown(_kpi, unsafe_allow_html=True)
+
+            trend = dd.get("prodaja_trend", [])
+            _maxk = max([t["kom"] for t in trend] or [1]) or 1
+            _tr = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px;margin-bottom:20px;'
+                   'box-shadow:0 2px 12px rgba(80,40,140,.05);">'
+                   '<div style="font-size:15px;font-weight:800;margin-bottom:16px;">Prodaja — trend po mesecima (kom)</div>')
+            for t in trend:
+                _w = int(int(t["kom"]) / _maxk * 100)
+                _tr += ('<div style="display:grid;grid-template-columns:96px 1fr 96px;align-items:center;gap:12px;margin-bottom:9px;">'
+                        '<span style="font-size:12.5px;color:#4b5563;font-weight:600;">' + str(t["mesec"]) + '</span>'
+                        '<div style="height:12px;background:#f0ebf9;border-radius:20px;overflow:hidden;">'
+                        '<div style="height:100%;width:' + str(_w) + '%;background:linear-gradient(90deg,#a855f7,#ec4899);border-radius:20px;"></div></div>'
+                        '<span style="font-size:12.5px;text-align:right;font-weight:700;color:#4b5563;">' + _fmt(t["kom"]) + '</span></div>')
+            _tr += '</div>'
+            st.markdown(_tr, unsafe_allow_html=True)
+
+        grupe = dd.get("po_grupama", [])
+        if grupe:
+            _gt = "Prodaja po grupama" if puno else "Predlog porudžbine po grupama"
+            _gs = ("Udeo u ukupnoj prodaji sistema (tekući mesec)." if puno
+                   else "Udeo u predloženoj porudžbini po grupama (tekući mesec).")
+            _gtot = sum(int(g["kom"]) for g in grupe) or 1
+            _gmax = max(int(g["kom"]) for g in grupe) or 1
+            _gh = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px;margin-bottom:20px;'
+                   'box-shadow:0 2px 12px rgba(80,40,140,.05);">'
+                   '<div style="font-size:15px;font-weight:800;margin-bottom:4px;">' + _gt + '</div>'
+                   '<div style="font-size:12.5px;color:#9aa0ad;margin-bottom:16px;">' + _gs + '</div>')
+            for g in grupe:
+                _kom = int(g["kom"]); _udeo = int(round(_kom / _gtot * 100)); _w = int(_kom / _gmax * 100)
+                _gh += ('<div style="display:grid;grid-template-columns:150px 1fr 120px;align-items:center;gap:12px;margin-bottom:12px;">'
+                        '<span style="font-size:13px;font-weight:600;color:#374151;">' + _h_escape(str(g["grupa"])) + '</span>'
+                        '<div style="height:11px;background:#f0ebf9;border-radius:20px;overflow:hidden;">'
+                        '<div style="height:100%;width:' + str(_w) + '%;background:linear-gradient(90deg,#7c3aed,#c084fc);border-radius:20px;"></div></div>'
+                        '<span style="font-size:12.5px;text-align:right;font-weight:700;color:#4b5563;">' + _fmt(_kom) + ' · ' + str(_udeo) + '%</span></div>')
+            _gh += '</div>'
+            st.markdown(_gh, unsafe_allow_html=True)
+
+        oos = dd.get("oos", {}) or {}
+        if oos:
+            _oh = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px;margin-bottom:14px;'
+                   'box-shadow:0 2px 12px rgba(80,40,140,.05);">'
+                   '<div style="font-size:15px;font-weight:800;margin-bottom:4px;">Out of stock — izgubljena prodaja</div>'
+                   '<div style="font-size:12.5px;color:#9aa0ad;margin-bottom:16px;">Na osnovu dnevnog lagera: koliko komada je izgubljeno jer je artikal bio na nuli.</div>'
+                   '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;">'
+                   '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:14px;padding:16px;text-align:center;">'
+                   '<div style="font-size:24px;font-weight:800;color:#dc2626;">~' + _fmt(oos.get("izgubljeno_kom", 0)) + '</div>'
+                   '<div style="font-size:11.5px;color:#9b6b6b;margin-top:3px;font-weight:600;">Izgubljeno (kom)</div></div>'
+                   '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:14px;padding:16px;text-align:center;">'
+                   '<div style="font-size:24px;font-weight:800;color:#dc2626;">' + _fmt(oos.get("kombinacija_na_0", 0)) + '</div>'
+                   '<div style="font-size:11.5px;color:#9b6b6b;margin-top:3px;font-weight:600;">Kombinacija objekat × artikal na 0</div></div>'
+                   '</div></div>')
+            st.markdown(_oh, unsafe_allow_html=True)
+            _pa = dd.get("oos_po_artiklu", [])
+            if _pa:
+                _df = pd.DataFrame([{"Artikal": r["artikal"], "U koliko objekata na 0": r["objekata"],
+                                     "Izgubljeno (kom)": r["izgubljeno"]} for r in _pa])
+                st.dataframe(_df, hide_index=True, use_container_width=True)
+
+    def _partial_iz_stavki(stavke):
+        out = {}
+        g = {}
+        for s in stavke:
+            gg = str(s.get("grupa", "") or "—")
+            g[gg] = g.get(gg, 0) + int(s.get("kol", 0) or 0)
+        out["po_grupama"] = [{"grupa": k, "kom": v} for k, v in
+                             sorted(g.items(), key=lambda kv: kv[1], reverse=True) if v > 0]
+        _oi = [s for s in stavke if int(s.get("lager", 0) or 0) == 0 and int(s.get("pred", 0) or 0) > 0]
+        out["oos"] = {"kombinacija_na_0": len(_oi), "izgubljeno_kom": sum(int(s.get("pred", 0) or 0) for s in _oi)}
+        _da = {}
+        for s in _oi:
+            nz = str(s.get("naziv", ""))
+            e = _da.setdefault(nz, {"obj": set(), "izg": 0})
+            e["obj"].add(int(s["idk"])); e["izg"] += int(s.get("pred", 0) or 0)
+        _top = sorted(_da.items(), key=lambda kv: kv[1]["izg"], reverse=True)[:10]
+        out["oos_po_artiklu"] = [{"artikal": k, "objekata": len(v["obj"]), "izgubljeno": v["izg"]} for k, v in _top]
+        return out
+
+    # ---------- TABLA (dve kartice) ----------
+    if _view == "dash":
+        st.markdown('<div style="color:#6b7280;font-size:14px;margin:6px 0 20px;">Dobrodošli 👋 &nbsp;'
+                    'Pregled izveštaja i efikasnosti administracije.</div>', unsafe_allow_html=True)
+        st.markdown('<div style="font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:#9aa0ad;'
+                    'font-weight:700;margin-bottom:12px;">Kartice</div>', unsafe_allow_html=True)
+        _cc1, _cc2 = st.columns(2)
+        with _cc1:
+            with st.container(border=True):
+                st.markdown('<div style="font-size:32px;">📊</div>'
+                            '<div style="font-size:16px;font-weight:800;margin:6px 0 4px;">Izveštaj efikasnosti administracije</div>'
+                            '<div style="font-size:13px;color:#8b8fa0;line-height:1.5;margin-bottom:12px;">PDF izveštaj administracije i upozorenja koja je administracija prosledila direktoru.</div>',
+                            unsafe_allow_html=True)
+                if st.button("Otvori →", key="dir_open_efik", use_container_width=True):
+                    st.session_state["dir_view"] = "efikasnost"; st.rerun()
+        with _cc2:
+            with st.container(border=True):
+                st.markdown('<div style="font-size:32px;">📈</div>'
+                            '<div style="font-size:16px;font-weight:800;margin:6px 0 4px;">Detaljan izveštaj po sistemima</div>'
+                            '<div style="font-size:13px;color:#8b8fa0;line-height:1.5;margin-bottom:12px;">Prodaja, grupe, out-of-stock i preuzimanje analitike — po sistemu i mesecu.</div>',
+                            unsafe_allow_html=True)
+                if st.button("Otvori →", key="dir_open_sist", use_container_width=True):
+                    st.session_state["dir_view"] = "sistemi"; st.rerun()
+        return
+
+    if st.button("← Nazad na kartice", key="dir_back"):
+        st.session_state["dir_view"] = "dash"; st.rerun()
+
+    # ---------- KARTICA 1: EFIKASNOST ADMINISTRACIJE ----------
+    if _view == "efikasnost":
+        st.markdown('<div style="font-size:20px;font-weight:800;margin:6px 0 14px;">📊 Izveštaj efikasnosti administracije</div>', unsafe_allow_html=True)
+        _sel_lbl = st.selectbox("Mesec", _mlbls, index=0, key="dir_efik_mes")
+        mesec_key = _mes_keys[_mlbls.index(_sel_lbl)]
+        _pc1, _pc2 = st.columns([1, 2])
+        with _pc1:
+            if st.button("📄 Napravi PDF izveštaj", key="dir_pdf_make", use_container_width=True):
+                try:
+                    st.session_state["dir_pdf"] = napravi_pdf_izvestaj(mesec_key, _sel_lbl)
+                    st.session_state["dir_pdf_for"] = mesec_key
+                except Exception as _e:
+                    st.session_state["dir_pdf"] = None
+                    st.error("Greška pri pravljenju PDF-a: " + str(_e))
+        with _pc2:
+            if st.session_state.get("dir_pdf") and st.session_state.get("dir_pdf_for") == mesec_key:
+                st.download_button("⬇️ Preuzmi PDF", st.session_state["dir_pdf"],
+                    file_name="Izvestaj_administracije_" + mesec_key + ".pdf", mime="application/pdf",
+                    key="dir_pdf_dl", use_container_width=True)
+
+        st.markdown('<div style="margin:18px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;'
+                    'color:#9aa0ad;font-weight:700;">⚠️ Upozorenja prosleđena od administracije</div>', unsafe_allow_html=True)
+        st.caption("Objekti koje je administracija označila da su prosleđeni direktoru — problem, koliko treba/koliko je poručeno i šta je preduzeto.")
+
+        _kf = st.session_state.get("_komfull_dir")
+        if _kf is None:
+            _kf = sb_komitenti_full(); st.session_state["_komfull_dir"] = _kf
+
+        def _chip(on, txt):
+            _bg = "#dcfce7;color:#166534" if on else "#f3f4f6;color:#9ca3af"
+            return '<span style="background:' + _bg + ';padding:4px 11px;border-radius:20px;font-weight:600;font-size:12px;">' + txt + '</span>'
+
+        _found = 0
+        for _sis in sb_sisteme(mesec_key):
+            _pod = sb_ucitaj(mesec_key, _sis)
+            if not _pod or not _pod.get("stavke"):
+                continue
+            _po = {}
+            for s in _pod["stavke"]:
+                _po.setdefault(int(s["idk"]), []).append(s)
+            _obr = sb_load_obrada(mesec_key, _sis)
+            for _idk, _v in _obr.items():
+                if "Obavestila direktorku" not in (_v.get("reakcije") or []):
+                    continue
+                _lst = _po.get(int(_idk))
+                if not _lst:
+                    continue
+                _found += 1
+                nivo, n_nula, izgub = hitnost_objekta(_lst)
+                z = _zona_disp(nivo)
+                _naz = (_kf.get(int(_idk), {}) or {}).get("naziv", "") or ("ID " + str(_idk))
+                _treba = sum(int(a.get("kol", 0) or 0) for a in _lst)
+                _njih = sum(int(x) for x in (_v.get("njihova") or {}).values())
+                _reak = _v.get("reakcije") or []
+                _nap = _v.get("napomena", "") or ""
+                _bc = "#ef4444" if nivo == "crveno" else ("#f59e0b" if nivo == "zuto" else "#22c55e")
+                _html = ('<div style="background:#fff;border:1px solid #efeaf7;border-left:4px solid ' + _bc + ';'
+                         'border-radius:14px;padding:16px 18px;margin-bottom:12px;box-shadow:0 2px 12px rgba(80,40,140,.05);">'
+                         '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;">'
+                         '<span style="font-weight:700;font-size:14.5px;">' + _h_escape(_naz) + '</span>'
+                         '<span style="font-size:12px;color:#9aa0ad;">· ' + _h_escape(_sis) + '</span>'
+                         '<span style="margin-left:auto;font-size:12px;font-weight:700;color:' + _bc + ';">' + z[3] + '</span></div>'
+                         '<div style="font-size:13px;color:#4b5563;margin-bottom:11px;">Problem: <b>' + str(n_nula)
+                         + '</b> artikala na nuli · procenjeno izgubljeno <b>' + str(izgub) + '</b> kom/mesec.</div>'
+                         '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:11px;">'
+                         '<div style="background:#faf9fd;border-radius:10px;padding:8px 12px;">'
+                         '<div style="font-size:10.5px;color:#9aa0ad;text-transform:uppercase;font-weight:700;">Treba da poruči</div>'
+                         '<div style="font-size:16px;font-weight:800;color:#7c3aed;">' + _fmt(_treba) + ' kom</div></div>'
+                         '<div style="background:#faf9fd;border-radius:10px;padding:8px 12px;">'
+                         '<div style="font-size:10.5px;color:#9aa0ad;text-transform:uppercase;font-weight:700;">Poručio (njihovo)</div>'
+                         '<div style="font-size:16px;font-weight:800;color:' + ("#16a34a" if _njih > 0 else "#dc2626") + ';">' + _fmt(_njih) + ' kom</div></div>'
+                         '</div>'
+                         '<div style="display:flex;gap:8px;flex-wrap:wrap;' + ('margin-bottom:9px;' if _nap else '') + '">'
+                         + _chip("Pozvala sam" in _reak, "📞 Pozvano")
+                         + _chip("Poslala sam mejl" in _reak, "✉️ Mejl")
+                         + _chip(True, "👤 Prosleđeno direktoru")
+                         + '</div>'
+                         + (('<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:9px;padding:8px 12px;'
+                             'font-size:12.5px;color:#78500a;"><b style="color:#4b5563;">Napomena:</b> ' + _h_escape(_nap) + '</div>') if _nap else '')
+                         + '</div>')
+                st.markdown(_html, unsafe_allow_html=True)
+        if _found == 0:
+            st.caption("Nema upozorenja prosleđenih direktoru za ovaj mesec.")
+        return
+
+    # ---------- KARTICA 2: DETALJAN IZVEŠTAJ PO SISTEMIMA ----------
+    if _view == "sistemi":
+        st.markdown('<div style="font-size:20px;font-weight:800;margin:6px 0 12px;">📈 Detaljan izveštaj po sistemima</div>', unsafe_allow_html=True)
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            _sel_lbl = st.selectbox("Mesec", _mlbls, index=0, key="dir_sis_mes")
+        mesec_key = _mes_keys[_mlbls.index(_sel_lbl)]
+        _sisteme = sb_sisteme(mesec_key)
+        with _c2:
+            if not _sisteme:
+                st.info("Nema objavljenih sistema za ovaj mesec.")
+                return
+            sistem = st.selectbox("Sistem", _sisteme, index=0, key="dir_sis_sis")
+
+        st.markdown("<div style='margin:8px 0 14px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;"
+                    "color:#9aa0ad;font-weight:700;'>" + _h_escape(sistem) + " · " + _sel_lbl + "</div>",
+                    unsafe_allow_html=True)
+
+        podaci = sb_ucitaj(mesec_key, sistem)
+        if not podaci:
+            st.info("Izveštaj za ovaj sistem/mesec nije objavljen.")
             return
-        sistem = st.selectbox("Sistem", _sisteme, index=0, key="dir_sis")
 
-    st.markdown("<div style='margin:10px 0 16px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;"
-                "color:#9aa0ad;font-weight:700;'>📈 Mesečni izveštaj po sistemima · " + sistem + " · " + _sel_lbl + "</div>",
-                unsafe_allow_html=True)
+        # Preuzimanje analitike (Excel, bez sheeta o modelu)
+        _dl1, _dl2 = st.columns([1, 2])
+        with _dl1:
+            if st.button("⬇️ Pripremi analitiku (Excel)", key="dir_prep_xlsx", use_container_width=True):
+                _b = sb_ucitaj_xlsx(mesec_key, sistem)
+                if _b:
+                    import base64 as _b64
+                    try:
+                        st.session_state["dir_xlsx_bytes"] = _b64.b64decode(_b)
+                    except Exception:
+                        st.session_state["dir_xlsx_bytes"] = None
+                else:
+                    st.session_state["dir_xlsx_bytes"] = None
+                st.session_state["dir_xlsx_for"] = (mesec_key, sistem)
+        with _dl2:
+            if st.session_state.get("dir_xlsx_for") == (mesec_key, sistem):
+                _xb = st.session_state.get("dir_xlsx_bytes")
+                if _xb:
+                    st.download_button("⬇️ Sačuvaj Analitika.xlsx", _xb,
+                        file_name="Analitika_" + str(sistem).replace(" ", "_") + "_" + mesec_key + ".xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dir_dl_xlsx", use_container_width=True)
+                else:
+                    st.caption("Analitika za ovaj sistem nije dostupna (objavi ponovo novom verzijom + dodaj kolonu 'analitika_xlsx').")
+        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
 
-    podaci = sb_ucitaj(mesec_key, sistem)
-    if not podaci:
-        st.info("Izveštaj za ovaj sistem/mesec nije objavljen.")
+        d = podaci.get("direktor")
+        if d and d.get("prodaja_trend"):
+            _render_sistem_report(d, True)
+        else:
+            st.info("Prodaja, trend i profitabilnost se prikazuju kad analitičar ponovo objavi ovaj sistem "
+                    "novom verzijom aplikacije. Ispod je što je već dostupno iz trenutnih podataka "
+                    "(out-of-stock i predlog porudžbine po grupama).")
+            _render_sistem_report(_partial_iz_stavki(podaci.get("stavke") or []), False)
         return
-    d = podaci.get("direktor")
-    if not d or not d.get("prodaja_trend"):
-        st.warning("Ovaj sistem je objavljen pre nego što je dodat direktorski izveštaj. "
-                   "Analitičar treba samo ponovo da ga objavi (Objava izveštaja) da se generišu podaci za direktore.")
-        return
-
-    tek = d.get("prodaja_tekuci", {}) or {}
-    tek_kom = int(tek.get("kom", 0))
-    comp = d.get("poredjenja", {}) or {}
-
-    def _delta_html(base):
-        if base and base.get("kom"):
-            p = (tek_kom - int(base["kom"])) / int(base["kom"]) * 100.0
-            arrow = "▲" if p >= 0 else "▼"
-            col = "#16a34a" if p >= 0 else "#dc2626"
-            return ('<span style="color:' + col + ';">' + arrow + " "
-                    + (("%.1f" % abs(p)).replace(".", ",")) + "%</span>")
-        return '<span style="color:#c4c7cf;">— nema podataka</span>'
-
-    # KPI kartice
-    _kpi = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:22px;">'
-    _cards = [
-        (_fmt(tek_kom) + " <span style='font-size:13px;color:#9aa0ad;'>kom</span>", "Prodaja — " + str(tek.get("mesec", ""))),
-        (_delta_html(comp.get("prosli_mesec")), "vs prošli mesec"),
-        (_delta_html(comp.get("isti_mesec_lani")), "vs isti mesec lani"),
-        (_delta_html(comp.get("prosek_6m")), "vs 6-mesečni prosek"),
-    ]
-    for (v, k) in _cards:
-        _kpi += ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:15px;padding:16px 18px;'
-                 'box-shadow:0 2px 12px rgba(80,40,140,.06);">'
-                 '<div style="font-size:22px;font-weight:800;color:#1f2430;">' + v + '</div>'
-                 '<div style="font-size:11.5px;color:#8b8fa0;margin-top:5px;font-weight:600;">' + k + '</div></div>')
-    _kpi += '</div>'
-    st.markdown(_kpi, unsafe_allow_html=True)
-
-    # Trend
-    trend = d.get("prodaja_trend", [])
-    _maxk = max([t["kom"] for t in trend] or [1]) or 1
-    _tr = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px;margin-bottom:20px;'
-           'box-shadow:0 2px 12px rgba(80,40,140,.05);">'
-           '<div style="font-size:15px;font-weight:800;margin-bottom:16px;">Prodaja — trend po mesecima (kom)</div>')
-    for t in trend:
-        _w = int(int(t["kom"]) / _maxk * 100)
-        _tr += ('<div style="display:grid;grid-template-columns:96px 1fr 96px;align-items:center;gap:12px;margin-bottom:9px;">'
-                '<span style="font-size:12.5px;color:#4b5563;font-weight:600;">' + str(t["mesec"]) + '</span>'
-                '<div style="height:12px;background:#f0ebf9;border-radius:20px;overflow:hidden;">'
-                '<div style="height:100%;width:' + str(_w) + '%;background:linear-gradient(90deg,#a855f7,#ec4899);border-radius:20px;"></div></div>'
-                '<span style="font-size:12.5px;text-align:right;font-weight:700;color:#4b5563;">' + _fmt(t["kom"]) + '</span></div>')
-    _tr += '</div>'
-    st.markdown(_tr, unsafe_allow_html=True)
-
-    # Po grupama
-    grupe = d.get("po_grupama", [])
-    if grupe:
-        _gtot = sum(int(g["kom"]) for g in grupe) or 1
-        _gmax = max(int(g["kom"]) for g in grupe) or 1
-        _gh = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px;margin-bottom:20px;'
-               'box-shadow:0 2px 12px rgba(80,40,140,.05);">'
-               '<div style="font-size:15px;font-weight:800;margin-bottom:4px;">Prodaja po grupama</div>'
-               '<div style="font-size:12.5px;color:#9aa0ad;margin-bottom:16px;">Udeo u ukupnoj prodaji sistema (tekući mesec).</div>')
-        for g in grupe:
-            _kom = int(g["kom"]); _udeo = int(round(_kom / _gtot * 100)); _w = int(_kom / _gmax * 100)
-            _gh += ('<div style="display:grid;grid-template-columns:150px 1fr 120px;align-items:center;gap:12px;margin-bottom:12px;">'
-                    '<span style="font-size:13px;font-weight:600;color:#374151;">' + _h_escape(str(g["grupa"])) + '</span>'
-                    '<div style="height:11px;background:#f0ebf9;border-radius:20px;overflow:hidden;">'
-                    '<div style="height:100%;width:' + str(_w) + '%;background:linear-gradient(90deg,#7c3aed,#c084fc);border-radius:20px;"></div></div>'
-                    '<span style="font-size:12.5px;text-align:right;font-weight:700;color:#4b5563;">' + _fmt(_kom) + ' · ' + str(_udeo) + '%</span></div>')
-        _gh += '</div>'
-        st.markdown(_gh, unsafe_allow_html=True)
-
-    # OOS
-    oos = d.get("oos", {}) or {}
-    if oos:
-        _oh = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px;margin-bottom:14px;'
-               'box-shadow:0 2px 12px rgba(80,40,140,.05);">'
-               '<div style="font-size:15px;font-weight:800;margin-bottom:4px;">Out of stock — izgubljena prodaja</div>'
-               '<div style="font-size:12.5px;color:#9aa0ad;margin-bottom:16px;">Na osnovu dnevnog lagera: koliko komada je izgubljeno jer je artikal bio na nuli.</div>'
-               '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;">'
-               '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:14px;padding:16px;text-align:center;">'
-               '<div style="font-size:24px;font-weight:800;color:#dc2626;">~' + _fmt(oos.get("izgubljeno_kom", 0)) + '</div>'
-               '<div style="font-size:11.5px;color:#9b6b6b;margin-top:3px;font-weight:600;">Izgubljeno (kom)</div></div>'
-               '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:14px;padding:16px;text-align:center;">'
-               '<div style="font-size:24px;font-weight:800;color:#dc2626;">' + _fmt(oos.get("kombinacija_na_0", 0)) + '</div>'
-               '<div style="font-size:11.5px;color:#9b6b6b;margin-top:3px;font-weight:600;">Kombinacija objekat × artikal na 0</div></div>'
-               '</div></div>')
-        st.markdown(_oh, unsafe_allow_html=True)
-        _pa = d.get("oos_po_artiklu", [])
-        if _pa:
-            _df = pd.DataFrame([{"Artikal": r["artikal"], "U koliko objekata na 0": r["objekata"],
-                                 "Izgubljeno (kom)": r["izgubljeno"]} for r in _pa])
-            st.dataframe(_df, hide_index=True, use_container_width=True)
-
-    st.caption("Napomena: sekcija Profitabilnost objekata se dodaje uskoro (preslikava se iz analitike).")
 
 
 # =====================================================================
@@ -2423,7 +2616,7 @@ class PredictionEngine:
             })
         self.df_promo = pd.DataFrame(promo_rows).sort_values('Obrt_x', ascending=False)
 
-def create_excel(engine):
+def create_excel(engine, ukljuci_model=True):
     df=engine.df_result; ml=engine.mesec_labels; wb=Workbook()
     hf=PatternFill('solid',fgColor='2F5496'); hfn=Font(bold=True,color='FFFFFF',name='Arial',size=10)
     sfnt=Font(bold=True,name='Arial',size=9); dfn=Font(name='Arial',size=9)
@@ -2682,6 +2875,12 @@ def create_excel(engine):
         if i==1: cell.font=Font(bold=True,name='Arial',size=14,color='375623')
         elif '===' in line: cell.font=Font(bold=True,name='Arial',size=12,color='7030A0')
         else: cell.font=Font(name='Arial',size=10)
+    if not ukljuci_model:
+        try:
+            if "O modelu" in wb.sheetnames:
+                del wb["O modelu"]
+        except Exception:
+            pass
     buf=io.BytesIO(); wb.save(buf); buf.seek(0); return buf
 
 DEFAULT_EXCLUDED = "1023, 1027, 1034, 1043, 1057, 1060, 1061, 1076, 1315, 1347, 1349, 1359"
@@ -3085,7 +3284,14 @@ with tab_obj:
                             _payload["direktor"] = direktor_blok(_eng, _res)
                         except Exception:
                             _payload["direktor"] = None
-                        sb_objavi(_mk2, _osist, _payload)
+                        _xb64 = None
+                        try:
+                            import base64 as _b64
+                            _xbuf = create_excel(_eng, ukljuci_model=False)
+                            _xb64 = _b64.b64encode(_xbuf.getvalue()).decode("ascii")
+                        except Exception:
+                            _xb64 = None
+                        sb_objavi(_mk2, _osist, _payload, xlsx_b64=_xb64)
                         st.success(f"\u2705 Objavljeno: {_osist} \u2014 {_mlbl2} \u00b7 {len(_stavke)} stavki, {_payload['meta']['n_objekata']} objekata. Osveži (F5) da se ažurira lista gore.")
                     except Exception as _e:
                         st.error(f"Greška pri objavi: {_e}")
