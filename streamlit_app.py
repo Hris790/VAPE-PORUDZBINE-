@@ -629,6 +629,11 @@ def prikazi_administraciju():
     /* streamlit kontrole suptilnije */
     .stButton>button{border-radius:9px;font-weight:600;}
     button[data-testid="baseButton-primary"]{background:#7c3aed !important;border-color:#7c3aed !important;color:#fff !important;}
+    /* dugmad za slanje u admin — jasno obojena i krupnija */
+    [class*="st-key-axn_"] button{background:#17a34a !important;border-color:#17a34a !important;color:#fff !important;font-weight:700 !important;font-size:15px !important;padding:12px 8px !important;box-shadow:0 2px 8px rgba(23,163,74,.25) !important;}
+    [class*="st-key-axn_"] button:hover{background:#128a3e !important;border-color:#128a3e !important;}
+    [class*="st-key-axj_"] button{background:#f2820c !important;border-color:#f2820c !important;color:#fff !important;font-weight:700 !important;font-size:15px !important;padding:12px 8px !important;box-shadow:0 2px 8px rgba(242,130,12,.25) !important;}
+    [class*="st-key-axj_"] button:hover{background:#d97008 !important;border-color:#d97008 !important;}
     .stButton button[kind="primary"]{background:#7c3aed !important;border-color:#7c3aed !important;color:#fff !important;}
     .stMultiSelect [data-baseweb="tag"]{background:#f2effc !important;color:#5b21b6 !important;border:none !important;}
     .stMultiSelect [data-baseweb="tag"] span{color:#5b21b6 !important;}
@@ -881,41 +886,40 @@ def prikazi_administraciju():
             _nase_rows = [(sel_id, int(a["ida"]), int(a["kol"])) for a in _arts if int(a["kol"]) > 0]
             _njih_rows = [(sel_id, int(a["ida"]), int(_njihova_new.get(str(int(a["ida"])), 0)))
                           for a in _arts if int(_njihova_new.get(str(int(a["ida"])), 0)) > 0]
-            st.markdown('<div class="adm-lbl" style="margin-top:14px;">Ubaci u admin (šalje se direktno)</div>', unsafe_allow_html=True)
+            st.markdown('<div class="adm-lbl" style="margin-top:16px;">Ubaci u admin</div>', unsafe_allow_html=True)
             _nase_items = [{"idArticle": _a, "quantity": _q} for (_k, _a, _q) in _nase_rows]
             _njih_items = [{"idArticle": _a, "quantity": _q} for (_k, _a, _q) in _njih_rows]
+
+            def _push_admin(_tag, _items):
+                _sk = "admsent_" + str(sistem) + "_" + str(sel_id) + "_" + _tag
+                _prev = st.session_state.get(_sk)
+                if _prev and _prev.get("ok"):
+                    return  # već uspešno kreirano — ne šaljemo ponovo (bez duplih porudžbina)
+                with st.spinner("Šaljem u admin..."):
+                    _ok, _msg = posalji_u_admin(sel_id, _items)
+                st.session_state[_sk] = {"ok": _ok, "msg": _msg}
+
             _xa, _xb = st.columns(2)
             with _xa:
-                if st.button("📦 Naše količine → admin", key="axn_" + str(sel_id),
-                             use_container_width=True, disabled=(len(_nase_items) == 0),
-                             help="Naš predlog porudžbine — kreira porudžbinu u adminu"):
-                    with st.spinner("Šaljem u admin..."):
-                        _ok, _msg = posalji_u_admin(sel_id, _nase_items)
-                    (st.success if _ok else st.error)(_msg)
+                _clk_nas = st.button("📦 Naše količine → ADMIN", key="axn_" + str(sel_id),
+                                     type="primary", use_container_width=True,
+                                     disabled=(len(_nase_items) == 0))
             with _xb:
-                if st.button("📦 Njihove količine → admin", key="axj_" + str(sel_id),
-                             use_container_width=True, disabled=(len(_njih_items) == 0),
-                             help="Ono što su stvarno poručili (Njihova por.)"):
-                    with st.spinner("Šaljem u admin..."):
-                        _ok, _msg = posalji_u_admin(sel_id, _njih_items)
-                    (st.success if _ok else st.error)(_msg)
-            with st.expander("⬇️ Ili preuzmi Excel (ručni uvoz)"):
-                _ya, _yb = st.columns(2)
-                with _ya:
-                    st.download_button("Naše količine (.xlsx)",
-                        data=_admin_order_xlsx(_nase_rows),
-                        file_name="admin_" + str(sistem) + "_" + str(sel_id) + "_nase.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="dxn_" + str(sel_id), use_container_width=True,
-                        disabled=(len(_nase_rows) == 0))
-                with _yb:
-                    st.download_button("Njihove količine (.xlsx)",
-                        data=_admin_order_xlsx(_njih_rows),
-                        file_name="admin_" + str(sistem) + "_" + str(sel_id) + "_njihove.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="dxj_" + str(sel_id), use_container_width=True,
-                        disabled=(len(_njih_rows) == 0))
-                st.caption("Rezerva ako direktno slanje ne prođe: Porudžbine → Nova porudžbina iz Excel-a.")
+                _clk_nj = st.button("📦 Njihove količine → ADMIN", key="axj_" + str(sel_id),
+                                    type="primary", use_container_width=True,
+                                    disabled=(len(_njih_items) == 0))
+            if _clk_nas:
+                _push_admin("nas", _nase_items)
+            if _clk_nj:
+                _push_admin("njihov", _njih_items)
+            for _tag, _lbl in (("nas", "Naše"), ("njihov", "Njihove")):
+                _sk = "admsent_" + str(sistem) + "_" + str(sel_id) + "_" + _tag
+                _res = st.session_state.get(_sk)
+                if _res:
+                    (st.success if _res["ok"] else st.error)(_lbl + " → admin: " + _res["msg"])
+                    if st.button("↺ Pošalji ponovo (" + _lbl + ")", key="axr_" + _tag + "_" + str(sel_id)):
+                        st.session_state.pop(_sk, None)
+                        st.rerun()
         with _dc2:
             if "Ubačena porudžbina" in (v.get("reakcije") or []):
                 st.info("📦 Porudžbina je ubačena za ceo sistem (grupno).")
