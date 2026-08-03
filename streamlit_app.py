@@ -83,6 +83,36 @@ def sb_ucitaj_xlsx(mesec_key, sistem):
     except Exception:
         return None
 
+
+def sb_objavi_izvestaj_prodaje(html, xlsx_b64, mesec_label):
+    """Sačuvaj (samo poslednji) direktorski Izveštaj prodaje u tabelu izvestaj_prodaje."""
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    payload = {"kljuc": "latest", "html": html, "xlsx_b64": xlsx_b64,
+               "mesec_label": mesec_label or "",
+               "generisano": datetime.datetime.now().strftime("%d.%m.%Y %H:%M")}
+    cli.table("izvestaj_prodaje").upsert(payload, on_conflict="kljuc").execute()
+    try:
+        sb_ucitaj_izvestaj_prodaje.clear()
+    except Exception:
+        pass
+
+
+@st.cache_data(ttl=60)
+def sb_ucitaj_izvestaj_prodaje():
+    cli = _sb()
+    if cli is None:
+        return None
+    try:
+        res = cli.table("izvestaj_prodaje").select("html,xlsx_b64,mesec_label,generisano").eq("kljuc", "latest").limit(1).execute()
+        if not res.data:
+            return None
+        return res.data[0]
+    except Exception:
+        return None
+
+
 @st.cache_data(ttl=30)
 def sb_meseci():
     cli = _sb()
@@ -1848,7 +1878,7 @@ def prikazi_direktore():
                     'Pregled izveštaja i efikasnosti administracije.</div>', unsafe_allow_html=True)
         st.markdown('<div style="font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:#9aa0ad;'
                     'font-weight:700;margin-bottom:12px;">Kartice</div>', unsafe_allow_html=True)
-        _cc1, _cc2 = st.columns(2)
+        _cc1, _cc2, _cc3 = st.columns(3)
         with _cc1:
             with st.container(border=True):
                 st.markdown('<div style="font-size:32px;">📊</div>'
@@ -1865,6 +1895,14 @@ def prikazi_direktore():
                             unsafe_allow_html=True)
                 if st.button("Otvori →", key="dir_open_sist", use_container_width=True):
                     st.session_state["dir_view"] = "sistemi"; st.rerun()
+        with _cc3:
+            with st.container(border=True):
+                st.markdown('<div style="font-size:32px;">💹</div>'
+                            '<div style="font-size:16px;font-weight:800;margin:6px 0 4px;">Izveštaj prodaje</div>'
+                            '<div style="font-size:13px;color:#8b8fa0;line-height:1.5;margin-bottom:12px;">Kompletan dashboard: prodaja, uspešnost akcije, profitabilnost, zalihe — plus izvoz u Excel.</div>',
+                            unsafe_allow_html=True)
+                if st.button("Otvori →", key="dir_open_prod", use_container_width=True):
+                    st.session_state["dir_view"] = "prodaja"; st.rerun()
         return
 
     if st.button("← Nazad na kartice", key="dir_back"):
@@ -2012,6 +2050,33 @@ def prikazi_direktore():
                     "novom verzijom aplikacije. Ispod je što je već dostupno iz trenutnih podataka "
                     "(out-of-stock i predlog porudžbine po grupama).")
             _render_sistem_report(_partial_iz_stavki(podaci.get("stavke") or []), False)
+        return
+
+    # ---------- KARTICA 3: IZVEŠTAJ PRODAJE (dashboard) ----------
+    if _view == "prodaja":
+        st.markdown('<div style="font-size:20px;font-weight:800;margin:6px 0 12px;">💹 Izveštaj prodaje</div>', unsafe_allow_html=True)
+        _izv = sb_ucitaj_izvestaj_prodaje()
+        if not _izv or not _izv.get("html"):
+            st.info("Izveštaj prodaje još nije objavljen. Analitičar ga pravi u delu Objava izveštaja → Izveštaj prodaje.")
+            return
+        _mlbl = _izv.get("mesec_label") or ""
+        _gen = _izv.get("generisano") or ""
+        _tc1, _tc2 = st.columns([2, 1])
+        with _tc1:
+            st.caption("Poslednji mesec: " + str(_mlbl) + ("  ·  generisano " + str(_gen) if _gen else ""))
+        with _tc2:
+            _xb64 = _izv.get("xlsx_b64")
+            if _xb64:
+                try:
+                    import base64 as _b64d
+                    st.download_button("⬇️ Izvezi u Excel", _b64d.b64decode(_xb64),
+                        file_name="Izvestaj_prodaje.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dir_prod_xlsx", use_container_width=True)
+                except Exception:
+                    pass
+        import streamlit.components.v1 as _components
+        _components.html(_izv["html"], height=1400, scrolling=True)
         return
 
 
@@ -3206,6 +3271,44 @@ with tab_obj:
                                 st.error("Greška pri čuvanju: " + str(_e))
                 except Exception as _e:
                     st.error("Ne mogu da pročitam fajl: " + str(_e))
+
+    with st.container(border=True):
+        st.markdown('<div class="obj-title">📊 Izveštaj prodaje (za direktore)</div>', unsafe_allow_html=True)
+        st.caption("Ubaci dve tabele (tabela sistemi + tabela troškova). Pravi se dashboard koji direktori vide kao treću karticu. Čuva se samo poslednji.")
+        if not sb_dostupan():
+            st.caption("Nedostupno dok Supabase nije podešen.")
+        else:
+            _ip_c1, _ip_c2 = st.columns(2)
+            with _ip_c1:
+                _up_sis = st.file_uploader("Tabela sistemi (.xlsx)", type=['xlsx'], key="izp_sis")
+            with _ip_c2:
+                _up_tro = st.file_uploader("Tabela troškova (.xlsx)", type=['xlsx'], key="izp_tro")
+            _ip_q1 = st.radio("Tip izveštaja", ["Potpun (sve 4 kartice)", "Nepotpun (Prodaja + Uspešnost akcije)"],
+                              key="izp_potpun", horizontal=True)
+            _potpun = _ip_q1.startswith("Potpun")
+            _iskljuci = False
+            if _potpun:
+                _ip_q2 = st.radio("Poslednji mesec u profitabilnosti?", ["Uključi", "Isključi"],
+                                  key="izp_iskljuci", horizontal=True)
+                _iskljuci = (_ip_q2 == "Isključi")
+            if _up_sis is not None and _up_tro is not None:
+                if st.button("📊 Generiši i objavi izveštaj prodaje", key="izp_gen", use_container_width=True):
+                    try:
+                        import io as _io2, base64 as _b64i
+                        import izvestaj_prodaje as _izp
+                        with st.spinner("Generišem izveštaj prodaje (može par sekundi)..."):
+                            _html, _xlsx, _mes = _izp.generisi_izvestaj_prodaje(
+                                _io2.BytesIO(_up_sis.getvalue()), _io2.BytesIO(_up_tro.getvalue()),
+                                potpun=_potpun, iskljuci_poslednji=_iskljuci)
+                            _xb64 = _b64i.b64encode(_xlsx).decode("ascii") if _xlsx else ""
+                            sb_objavi_izvestaj_prodaje(_html, _xb64, _mes)
+                        st.success("✅ Izveštaj prodaje objavljen (" + str(_mes) + "). Direktori ga vide u trećoj kartici.")
+                    except ModuleNotFoundError:
+                        st.error("Nedostaje fajl izvestaj_prodaje.py u projektu — dodaj ga na GitHub pored streamlit_app.py.")
+                    except Exception as _e:
+                        st.error("Greška: " + str(_e))
+                        import traceback as _tb2
+                        st.code(_tb2.format_exc())
 
     with st.container(border=True):
         st.markdown('<div class="obj-title"><span class="obj-badge">1</span> Učitaj Excel jednog sistema</div>', unsafe_allow_html=True)
