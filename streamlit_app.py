@@ -612,6 +612,16 @@ def _norm_ws(t):
     return re.sub(r"\s+", " ", (t or "")).strip()
 
 
+def _clean_komitent_naziv(t):
+    """Skini rep tipa ' - [mejl] VP' iz naziva komitenta (kako izgleda u padajucem
+    spisku), da bi se poklopio sa imenom u listi porudzbina."""
+    import re
+    t = _norm_ws(t)
+    t = re.sub(r'\s*-\s*\[[^\]]*\]\s*[A-Za-z]{0,3}\s*$', '', t)  # ' - [..] VP'
+    t = re.sub(r'\s*\[[^\]]*\]\s*[A-Za-z]{0,3}\s*$', '', t)      # '[..] VP' bez crtice
+    return _norm_ws(t)
+
+
 def admin_build_komitenti():
     """Napravi mapu {id_kupca: naziv} iz padajuce liste na stranici jedne porudzbine
     i sacuvaj u Supabase tabelu 'komitenti'. Vraca (broj, greska)."""
@@ -630,7 +640,7 @@ def admin_build_komitenti():
             return (0, "Ne mogu da nađem listu komitenata.")
         mapa = {}
         for _v, _naz in re.findall(r'<option value="(\d+)"[^>]*>(.*?)</option>', _sel.group(1), re.S):
-            mapa[int(_v)] = _norm_ws(html.unescape(_naz))
+            mapa[int(_v)] = _clean_komitent_naziv(html.unescape(_naz))
         if not mapa:
             return (0, "Lista komitenata je prazna.")
         try:
@@ -669,14 +679,21 @@ def admin_istorija_komitenta(id_kupca, naziv, datum_od, datum_do, max_por=40):
     """Vrati listu porudzbina komitenta iz admina u periodu [datum_od, datum_do]
     (format dd.MM.yyyy), sa stavkama. Vraca (lista, greska)."""
     import re, html as _h
+    import datetime as _dt
     s, base, err = _admin_session()
     if err:
         return ([], err)
-    naziv_n = _norm_ws(naziv)
+    naziv_n = _clean_komitent_naziv(naziv)
+    # granica: datum_od (dd.MM.yyyy) -> date za poredjenje na nasoj strani
     try:
+        _cut = _dt.datetime.strptime(datum_od, "%d.%m.%Y").date()
+    except Exception:
+        _cut = None
+    try:
+        # Prazan datum na serveru = vrati sve, pa filtriramo kod nas (izbegava format datuma).
         resp = s.post(base + "/orders", data={
             "orderStatuses": ["1", "10", "20", "30", "40", "50", "60", "70", "80", "90", "95"],
-            "keyword": "", "idLoad": "", "startDate": datum_od, "endDate": datum_do},
+            "keyword": "", "idLoad": "", "startDate": "", "endDate": ""},
             headers={"Referer": base + "/orders", "X-Requested-With": "XMLHttpRequest"}, timeout=90)
         body = resp.text or ""
         rezultat = []
@@ -692,6 +709,14 @@ def admin_istorija_komitenta(id_kupca, naziv, datum_od, datum_do, max_por=40):
             _oid = _mid.group(1)
             _md = re.search(r'(\d{2}\.\d{2}\.\d{4})(?:\s+(\d{2}:\d{2}))?', _rowtxt)
             _datum = (_md.group(1) + (" " + _md.group(2) if _md.group(2) else "")) if _md else ""
+            # filter po datumu (poslednja ~3 meseca)
+            if _cut and _md:
+                try:
+                    _dd = _dt.datetime.strptime(_md.group(1), "%d.%m.%Y").date()
+                    if _dd < _cut:
+                        continue
+                except Exception:
+                    pass
             _ms = re.search(r'labelOrderStatus[^"]*"[^>]*>([^<]+)</span>', _row)
             _status = _norm_ws(_h.unescape(_ms.group(1))) if _ms else ""
             _mc = re.search(r'price-cell">\s*([\d.]+)\s*RSD', _row)
