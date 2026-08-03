@@ -84,15 +84,20 @@ def sb_ucitaj_xlsx(mesec_key, sistem):
         return None
 
 
-def sb_objavi_izvestaj_prodaje(html, xlsx_b64, mesec_label):
+def sb_objavi_izvestaj_prodaje(html, xlsx_b64, mesec_label, prodaja_json=""):
     """Sačuvaj (samo poslednji) direktorski Izveštaj prodaje u tabelu izvestaj_prodaje."""
     cli = _sb()
     if cli is None:
         raise RuntimeError("Supabase nije podešen.")
     payload = {"kljuc": "latest", "html": html, "xlsx_b64": xlsx_b64,
-               "mesec_label": mesec_label or "",
+               "mesec_label": mesec_label or "", "prodaja_json": prodaja_json or "",
                "generisano": datetime.datetime.now().strftime("%d.%m.%Y %H:%M")}
-    cli.table("izvestaj_prodaje").upsert(payload, on_conflict="kljuc").execute()
+    try:
+        cli.table("izvestaj_prodaje").upsert(payload, on_conflict="kljuc").execute()
+    except Exception:
+        # kolona prodaja_json možda ne postoji -> sačuvaj bez nje
+        payload.pop("prodaja_json", None)
+        cli.table("izvestaj_prodaje").upsert(payload, on_conflict="kljuc").execute()
     try:
         sb_ucitaj_izvestaj_prodaje.clear()
     except Exception:
@@ -104,6 +109,12 @@ def sb_ucitaj_izvestaj_prodaje():
     cli = _sb()
     if cli is None:
         return None
+    try:
+        res = cli.table("izvestaj_prodaje").select("html,xlsx_b64,mesec_label,generisano,prodaja_json").eq("kljuc", "latest").limit(1).execute()
+        if res.data:
+            return res.data[0]
+    except Exception:
+        pass
     try:
         res = cli.table("izvestaj_prodaje").select("html,xlsx_b64,mesec_label,generisano").eq("kljuc", "latest").limit(1).execute()
         if not res.data:
@@ -1709,6 +1720,8 @@ def prikazi_administraciju():
             if st.button("💾 Sačuvaj status", key="savest_" + str(sel_id), type="primary", disabled=_zakljucan):
                 if not _can:
                     st.error("Izaberi bar jednu reakciju — ne može da se sačuva samo napomena.")
+                elif ("Obavestila direktorku" in react) and not (_nap or "").strip():
+                    st.error("Za prosleđivanje direktorki upiši napomenu — zašto prosleđuješ (obavezno).")
                 elif _tip_val == "njihov" and sum(int(x) for x in _njihova_new.values()) == 0:
                     st.error("Za opciju Po njihovom sistemu upiši koliko su poručili (Njihova por.) pre čuvanja.")
                 else:
@@ -1718,6 +1731,51 @@ def prikazi_administraciju():
                         st.rerun()
                     except Exception as _e:
                         st.error("Greška: " + str(_e))
+
+
+def _direktor_blok_iz_prodaje(sistem, sales):
+    """Napravi direktorski blok (prodaja_trend, poređenja, po grupama) iz tabele prodaje
+    (Izveštaj prodaje), tako da ne treba ponovna objava sistema. Vrati dict ili None."""
+    if not sales:
+        return None
+    po = sales.get("po_sistemu") or {}
+    _sn = str(sistem).strip().upper()
+    _key = None
+    for k in po.keys():
+        if str(k).strip().upper() == _sn:
+            _key = k
+            break
+    if _key is None:
+        return None
+    nazivi = sales.get("nazivi") or []
+    total = po[_key].get("total") or []
+    grupe = po[_key].get("grupe") or {}
+    _n = min(len(nazivi), len(total))
+    trend = [{"mesec": nazivi[i], "kom": int(total[i])} for i in range(_n)]
+    if not trend:
+        return None
+    d = {"prodaja_trend": trend, "prodaja_tekuci": trend[-1]}
+    comp = {}
+    if len(trend) >= 2:
+        comp["prosli_mesec"] = trend[-2]
+        _prev6 = trend[-7:-1] if len(trend) >= 7 else trend[:-1]
+        if _prev6:
+            comp["prosek_6m"] = {"kom": int(round(sum(t["kom"] for t in _prev6) / len(_prev6)))}
+    _last = str(trend[-1]["mesec"]).split()
+    if len(_last) == 2 and _last[1].isdigit():
+        _lani = _last[0] + " " + str(int(_last[1]) - 1)
+        for t in trend:
+            if t["mesec"] == _lani:
+                comp["isti_mesec_lani"] = t
+                break
+    d["poredjenja"] = comp
+    _pg = []
+    for grp, vals in grupe.items():
+        if vals:
+            _pg.append({"grupa": grp, "kom": int(vals[-1])})
+    _pg.sort(key=lambda x: -x["kom"])
+    d["po_grupama"] = _pg
+    return d
 
 
 def prikazi_direktore():
@@ -2046,10 +2104,28 @@ def prikazi_direktore():
         if d and d.get("prodaja_trend"):
             _render_sistem_report(d, True)
         else:
-            st.info("Prodaja, trend i profitabilnost se prikazuju kad analitičar ponovo objavi ovaj sistem "
-                    "novom verzijom aplikacije. Ispod je što je već dostupno iz trenutnih podataka "
-                    "(out-of-stock i predlog porudžbine po grupama).")
-            _render_sistem_report(_partial_iz_stavki(podaci.get("stavke") or []), False)
+            # Pokušaj iz tabele prodaje (Izveštaj prodaje) — bez ponovne objave
+            _sales = st.session_state.get("_sales_dir")
+            if _sales is None:
+                _izvp = sb_ucitaj_izvestaj_prodaje()
+                try:
+                    _sales = json.loads(_izvp["prodaja_json"]) if (_izvp and _izvp.get("prodaja_json")) else {}
+                except Exception:
+                    _sales = {}
+                st.session_state["_sales_dir"] = _sales
+            _dsales = _direktor_blok_iz_prodaje(sistem, _sales)
+            if _dsales:
+                _part = _partial_iz_stavki(podaci.get("stavke") or [])
+                _dsales["oos"] = _part.get("oos")
+                _dsales["oos_po_artiklu"] = _part.get("oos_po_artiklu")
+                st.caption("Prodaja i trend su iz tabele prodaje (poslednji objavljeni Izveštaj prodaje). "
+                           "Out-of-stock je iz porudžbine ovog sistema.")
+                _render_sistem_report(_dsales, True)
+            else:
+                st.info("Prodaja i trend se pojave kad objaviš Izveštaj prodaje (ako tabela prodaje sadrži ovaj sistem), "
+                        "ili kad ponovo objaviš ovaj sistem. Ispod je što je već dostupno "
+                        "(out-of-stock i predlog porudžbine po grupama).")
+                _render_sistem_report(_partial_iz_stavki(podaci.get("stavke") or []), False)
         return
 
     # ---------- KARTICA 3: IZVEŠTAJ PRODAJE (dashboard) ----------
@@ -3297,11 +3373,12 @@ with tab_obj:
                         import io as _io2, base64 as _b64i
                         import izvestaj_prodaje as _izp
                         with st.spinner("Generišem izveštaj prodaje (može par sekundi)..."):
-                            _html, _xlsx, _mes = _izp.generisi_izvestaj_prodaje(
+                            _html, _xlsx, _mes, _spr = _izp.generisi_izvestaj_prodaje(
                                 _io2.BytesIO(_up_sis.getvalue()), _io2.BytesIO(_up_tro.getvalue()),
                                 potpun=_potpun, iskljuci_poslednji=_iskljuci)
                             _xb64 = _b64i.b64encode(_xlsx).decode("ascii") if _xlsx else ""
-                            sb_objavi_izvestaj_prodaje(_html, _xb64, _mes)
+                            _pj = json.dumps(_spr, ensure_ascii=False) if _spr else ""
+                            sb_objavi_izvestaj_prodaje(_html, _xb64, _mes, prodaja_json=_pj)
                         st.success("✅ Izveštaj prodaje objavljen (" + str(_mes) + "). Direktori ga vide u trećoj kartici.")
                     except ModuleNotFoundError:
                         st.error("Nedostaje fajl izvestaj_prodaje.py u projektu — dodaj ga na GitHub pored streamlit_app.py.")
