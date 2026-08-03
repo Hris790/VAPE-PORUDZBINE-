@@ -523,6 +523,49 @@ def sb_komitenti_save(mapping):
         cli.table("komitenti").upsert(rows[_i:_i + 500], on_conflict="idk").execute()
 
 
+def sb_komitenti_full():
+    """Vrati {idk: {naziv,email,telefon,mesto,adresa}}. Radi i ako kolone kontakata
+    još ne postoje (tada su prazne)."""
+    cli = _sb()
+    if cli is None:
+        return {}
+    try:
+        res = cli.table("komitenti").select("idk,naziv,email,telefon,mesto,adresa").execute()
+        out = {}
+        for r in (res.data or []):
+            out[int(r["idk"])] = {"naziv": r.get("naziv") or "", "email": r.get("email") or "",
+                                  "telefon": r.get("telefon") or "", "mesto": r.get("mesto") or "",
+                                  "adresa": r.get("adresa") or ""}
+        return out
+    except Exception:
+        try:
+            res = cli.table("komitenti").select("idk,naziv").execute()
+            return {int(r["idk"]): {"naziv": r.get("naziv") or "", "email": "", "telefon": "",
+                                    "mesto": "", "adresa": ""} for r in (res.data or [])}
+        except Exception:
+            return {}
+
+
+def sb_komitenti_upsert_rows(rows):
+    """rows: lista dict sa poljima idk,naziv,email,telefon,mesto,adresa. Upsert po idk.
+    Vraca broj upisanih."""
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    clean = []
+    for r in rows:
+        try:
+            _id = int(r.get("idk"))
+        except Exception:
+            continue
+        clean.append({"idk": _id, "naziv": r.get("naziv") or "", "email": r.get("email") or "",
+                      "telefon": r.get("telefon") or "", "mesto": r.get("mesto") or "",
+                      "adresa": r.get("adresa") or ""})
+    for _i in range(0, len(clean), 500):
+        cli.table("komitenti").upsert(clean[_i:_i + 500], on_conflict="idk").execute()
+    return len(clean)
+
+
 def posalji_u_admin(id_kupca, items):
     """Prijavi se u admin i kreira porudzbinu direktno (bez rucnog uvoza).
     items = lista dict {'idArticle': int, 'quantity': int}.
@@ -610,6 +653,11 @@ def _admin_session():
 def _norm_ws(t):
     import re
     return re.sub(r"\s+", " ", (t or "")).strip()
+
+
+def _h_escape(t):
+    import html
+    return html.escape(str(t or ""))
 
 
 def _clean_komitent_naziv(t):
@@ -902,6 +950,9 @@ def prikazi_administraciju():
 
     obrada_map = sb_load_obrada(mesec_key, sistem)
     reviewed = set(idk for idk, v in obrada_map.items() if v.get("reakcije"))
+    if st.session_state.get("_komfull") is None:
+        st.session_state["_komfull"] = sb_komitenti_full()
+    komfull = st.session_state.get("_komfull") or {}
 
     n_obj = len(objekti)
     n_red = sum(1 for o in objekti if o["nivo"] == "crveno")
@@ -960,9 +1011,11 @@ def prikazi_administraciju():
             else:
                 stat = '<span class="stat">Nepregledano</span>'
             _rc = "row-red" if o["nivo"] == "crveno" else ("row-org" if o["nivo"] == "zuto" else "")
+            _nazlist = (komfull.get(int(o["idk"]), {}) or {}).get("naziv", "")
+            _nazcell = ('<td>' + _h_escape(_nazlist) + '</td>') if _nazlist else '<td class="mut">— naknadno</td>'
             _rows += ('<tr class="' + _rc + '">'
                 '<td class="idc">' + str(o["idk"]) + '</td>'
-                '<td class="mut">— naknadno</td>'
+                + _nazcell +
                 '<td class="ce" style="color:#d33;">' + str(o["na_nuli"]) + '</td>'
                 '<td class="ce">' + str(o["izgub"]) + '</td>'
                 '<td><span class="zona ' + z[0] + '"><span class="zd"></span>' + z[3] + '</span></td>'
@@ -1012,10 +1065,23 @@ def prikazi_administraciju():
             _tip_now = _loaded_tip
         _njihov_active = (_tip_now == "njihov")
         _revb = '<span class="revy">✓ Pregledano</span>' if sel_id in reviewed else '<span class="revn">Nepregledano</span>'
+        _kinfo = komfull.get(int(sel_id), {}) or {}
+        _knaziv = _kinfo.get("naziv", "")
+        _naz_html = ('<span style="font-weight:600;color:#2a2f3a;">' + _h_escape(_knaziv) + '</span>') if _knaziv else '<span class="mut">— naziv naknadno</span>'
         st.markdown('<div class="adm-dh"><span class="id">' + str(sel_id) + '</span>'
                     '<span class="zona ' + z[0] + '"><span class="zd"></span>' + z[3] + '</span>'
-                    '<span class="mut">— naziv naknadno</span>'
+                    + _naz_html +
                     '<span style="margin-left:auto;">' + _revb + '</span></div>', unsafe_allow_html=True)
+        _kbits = []
+        if _kinfo.get("mesto"):
+            _kbits.append("📍 " + _h_escape(_kinfo["mesto"]))
+        if _kinfo.get("telefon"):
+            _kbits.append("📞 " + _h_escape(_kinfo["telefon"]))
+        if _kinfo.get("email"):
+            _kbits.append("✉️ " + _h_escape(_kinfo["email"]))
+        if _kbits:
+            st.markdown('<div style="margin:-8px 0 12px;color:#6b7280;font-size:13px;">'
+                        + "&nbsp;&nbsp;·&nbsp;&nbsp;".join(_kbits) + '</div>', unsafe_allow_html=True)
 
         _dc1, _dc2 = st.columns([1.7, 1])
         with _dc1:
@@ -1094,19 +1160,16 @@ def prikazi_administraciju():
 
             st.markdown('<div class="adm-lbl" style="margin-top:18px;">🧾 Prethodne porudžbine (admin · ~3 meseca)</div>', unsafe_allow_html=True)
             _hk = "hist_" + str(sistem) + "_" + str(sel_id)
-            if st.session_state.get("_komitenti_map") is None:
-                st.session_state["_komitenti_map"] = sb_komitenti_map()
-            _kmap = st.session_state.get("_komitenti_map") or {}
-            _naziv_kom = _kmap.get(int(sel_id), "")
+            _naziv_kom = _knaziv
             if not _naziv_kom:
-                st.caption("Da bi se videla istorija, jednom treba povezati šifre komitenata iz admina.")
-                if st.button("🔗 Poveži šifre komitenata (jednokratno)", key="bk_" + str(sel_id)):
+                st.caption("Nema naziva za ovaj objekat — učitaj šifarnik komitenata u Objavi izveštaja (ili poveži iz admina).")
+                if st.button("🔗 Poveži šifre komitenata iz admina", key="bk_" + str(sel_id)):
                     with st.spinner("Čitam listu komitenata iz admina..."):
                         _bn, _be = admin_build_komitenti()
                     if _bn == 0:
                         st.error(_be or "Nije uspelo.")
                     else:
-                        st.session_state["_komitenti_map"] = sb_komitenti_map()
+                        st.session_state["_komfull"] = sb_komitenti_full()
                         st.success("Povezano " + str(_bn) + " komitenata.")
                         st.rerun()
             else:
@@ -2275,6 +2338,68 @@ with tab_obj:
             _curplan = sb_load_plan(_pmes)
             if _curplan:
                 st.caption("Trenutni plan za " + mesec_label(_pmes) + ": do " + str(_curplan))
+
+    with st.container(border=True):
+        st.markdown('<div class="obj-title">👥 Šifarnik komitenata (nazivi + kontakt)</div>', unsafe_allow_html=True)
+        st.caption("Učitaj Excel sa kolonama: ID, Naziv, e-mail, Kontakt, Mesto, Adresa. Koristi se za nazive objekata i istoriju porudžbina. Ubaci pre objave da se pokupe i nove radnje.")
+        if not sb_dostupan():
+            st.caption("Nedostupno dok Supabase nije podešen.")
+        else:
+            up_k = st.file_uploader("Excel šifarnika komitenata (.xlsx)", type=['xlsx', 'xls'],
+                                    key="kom_upl", label_visibility="collapsed")
+            if up_k is not None:
+                try:
+                    _dfk = pd.read_excel(up_k, dtype=str)
+                    _cmap = {}
+                    for _c in _dfk.columns:
+                        _cl = str(_c).strip().lower()
+                        if _cl == "id" or _cl == "idk":
+                            _cmap["idk"] = _c
+                        elif _cl.startswith("naziv"):
+                            _cmap["naziv"] = _c
+                        elif ("mail" in _cl) or ("mejl" in _cl):
+                            _cmap["email"] = _c
+                        elif _cl.startswith("kontakt") or _cl.startswith("telefon") or _cl.startswith("tel"):
+                            _cmap["telefon"] = _c
+                        elif _cl.startswith("mesto") or _cl.startswith("grad"):
+                            _cmap["mesto"] = _c
+                        elif _cl.startswith("adresa"):
+                            _cmap["adresa"] = _c
+                    if "idk" not in _cmap or "naziv" not in _cmap:
+                        st.error("Fajlu fale kolone. Potrebne su bar 'ID' i 'Naziv'. Pronađene kolone: " + ", ".join(str(c) for c in _dfk.columns))
+                    else:
+                        _krows = []
+                        for _, _rr in _dfk.iterrows():
+                            _idraw = _rr.get(_cmap["idk"])
+                            if _idraw is None or str(_idraw).strip() == "" or str(_idraw).strip().lower() == "nan":
+                                continue
+                            try:
+                                _idv = int(float(str(_idraw).strip()))
+                            except Exception:
+                                continue
+                            def _cell(_key):
+                                if _key not in _cmap:
+                                    return ""
+                                _val = _rr.get(_cmap[_key])
+                                if _val is None or str(_val).strip().lower() == "nan":
+                                    return ""
+                                return str(_val).strip()
+                            _krows.append({"idk": _idv,
+                                           "naziv": _clean_komitent_naziv(_cell("naziv")),
+                                           "email": _cell("email").replace(" ", ""),
+                                           "telefon": _cell("telefon"),
+                                           "mesto": _cell("mesto"),
+                                           "adresa": _cell("adresa")})
+                        st.caption("Pronađeno " + str(len(_krows)) + " komitenata u fajlu.")
+                        if st.button("💾 Sačuvaj šifarnik komitenata", key="kom_save", use_container_width=True):
+                            try:
+                                _n = sb_komitenti_upsert_rows(_krows)
+                                st.session_state["_komitenti_map"] = None
+                                st.success("Sačuvano/ažurirano " + str(_n) + " komitenata.")
+                            except Exception as _e:
+                                st.error("Greška pri čuvanju: " + str(_e) + "  (Da li si dodala kolone email/telefon/mesto/adresa u tabelu komitenti?)")
+                except Exception as _e:
+                    st.error("Ne mogu da pročitam fajl: " + str(_e))
 
     with st.container(border=True):
         st.markdown('<div class="obj-title"><span class="obj-badge">1</span> Učitaj Excel jednog sistema</div>', unsafe_allow_html=True)
