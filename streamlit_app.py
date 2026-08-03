@@ -3476,12 +3476,12 @@ with tab_obj:
 
                 # --- Brisanje objavljenih izve\u0161taja za ovaj mesec ---
                 if _imaju:
-                    with st.expander("\uD83D\uDDD1\uFE0F Obri\u0161i objavljeni izve\u0161taj (" + _psel + ")"):
+                    with st.expander("Obri\u0161i objavljeni izve\u0161taj (" + _psel + ")"):
                         st.caption("Izaberi sistem(e) za ovaj mesec koje \u017Eeli\u0161 da obri\u0161e\u0161, pa potvrdi. "
                                    "Brisanje je trajno \u2014 posle mo\u017Ee\u0161 da objavi\u0161 nove.")
                         _del_sel = st.multiselect("Sistemi za brisanje", _imaju, key="del_sis_" + _pmk)
                         _del_ok = st.checkbox("Potvr\u0111ujem brisanje izabranih", key="del_ok_" + _pmk)
-                        if st.button("\uD83D\uDDD1\uFE0F Obri\u0161i izabrano", key="del_btn_" + _pmk,
+                        if st.button("Obri\u0161i izabrano", key="del_btn_" + _pmk,
                                      disabled=not (_del_sel and _del_ok), use_container_width=True):
                             _nbr = 0
                             for _s in _del_sel:
