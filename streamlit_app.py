@@ -89,6 +89,27 @@ def sb_ucitaj(mesec_key, sistem):
     if not res.data: return None
     return res.data[0]["podaci"]
 
+def sb_predaj(mesec_key, sistem):
+    """Označi izveštaj (mesec+sistem) kao PREDAT — zaključava izmene za taj mesec.
+    Upisuje meta.predato u JSON reda u tabeli porudzbine."""
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    res = cli.table("porudzbine").select("podaci").eq("mesec", mesec_key).eq("sistem", sistem.strip()).limit(1).execute()
+    if not res.data:
+        raise RuntimeError("Nema objavljenog izveštaja za taj mesec/sistem.")
+    podaci = res.data[0].get("podaci") or {}
+    meta = podaci.get("meta") or {}
+    meta["predato"] = True
+    meta["predato_at"] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+    podaci["meta"] = meta
+    cli.table("porudzbine").update({"podaci": podaci}).eq("mesec", mesec_key).eq("sistem", sistem.strip()).execute()
+    try:
+        sb_ucitaj.clear()
+    except Exception:
+        pass
+
+
 @st.cache_data(ttl=30)
 def sb_pregled():
     """Lagani pregled svega objavljenog: mesec, sistem, kada (bez povlacenja stavki)."""
@@ -1037,15 +1058,17 @@ def prikazi_administraciju():
     [class*="st-key-axj_"] button:hover{background:#d97706 !important;border-color:#d97706 !important;}
     .stButton button[kind="primary"]{background:#7c3aed !important;border-color:#7c3aed !important;color:#fff !important;font-size:13.5px !important;padding:8px 14px !important;border-radius:8px !important;font-weight:600 !important;}
     /* zaglavlje: mala, uredna dugmad */
-    [class*="st-key-adm_odjava"] button{font-size:12.5px !important;padding:5px 10px !important;border-radius:8px !important;min-height:0 !important;background:#fff !important;border:1px solid #e5e7eb !important;color:#6b7280 !important;font-weight:600 !important;box-shadow:none !important;}
+    [class*="st-key-adm_odjava"] button{font-size:11px !important;padding:3px 8px !important;border-radius:7px !important;min-height:0 !important;line-height:1.2 !important;background:#fff !important;border:1px solid #e5e7eb !important;color:#6b7280 !important;font-weight:600 !important;box-shadow:none !important;}
     [class*="st-key-adm_odjava"] button:hover{background:#f9fafb !important;color:#374151 !important;}
-    [class*="st-key-refresh_all_admin"] button{font-size:12.5px !important;padding:5px 10px !important;border-radius:8px !important;min-height:0 !important;background:#7c3aed !important;border-color:#7c3aed !important;color:#fff !important;font-weight:600 !important;box-shadow:none !important;}
+    [class*="st-key-refresh_all_admin"] button{font-size:11px !important;padding:3px 8px !important;border-radius:7px !important;min-height:0 !important;line-height:1.2 !important;background:#7c3aed !important;border-color:#7c3aed !important;color:#fff !important;font-weight:600 !important;box-shadow:none !important;}
     [class*="st-key-refresh_all_admin"] button:hover{background:#6d28d9 !important;border-color:#6d28d9 !important;}
+    [class*="st-key-predaj_izvestaj"] button{font-size:11px !important;padding:3px 8px !important;border-radius:7px !important;min-height:0 !important;line-height:1.2 !important;background:#0ea5e9 !important;border-color:#0ea5e9 !important;color:#fff !important;font-weight:600 !important;box-shadow:none !important;}
+    [class*="st-key-predaj_izvestaj"] button:hover{background:#0284c7 !important;border-color:#0284c7 !important;}
     .stMultiSelect [data-baseweb="tag"]{background:#f2effc !important;color:#5b21b6 !important;border:none !important;}
     .stMultiSelect [data-baseweb="tag"] span{color:#5b21b6 !important;}
     </style>""", unsafe_allow_html=True)
 
-    _hc1, _hc2 = st.columns([6.5, 1.4])
+    _hc1, _hc2 = st.columns([7.5, 1.15])
     with _hc1:
         st.markdown('<div class="adm-hdr"><div class="adm-logo"><div></div></div>'
                     '<span class="t1">VAPE Porudžbine</span><span class="t2">· Administracija</span></div>',
@@ -1059,6 +1082,8 @@ def prikazi_administraciju():
         if st.button("🔄 Ažuriraj iz admina", key="refresh_all_admin",
                      use_container_width=True, type="primary"):
             st.session_state["_req_refresh_admin"] = True
+        if st.button("📝 Predaj izveštaj", key="predaj_izvestaj", use_container_width=True):
+            st.session_state["_req_predaj"] = True
 
     if not sb_dostupan():
         st.error("Veza sa bazom trenutno nije podešena. Javi se analitičaru.")
@@ -1126,6 +1151,17 @@ def prikazi_administraciju():
     meta = podaci.get("meta", {}) or {}
     _mes_kol = meta.get("meseci")
     _por_lbl = ("Porudžbina (" + str(_mes_kol).replace(".", ",") + " mes)") if _mes_kol else "Porudžbina"
+
+    # --- Zaključavanje meseca: predato ručno ili istekao rok (rok postavljaju direktori) ---
+    _predato = bool(meta.get("predato"))
+    _rok = meta.get("rok")  # 'YYYY-MM-DD' ako je postavljen
+    _rok_prosao = False
+    if _rok:
+        try:
+            _rok_prosao = datetime.date.today() > datetime.date.fromisoformat(str(_rok))
+        except Exception:
+            _rok_prosao = False
+    _zakljucan = _predato or _rok_prosao
     po_obj = {}
     for s in stavke:
         po_obj.setdefault(int(s["idk"]), []).append(s)
@@ -1161,9 +1197,41 @@ def prikazi_administraciju():
     st.markdown('<div class="adm-prog"><span class="t">Pregledano ' + str(n_done) + ' / ' + str(n_obj) + '</span>'
                 '<div class="bar"><div style="width:' + str(_pct) + '%"></div></div></div>', unsafe_allow_html=True)
 
+    # --- Predaja / zaključavanje izveštaja ---
+    if _zakljucan:
+        _pat = meta.get("predato_at")
+        if _predato and _pat:
+            _kada = " · predato " + str(_pat)
+        elif _rok_prosao:
+            _kada = " · rok istekao (" + str(_rok) + ")"
+        else:
+            _kada = ""
+        st.markdown('<div style="background:#eef2ff;border:1px solid #c7d2fe;border-radius:10px;'
+                    'padding:11px 14px;margin:4px 0 14px;color:#3730a3;font-size:13.5px;font-weight:600;">'
+                    '🔒 Izveštaj za ' + _sel_lbl + ' · ' + sistem + ' je zaključan' + _kada +
+                    '. Samo pregled — izmene, ažuriranje i slanje nisu mogući za ovaj mesec.</div>',
+                    unsafe_allow_html=True)
+        st.session_state.pop("_req_predaj", None)
+    elif st.session_state.get("_req_predaj"):
+        st.warning("Predajom zaključavaš " + _sel_lbl + " · " + sistem
+                   + " — posle toga nema izmena, ažuriranja ni slanja u admin za taj mesec. Sigurno?")
+        _pcf1, _pcf2, _pcf3 = st.columns([1, 1, 3])
+        with _pcf1:
+            if st.button("✅ Potvrdi predaju", key="predaj_ok", type="primary", use_container_width=True):
+                try:
+                    sb_predaj(mesec_key, sistem)
+                    st.session_state.pop("_req_predaj", None)
+                    st.rerun()
+                except Exception as _e:
+                    st.error("Greška pri predaji: " + str(_e))
+        with _pcf2:
+            if st.button("Otkaži", key="predaj_cancel", use_container_width=True):
+                st.session_state.pop("_req_predaj", None)
+                st.rerun()
+
     # --- Izvrši osvežavanje iz admina (traženo dugmetom "Ažuriraj" u zaglavlju) ---
     _bez_naziva = [o["idk"] for o in objekti if not ((komfull.get(int(o["idk"]), {}) or {}).get("naziv"))]
-    if st.session_state.pop("_req_refresh_admin", False):
+    if st.session_state.pop("_req_refresh_admin", False) and not _zakljucan:
         try:
             _cut_all = datetime.date(int(str(mesec_key).split("-")[0]), int(str(mesec_key).split("-")[1]), 1)
         except Exception:
@@ -1195,7 +1263,7 @@ def prikazi_administraciju():
         st.caption("Za sisteme gde mi direktno ubacujemo porudžbine (npr. BB TRADE, KNEZ) — jednim klikom se svi objekti označe kao Ubačena porudžbina i postaju pregledani. Ne koristiti za sisteme gde se objekti zovu pojedinačno.")
         _bc1, _bc2 = st.columns(2)
         with _bc1:
-            if st.button("✅ Označi sve: porudžbina ubačena", key="bulk_ubaci", use_container_width=True):
+            if st.button("✅ Označi sve: porudžbina ubačena", key="bulk_ubaci", use_container_width=True, disabled=_zakljucan):
                 try:
                     sb_bulk_ubaci(mesec_key, sistem, ids_sorted)
                     st.success("Sve označeno kao ubačena porudžbina.")
@@ -1203,7 +1271,7 @@ def prikazi_administraciju():
                 except Exception as _e:
                     st.error("Greška: " + str(_e))
         with _bc2:
-            if st.button("↩️ Poništi obradu celog sistema", key="bulk_reset", use_container_width=True):
+            if st.button("↩️ Poništi obradu celog sistema", key="bulk_reset", use_container_width=True, disabled=_zakljucan):
                 try:
                     sb_bulk_reset(mesec_key, sistem)
                     st.success("Obrada sistema poništena.")
@@ -1378,7 +1446,7 @@ def prikazi_administraciju():
                 "Dodatna por.": st.column_config.NumberColumn("Dodatna por.", help="Naša por. minus već poručeno posle 01. — ovo se šalje u admin"),
                 "Njihova por.": st.column_config.NumberColumn("Njihova por.", help="Koliko su stvarno poručili", min_value=0, step=1),
             }
-            if _njihov_active:
+            if _njihov_active and not _zakljucan:
                 _order = [" ", "Artikal", "Predikcija", "Lager (izv.)", "Posle 01.",
                           "Realni lager", "Naša por.", "Dodatna por.", "Njihova por."]
                 _edited = st.data_editor(_adf[_order], hide_index=True, use_container_width=True,
@@ -1393,6 +1461,8 @@ def prikazi_administraciju():
             else:
                 _order = [" ", "Artikal", "Predikcija", "Lager (izv.)", "Posle 01.",
                           "Realni lager", "Naša por.", "Dodatna por."]
+                if _njihov_active:  # zaključan njihov — prikaži i njihovu kolonu (samo pregled)
+                    _order.append("Njihova por.")
                 _sty = _adf[_order].style.set_properties(subset=["Dodatna por."], **{
                     "background-color": "#dcfce7", "color": "#14532d", "font-weight": "700"})
                 st.dataframe(_sty, hide_index=True, use_container_width=True, column_config=_colcfg)
@@ -1430,11 +1500,11 @@ def prikazi_administraciju():
             with _xa:
                 _clk_nas = st.button("📦 Naše → admin", key="axn_" + str(sel_id),
                                      use_container_width=True,
-                                     disabled=(len(_nase_items) == 0))
+                                     disabled=(len(_nase_items) == 0 or _zakljucan))
             with _xb:
                 _clk_nj = st.button("📦 Njihove → admin", key="axj_" + str(sel_id),
                                     use_container_width=True,
-                                    disabled=(len(_njih_items) == 0))
+                                    disabled=(len(_njih_items) == 0 or _zakljucan))
             if _clk_nas:
                 _push_admin("nas", _nase_items)
             if _clk_nj:
@@ -1503,7 +1573,7 @@ def prikazi_administraciju():
             _nap = st.text_area("Napomena", value=(v.get("napomena", "") or ""), key="nap_" + str(sel_id),
                                 height=72, label_visibility="collapsed",
                                 placeholder="npr. zvati posle 15h, tražiti vlasnika...")
-            if st.button("💾 Sačuvaj status", key="savest_" + str(sel_id), type="primary"):
+            if st.button("💾 Sačuvaj status", key="savest_" + str(sel_id), type="primary", disabled=_zakljucan):
                 if not _can:
                     st.error("Izaberi bar jednu reakciju — ne može da se sačuva samo napomena.")
                 elif _tip_val == "njihov" and sum(int(x) for x in _njihova_new.values()) == 0:
