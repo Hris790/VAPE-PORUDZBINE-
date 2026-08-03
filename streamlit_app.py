@@ -536,6 +536,8 @@ def posalji_u_admin(id_kupca, items):
         if not m2:
             return (False, "Ne mogu da nađem sigurnosni token na stranici za uvoz.")
         xlsx = _admin_order_xlsx([(id_kupca, it["idArticle"], it["quantity"]) for it in items])
+        # Jedan korak: uvoz Excel-a = admin ODMAH kreira porudžbinu (kao ručno).
+        # Namerno NE zovemo "create-order-from-in-memory-cart" da se ne naprave dve.
         up = s.post(base + "/orders-processing/load-order-from-excel",
                     files={"fileArticles": ("porudzbina.xlsx", xlsx,
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
@@ -543,24 +545,14 @@ def posalji_u_admin(id_kupca, items):
                     headers={"Referer": base + "/orders-processing/new-order-from-excel"},
                     timeout=90, allow_redirects=True)
         if up.status_code >= 400:
-            return (False, "Učitavanje Excel-a u admin nije prošlo (status " + str(up.status_code) + ").")
-        m3 = _tok.search(up.text)
-        _tok_val = (m3.group(1) if m3 else m2.group(1))
-        cr = s.post(base + "/orders-processing/create-order-from-in-memory-cart",
-                    json={"idUser": int(id_kupca), "items": items},
-                    headers={"RequestVerificationToken": _tok_val,
-                             "X-Requested-With": "XMLHttpRequest",
-                             "Referer": base + "/orders-processing/load-order-from-excel"},
-                    timeout=90)
-        if cr.status_code >= 400:
-            return (False, "Kreiranje porudžbine u adminu nije prošlo (status " + str(cr.status_code) + ").")
-        try:
-            j = cr.json()
-        except Exception:
-            return (False, "Admin je vratio neočekivan odgovor pri kreiranju porudžbine.")
-        if str(j.get("responseHeaderValue", "")).lower() == "ok":
-            return (True, "Porudžbina #" + str(j.get("idOrder", "?")) + " je kreirana u adminu.")
-        return (False, str(j.get("message", "Admin je odbio porudžbinu.")))
+            return (False, "Slanje u admin nije prošlo (status " + str(up.status_code) + ").")
+        _low = (up.text or "").lower()
+        if ("greška" in _low) or ("greska" in _low) or ("error" in _low) or ("nije prona" in _low):
+            return (False, "Admin je prijavio problem pri uvozu (proveri da su šifre artikala ispravne).")
+        _mid = re.search(r'/order/details/(\d+)', up.text or "")
+        if _mid:
+            return (True, "Porudžbina #" + _mid.group(1) + " je kreirana u adminu.")
+        return (True, "Porudžbina je poslata u admin (vidi „Pregled porudžbina“).")
     except requests.exceptions.RequestException as _e:
         return (False, "Greška u komunikaciji sa adminom: " + str(_e))
 
