@@ -23,6 +23,7 @@ def _cfg(key, default=None):
 
 APP_PASSWORD   = _cfg("APP_PASSWORD", "vape2024")     # analiticar (pun pristup)
 ADMIN_PASSWORD = _cfg("ADMIN_PASSWORD", "aman2024")   # administracija (koleginice)
+DIREKTOR_PASSWORD = _cfg("DIREKTOR_PASSWORD", "2026vape")  # direktori (pregled izveštaja)
 SUPABASE_URL   = _cfg("SUPABASE_URL", "")
 SUPABASE_KEY   = _cfg("SUPABASE_KEY", "")
 
@@ -382,6 +383,10 @@ def check_password():
         elif pwd == ADMIN_PASSWORD:
             st.session_state.authenticated = True
             st.session_state.role = "administracija"
+            st.rerun()
+        elif pwd == DIREKTOR_PASSWORD:
+            st.session_state.authenticated = True
+            st.session_state.role = "direktori"
             st.rerun()
         else:
             st.error("Pogrešna šifra")
@@ -1659,6 +1664,164 @@ def prikazi_administraciju():
                         st.error("Greška: " + str(_e))
 
 
+def prikazi_direktore():
+    st.set_page_config(page_title="VAPE — Direktori", page_icon="📈",
+                       layout="wide", initial_sidebar_state="collapsed")
+    st.markdown("""<style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+    section[data-testid="stSidebar"]{display:none !important;}
+    header[data-testid="stHeader"]{display:none !important;}
+    .stApp{background:#f4f1fb !important;font-family:'Inter',sans-serif;}
+    .block-container{max-width:1180px !important;padding-top:26px !important;}
+    [class*="st-key-dir_odjava"] button{font-size:11px !important;padding:4px 9px !important;border-radius:7px !important;
+        min-height:0 !important;background:#fff !important;border:1px solid #e5e7eb !important;color:#6b7280 !important;font-weight:600 !important;}
+    </style>""", unsafe_allow_html=True)
+
+    def _fmt(n):
+        try:
+            return f"{int(round(float(n))):,}".replace(",", ".")
+        except Exception:
+            return str(n)
+
+    _h1, _h2 = st.columns([7.5, 1.15])
+    with _h1:
+        st.markdown('<div style="display:flex;align-items:center;gap:12px;padding:4px 0 2px;">'
+                    '<div style="width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,#a855f7,#ec4899);"></div>'
+                    '<div><span style="font-size:19px;font-weight:800;color:#1f2430;">VAPE Porudžbine</span>'
+                    '<span style="font-size:13px;color:#8b8fa0;margin-left:6px;">· Direktori</span></div></div>',
+                    unsafe_allow_html=True)
+    with _h2:
+        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+        if st.button("Odjava", key="dir_odjava", use_container_width=True):
+            for _k in ("authenticated", "role"):
+                st.session_state.pop(_k, None)
+            st.rerun()
+
+    if not sb_dostupan():
+        st.error("Veza sa bazom nije podešena. Javi se analitičaru.")
+        return
+
+    _pub = sb_meseci()
+    _mes_keys = sorted({m["key"] for m in _pub}, reverse=True)
+    if not _mes_keys:
+        st.info("Još nema objavljenih izveštaja.")
+        return
+
+    _c1, _c2 = st.columns([1, 1])
+    _mlbls = [mesec_label(k) for k in _mes_keys]
+    with _c1:
+        _sel_lbl = st.selectbox("Mesec", _mlbls, index=0, key="dir_mes")
+    mesec_key = _mes_keys[_mlbls.index(_sel_lbl)]
+    _sisteme = sb_sisteme(mesec_key)
+    with _c2:
+        if not _sisteme:
+            st.info("Nema objavljenih sistema za ovaj mesec.")
+            return
+        sistem = st.selectbox("Sistem", _sisteme, index=0, key="dir_sis")
+
+    st.markdown("<div style='margin:10px 0 16px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;"
+                "color:#9aa0ad;font-weight:700;'>📈 Mesečni izveštaj po sistemima · " + sistem + " · " + _sel_lbl + "</div>",
+                unsafe_allow_html=True)
+
+    podaci = sb_ucitaj(mesec_key, sistem)
+    if not podaci:
+        st.info("Izveštaj za ovaj sistem/mesec nije objavljen.")
+        return
+    d = podaci.get("direktor")
+    if not d or not d.get("prodaja_trend"):
+        st.warning("Ovaj sistem je objavljen pre nego što je dodat direktorski izveštaj. "
+                   "Analitičar treba samo ponovo da ga objavi (Objava izveštaja) da se generišu podaci za direktore.")
+        return
+
+    tek = d.get("prodaja_tekuci", {}) or {}
+    tek_kom = int(tek.get("kom", 0))
+    comp = d.get("poredjenja", {}) or {}
+
+    def _delta_html(base):
+        if base and base.get("kom"):
+            p = (tek_kom - int(base["kom"])) / int(base["kom"]) * 100.0
+            arrow = "▲" if p >= 0 else "▼"
+            col = "#16a34a" if p >= 0 else "#dc2626"
+            return ('<span style="color:' + col + ';">' + arrow + " "
+                    + (("%.1f" % abs(p)).replace(".", ",")) + "%</span>")
+        return '<span style="color:#c4c7cf;">— nema podataka</span>'
+
+    # KPI kartice
+    _kpi = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:22px;">'
+    _cards = [
+        (_fmt(tek_kom) + " <span style='font-size:13px;color:#9aa0ad;'>kom</span>", "Prodaja — " + str(tek.get("mesec", ""))),
+        (_delta_html(comp.get("prosli_mesec")), "vs prošli mesec"),
+        (_delta_html(comp.get("isti_mesec_lani")), "vs isti mesec lani"),
+        (_delta_html(comp.get("prosek_6m")), "vs 6-mesečni prosek"),
+    ]
+    for (v, k) in _cards:
+        _kpi += ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:15px;padding:16px 18px;'
+                 'box-shadow:0 2px 12px rgba(80,40,140,.06);">'
+                 '<div style="font-size:22px;font-weight:800;color:#1f2430;">' + v + '</div>'
+                 '<div style="font-size:11.5px;color:#8b8fa0;margin-top:5px;font-weight:600;">' + k + '</div></div>')
+    _kpi += '</div>'
+    st.markdown(_kpi, unsafe_allow_html=True)
+
+    # Trend
+    trend = d.get("prodaja_trend", [])
+    _maxk = max([t["kom"] for t in trend] or [1]) or 1
+    _tr = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px;margin-bottom:20px;'
+           'box-shadow:0 2px 12px rgba(80,40,140,.05);">'
+           '<div style="font-size:15px;font-weight:800;margin-bottom:16px;">Prodaja — trend po mesecima (kom)</div>')
+    for t in trend:
+        _w = int(int(t["kom"]) / _maxk * 100)
+        _tr += ('<div style="display:grid;grid-template-columns:96px 1fr 96px;align-items:center;gap:12px;margin-bottom:9px;">'
+                '<span style="font-size:12.5px;color:#4b5563;font-weight:600;">' + str(t["mesec"]) + '</span>'
+                '<div style="height:12px;background:#f0ebf9;border-radius:20px;overflow:hidden;">'
+                '<div style="height:100%;width:' + str(_w) + '%;background:linear-gradient(90deg,#a855f7,#ec4899);border-radius:20px;"></div></div>'
+                '<span style="font-size:12.5px;text-align:right;font-weight:700;color:#4b5563;">' + _fmt(t["kom"]) + '</span></div>')
+    _tr += '</div>'
+    st.markdown(_tr, unsafe_allow_html=True)
+
+    # Po grupama
+    grupe = d.get("po_grupama", [])
+    if grupe:
+        _gtot = sum(int(g["kom"]) for g in grupe) or 1
+        _gmax = max(int(g["kom"]) for g in grupe) or 1
+        _gh = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px;margin-bottom:20px;'
+               'box-shadow:0 2px 12px rgba(80,40,140,.05);">'
+               '<div style="font-size:15px;font-weight:800;margin-bottom:4px;">Prodaja po grupama</div>'
+               '<div style="font-size:12.5px;color:#9aa0ad;margin-bottom:16px;">Udeo u ukupnoj prodaji sistema (tekući mesec).</div>')
+        for g in grupe:
+            _kom = int(g["kom"]); _udeo = int(round(_kom / _gtot * 100)); _w = int(_kom / _gmax * 100)
+            _gh += ('<div style="display:grid;grid-template-columns:150px 1fr 120px;align-items:center;gap:12px;margin-bottom:12px;">'
+                    '<span style="font-size:13px;font-weight:600;color:#374151;">' + _h_escape(str(g["grupa"])) + '</span>'
+                    '<div style="height:11px;background:#f0ebf9;border-radius:20px;overflow:hidden;">'
+                    '<div style="height:100%;width:' + str(_w) + '%;background:linear-gradient(90deg,#7c3aed,#c084fc);border-radius:20px;"></div></div>'
+                    '<span style="font-size:12.5px;text-align:right;font-weight:700;color:#4b5563;">' + _fmt(_kom) + ' · ' + str(_udeo) + '%</span></div>')
+        _gh += '</div>'
+        st.markdown(_gh, unsafe_allow_html=True)
+
+    # OOS
+    oos = d.get("oos", {}) or {}
+    if oos:
+        _oh = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px;margin-bottom:14px;'
+               'box-shadow:0 2px 12px rgba(80,40,140,.05);">'
+               '<div style="font-size:15px;font-weight:800;margin-bottom:4px;">Out of stock — izgubljena prodaja</div>'
+               '<div style="font-size:12.5px;color:#9aa0ad;margin-bottom:16px;">Na osnovu dnevnog lagera: koliko komada je izgubljeno jer je artikal bio na nuli.</div>'
+               '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;">'
+               '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:14px;padding:16px;text-align:center;">'
+               '<div style="font-size:24px;font-weight:800;color:#dc2626;">~' + _fmt(oos.get("izgubljeno_kom", 0)) + '</div>'
+               '<div style="font-size:11.5px;color:#9b6b6b;margin-top:3px;font-weight:600;">Izgubljeno (kom)</div></div>'
+               '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:14px;padding:16px;text-align:center;">'
+               '<div style="font-size:24px;font-weight:800;color:#dc2626;">' + _fmt(oos.get("kombinacija_na_0", 0)) + '</div>'
+               '<div style="font-size:11.5px;color:#9b6b6b;margin-top:3px;font-weight:600;">Kombinacija objekat × artikal na 0</div></div>'
+               '</div></div>')
+        st.markdown(_oh, unsafe_allow_html=True)
+        _pa = d.get("oos_po_artiklu", [])
+        if _pa:
+            _df = pd.DataFrame([{"Artikal": r["artikal"], "U koliko objekata na 0": r["objekata"],
+                                 "Izgubljeno (kom)": r["izgubljeno"]} for r in _pa])
+            st.dataframe(_df, hide_index=True, use_container_width=True)
+
+    st.caption("Napomena: sekcija Profitabilnost objekata se dodaje uskoro (preslikava se iz analitike).")
+
+
 # =====================================================================
 # ROUTER: prijava -> uloga
 # =====================================================================
@@ -1667,6 +1830,10 @@ if not check_password():
 
 if st.session_state.get("role") == "administracija":
     prikazi_administraciju()
+    st.stop()
+
+if st.session_state.get("role") == "direktori":
+    prikazi_direktore()
     st.stop()
 
 # --- od ovde nadole ide ANALITIČKI deo (pun pristup) ---
