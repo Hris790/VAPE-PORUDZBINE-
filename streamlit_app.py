@@ -393,6 +393,58 @@ def direktor_blok(engine, res):
     except Exception:
         pass
 
+    # ---- Prosečna prodaja po objektu (mesečno) ----
+    try:
+        _ppo = []
+        for lb in ml:
+            cp = _col(lb, "_Prodaja")
+            if cp:
+                _tot = float(res[cp].sum())
+                _no = int((res[cp] > 0).sum())
+                _ppo.append({"mesec": lb, "prosek": round(_tot / _no, 1) if _no else 0.0})
+        out["prosek_po_objektu"] = _ppo
+    except Exception:
+        pass
+
+    # ---- Mesečne grupe (za složeni grafikon) iz analitike (fallback ako nema tabele prodaje) ----
+    try:
+        if "Grupa" in res.columns:
+            _gm = {}
+            for lb in ml:
+                cp = _col(lb, "_Prodaja")
+                if cp:
+                    _gs = res.groupby("Grupa")[cp].sum()
+                    for _gn, _gv in _gs.items():
+                        _gm.setdefault(str(_gn), []).append(int(_gv))
+            if _gm:
+                out["nazivi"] = list(ml)
+                out["grupe_mesecno"] = _gm
+    except Exception:
+        pass
+
+    # ---- OOS po količinama za poslednji mesec ----
+    try:
+        _dfoos = getattr(engine, "df_oos", None)
+        if _dfoos is not None and len(_dfoos) > 0 and ml:
+            _last = ml[-1]
+            _colo = "OOS_" + str(_last)
+            _ok = {"mesec": _last, "izgubljeno_kom": 0, "objekata_na_0": 0, "po_artiklu": []}
+            if _colo in _dfoos.columns:
+                _sub = _dfoos[_dfoos[_colo] > 0]
+                _ok["izgubljeno_kom"] = int(round(_sub[_colo].sum()))
+                _per = (_sub.groupby("Naziv artikla")
+                        .agg(objekata=("ID KOMITENTA", "nunique"), izg=(_colo, "sum"))
+                        .reset_index().sort_values("izg", ascending=False))
+                _ok["po_artiklu"] = [{"artikal": str(r["Naziv artikla"]), "objekata": int(r["objekata"]),
+                                      "izgubljeno": int(round(r["izg"]))} for _, r in _per.iterrows()]
+            try:
+                _ok["objekata_na_0"] = int(res[res["Lager_danas"] == 0]["ID KOMITENTA"].nunique())
+            except Exception:
+                _ok["objekata_na_0"] = int((_dfoos.get("Lager_danas", 0) == 0).sum())
+            out["oos_kom"] = _ok
+    except Exception:
+        pass
+
     # ---- Profitabilnost (identično kao u analitici; puni se samo ako ima cena) ----
     try:
         if getattr(engine, "has_prices", False) and len(getattr(engine, "df_profit_obj", [])) > 0:
@@ -1846,6 +1898,13 @@ def _direktor_blok_iz_prodaje(sistem, sales):
             _pg.append({"grupa": grp, "kom": int(vals[-1])})
     _pg.sort(key=lambda x: -x["kom"])
     d["po_grupama"] = _pg
+    # Mesečne vrednosti po grupi (za složeni stub-grafikon) + nazivi meseca
+    d["nazivi"] = [nazivi[i] for i in range(_n)]
+    _gm = {}
+    for grp, vals in grupe.items():
+        vv = vals or []
+        _gm[str(grp)] = [int(vv[i]) if i < len(vv) else 0 for i in range(_n)]
+    d["grupe_mesecno"] = _gm
     return d
 
 
@@ -1925,23 +1984,30 @@ def prikazi_direktore():
             _kpi += '</div>'
             st.markdown(_kpi, unsafe_allow_html=True)
 
-            trend = dd.get("prodaja_trend", [])
-            _maxk = max([t["kom"] for t in trend] or [1]) or 1
-            _tr = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px;margin-bottom:20px;'
-                   'box-shadow:0 2px 12px rgba(80,40,140,.05);">'
-                   '<div style="font-size:15px;font-weight:800;margin-bottom:16px;">Prodaja — trend po mesecima (kom)</div>')
-            for t in trend:
-                _w = int(int(t["kom"]) / _maxk * 100)
-                _tr += ('<div style="display:grid;grid-template-columns:96px 1fr 96px;align-items:center;gap:12px;margin-bottom:9px;">'
-                        '<span style="font-size:12.5px;color:#4b5563;font-weight:600;">' + str(t["mesec"]) + '</span>'
-                        '<div style="height:12px;background:#f0ebf9;border-radius:20px;overflow:hidden;">'
-                        '<div style="height:100%;width:' + str(_w) + '%;background:linear-gradient(90deg,#a855f7,#ec4899);border-radius:20px;"></div></div>'
-                        '<span style="font-size:12.5px;text-align:right;font-weight:700;color:#4b5563;">' + _fmt(t["kom"]) + '</span></div>')
-            _tr += '</div>'
-            st.markdown(_tr, unsafe_allow_html=True)
+            # 2. Kombinovani grafikon: prodaja po mesecima i grupama (složeni stub)
+            _naz = dd.get("nazivi") or [str(t.get("mesec", "")) for t in dd.get("prodaja_trend", [])]
+            _gm = dd.get("grupe_mesecno") or {}
+            if _naz and _gm:
+                _render_stacked_chart(_naz, _gm)
+            else:
+                trend = dd.get("prodaja_trend", [])
+                _maxk = max([t["kom"] for t in trend] or [1]) or 1
+                _tr = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px;margin-bottom:20px;'
+                       'box-shadow:0 2px 12px rgba(80,40,140,.05);">'
+                       '<div style="font-size:15px;font-weight:800;margin-bottom:16px;">Prodaja — trend po mesecima (kom)</div>')
+                for t in trend:
+                    _w = int(int(t["kom"]) / _maxk * 100)
+                    _tr += ('<div style="display:grid;grid-template-columns:96px 1fr 96px;align-items:center;gap:12px;margin-bottom:9px;">'
+                            '<span style="font-size:12.5px;color:#4b5563;font-weight:600;">' + str(t["mesec"]) + '</span>'
+                            '<div style="height:12px;background:#f0ebf9;border-radius:20px;overflow:hidden;">'
+                            '<div style="height:100%;width:' + str(_w) + '%;background:linear-gradient(90deg,#a855f7,#ec4899);border-radius:20px;"></div></div>'
+                            '<span style="font-size:12.5px;text-align:right;font-weight:700;color:#4b5563;">' + _fmt(t["kom"]) + '</span></div>')
+                _tr += '</div>'
+                st.markdown(_tr, unsafe_allow_html=True)
 
+        # Predlog porudžbine po grupama — samo za parcijalni prikaz (kad nema mesečnih grupa)
         grupe = dd.get("po_grupama", [])
-        if grupe:
+        if grupe and not (dd.get("nazivi") and dd.get("grupe_mesecno")):
             _gt = "Prodaja po grupama" if puno else "Predlog porudžbine po grupama"
             _gs = ("Udeo u ukupnoj prodaji sistema (tekući mesec)." if puno
                    else "Udeo u predloženoj porudžbini po grupama (tekući mesec).")
@@ -1961,30 +2027,132 @@ def prikazi_direktore():
             _gh += '</div>'
             st.markdown(_gh, unsafe_allow_html=True)
 
+        # 3. Prosečna prodaja po objektu (line)
+        _ppo = dd.get("prosek_po_objektu") or []
+        if _ppo:
+            _render_prosek_line(_ppo)
+
+        # 4. Out of stock — po količinama (poslednji mesec)
+        _okd = dd.get("oos_kom") or {}
+        if _okd and (_okd.get("po_artiklu") or _okd.get("izgubljeno_kom") or _okd.get("objekata_na_0")):
+            _render_oos_kom(_okd)
+        else:
+            oos = dd.get("oos", {}) or {}
+            if oos:
+                _oh = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px;margin-bottom:14px;'
+                       'box-shadow:0 2px 12px rgba(80,40,140,.05);">'
+                       '<div style="font-size:15px;font-weight:800;margin-bottom:4px;">Out of stock — izgubljena prodaja</div>'
+                       '<div style="font-size:12.5px;color:#9aa0ad;margin-bottom:16px;">Na osnovu dnevnog lagera: koliko komada je izgubljeno jer je artikal bio na nuli.</div>'
+                       '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;">'
+                       '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:14px;padding:16px;text-align:center;">'
+                       '<div style="font-size:24px;font-weight:800;color:#dc2626;">~' + _fmt(oos.get("izgubljeno_kom", 0)) + '</div>'
+                       '<div style="font-size:11.5px;color:#9b6b6b;margin-top:3px;font-weight:600;">Izgubljeno (kom)</div></div>'
+                       '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:14px;padding:16px;text-align:center;">'
+                       '<div style="font-size:24px;font-weight:800;color:#dc2626;">' + _fmt(oos.get("kombinacija_na_0", 0)) + '</div>'
+                       '<div style="font-size:11.5px;color:#9b6b6b;margin-top:3px;font-weight:600;">Kombinacija objekat × artikal na 0</div></div>'
+                       '</div></div>')
+                st.markdown(_oh, unsafe_allow_html=True)
+                _pa = dd.get("oos_po_artiklu", [])
+                if _pa:
+                    _df = pd.DataFrame([{"Artikal": r["artikal"], "U koliko objekata na 0": r["objekata"],
+                                         "Izgubljeno (kom)": r["izgubljeno"]} for r in _pa])
+                    st.dataframe(_df, hide_index=True, use_container_width=True)
+
+        # 5. Profitabilnost (identično kao u analitici)
         _pf_blok = dd.get("profit") or {}
         if _pf_blok and (_pf_blok.get("total_bruto") is not None):
             _render_profit_blok(_pf_blok)
+
+    def _render_stacked_chart(nazivi, grupe_mesecno):
+        # boje po grupi (stabilan raspored)
+        _pal = ["#7c3aed", "#ec4899", "#f59e0b", "#0ea5e9", "#10b981", "#a855f7", "#f43f5e", "#14b8a6"]
+        _keys = sorted(grupe_mesecno.keys(), key=lambda k: -sum(grupe_mesecno[k]))
+        _boje = {k: _pal[i % len(_pal)] for i, k in enumerate(_keys)}
+        _n = len(nazivi)
+        _tot = [sum(int(grupe_mesecno[k][i]) if i < len(grupe_mesecno[k]) else 0 for k in _keys) for i in range(_n)]
+        _maxt = max(_tot or [1]) or 1
+        _cols = ""
+        for i in range(_n):
+            _hpx = int(_tot[i] / _maxt * 210)
+            _segs = ""
+            for k in _keys:
+                _v = int(grupe_mesecno[k][i]) if i < len(grupe_mesecno[k]) else 0
+                if _v > 0 and _tot[i] > 0:
+                    _segs = ('<div style="width:100%;height:' + ("%.2f" % (_v / _tot[i] * 100)) + '%;background:' + _boje[k] + ';"></div>') + _segs
+            _cols += ('<div style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:100%;min-width:0;">'
+                      '<div title="' + _h_escape(str(nazivi[i])) + ': ' + _fmt(_tot[i]) + ' kom" '
+                      'style="width:72%;height:' + str(_hpx) + 'px;border-radius:4px 4px 0 0;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end;box-shadow:0 1px 3px rgba(0,0,0,.06);">'
+                      + _segs + '</div>'
+                      '<div style="font-size:9px;color:#9aa0ad;margin-top:6px;font-weight:600;white-space:nowrap;transform:rotate(-30deg);transform-origin:center;">' + _h_escape(str(nazivi[i])) + '</div></div>')
+        _leg = ""
+        for k in _keys:
+            _leg += ('<div style="display:flex;align-items:center;gap:7px;font-size:12.5px;color:#374151;font-weight:600;">'
+                     '<span style="width:13px;height:13px;border-radius:4px;background:' + _boje[k] + ';"></span>' + _h_escape(str(k)) + '</div>')
+        _html = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px 14px;margin-bottom:20px;'
+                 'box-shadow:0 2px 12px rgba(80,40,140,.05);">'
+                 '<div style="font-size:15px;font-weight:800;margin-bottom:4px;">Prodaja po mesecima i grupama (kom)</div>'
+                 '<div style="font-size:12.5px;color:#9aa0ad;margin-bottom:16px;">Visina stuba je ukupna prodaja meseca; boje pokazuju koliko je koja grupa prodala.</div>'
+                 '<div style="display:flex;align-items:flex-end;gap:5px;height:250px;padding:8px 2px 0;">' + _cols + '</div>'
+                 '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:20px;">' + _leg + '</div></div>')
+        st.markdown(_html, unsafe_allow_html=True)
+
+    def _render_prosek_line(ppo):
+        _lm = [str(p.get("mesec", "")) for p in ppo]
+        _lv = [float(p.get("prosek", 0) or 0) for p in ppo]
+        _n = len(_lv)
+        if _n == 0:
             return
-        oos = dd.get("oos", {}) or {}
-        if oos:
-            _oh = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px;margin-bottom:14px;'
-                   'box-shadow:0 2px 12px rgba(80,40,140,.05);">'
-                   '<div style="font-size:15px;font-weight:800;margin-bottom:4px;">Out of stock — izgubljena prodaja</div>'
-                   '<div style="font-size:12.5px;color:#9aa0ad;margin-bottom:16px;">Na osnovu dnevnog lagera: koliko komada je izgubljeno jer je artikal bio na nuli.</div>'
-                   '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;">'
-                   '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:14px;padding:16px;text-align:center;">'
-                   '<div style="font-size:24px;font-weight:800;color:#dc2626;">~' + _fmt(oos.get("izgubljeno_kom", 0)) + '</div>'
-                   '<div style="font-size:11.5px;color:#9b6b6b;margin-top:3px;font-weight:600;">Izgubljeno (kom)</div></div>'
-                   '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:14px;padding:16px;text-align:center;">'
-                   '<div style="font-size:24px;font-weight:800;color:#dc2626;">' + _fmt(oos.get("kombinacija_na_0", 0)) + '</div>'
-                   '<div style="font-size:11.5px;color:#9b6b6b;margin-top:3px;font-weight:600;">Kombinacija objekat × artikal na 0</div></div>'
-                   '</div></div>')
-            st.markdown(_oh, unsafe_allow_html=True)
-            _pa = dd.get("oos_po_artiklu", [])
-            if _pa:
-                _df = pd.DataFrame([{"Artikal": r["artikal"], "U koliko objekata na 0": r["objekata"],
-                                     "Izgubljeno (kom)": r["izgubljeno"]} for r in _pa])
-                st.dataframe(_df, hide_index=True, use_container_width=True)
+        W = 1080; H = 240; pl = 46; pr = 20; pt = 24; pb = 40
+        pw = W - pl - pr; ph = H - pt - pb
+        _mx = (max(_lv) or 1) * 1.15
+
+        def _px(i):
+            return pl + (i / (_n - 1) * pw if _n > 1 else pw / 2)
+
+        def _py(v):
+            return pt + ph - (v / _mx * ph if _mx else 0)
+
+        _g = ""
+        for f in (0, 0.25, 0.5, 0.75, 1):
+            _y = pt + ph - f * ph
+            _g += ('<line x1="' + str(pl) + '" y1="' + ("%.1f" % _y) + '" x2="' + str(W - pr) + '" y2="' + ("%.1f" % _y) + '" stroke="#f0ebf9"/>'
+                   '<text x="' + str(pl - 8) + '" y="' + ("%.1f" % (_y + 4)) + '" font-size="10" fill="#b9bdc9" text-anchor="end">' + ("%.1f" % (_mx * f)).replace(".", ",") + '</text>')
+        _pts = " ".join(("%.1f,%.1f" % (_px(i), _py(_lv[i]))) for i in range(_n))
+        _g += '<polygon points="' + str(pl) + "," + ("%.1f" % (pt + ph)) + " " + _pts + " " + str(W - pr) + "," + ("%.1f" % (pt + ph)) + '" fill="#a855f7" fill-opacity="0.08"/>'
+        _g += '<polyline points="' + _pts + '" fill="none" stroke="#7c3aed" stroke-width="2.5"/>'
+        for i in range(_n):
+            _x = _px(i); _y = _py(_lv[i])
+            _g += ('<circle cx="' + ("%.1f" % _x) + '" cy="' + ("%.1f" % _y) + '" r="5" fill="#7c3aed" stroke="#fff" stroke-width="2"/>'
+                   '<text x="' + ("%.1f" % _x) + '" y="' + ("%.1f" % (_y - 12)) + '" font-size="11" font-weight="700" fill="#6d28d9" text-anchor="middle">' + ("%.1f" % _lv[i]).replace(".", ",") + '</text>'
+                   '<text x="' + ("%.1f" % _x) + '" y="' + str(H - 10) + '" font-size="10" fill="#9aa0ad" text-anchor="middle">' + _h_escape(_lm[i]) + '</text>')
+        _svg = '<svg viewBox="0 0 ' + str(W) + ' ' + str(H) + '" style="width:100%;height:240px;">' + _g + '</svg>'
+        _html = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px;margin-bottom:20px;'
+                 'box-shadow:0 2px 12px rgba(80,40,140,.05);">'
+                 '<div style="font-size:15px;font-weight:800;margin-bottom:4px;">Prosečna prodaja po objektu (kom / objektu)</div>'
+                 '<div style="font-size:12.5px;color:#9aa0ad;margin-bottom:10px;">Ukupna prodaja meseca podeljena brojem aktivnih objekata tog meseca.</div>'
+                 + _svg + '</div>')
+        st.markdown(_html, unsafe_allow_html=True)
+
+    def _render_oos_kom(ok):
+        _mes = str(ok.get("mesec", ""))
+        _oh = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px;margin-bottom:14px;'
+               'box-shadow:0 2px 12px rgba(80,40,140,.05);">'
+               '<div style="font-size:15px;font-weight:800;margin-bottom:4px;">Out of stock — po količinama · ' + _h_escape(_mes) + '</div>'
+               '<div style="font-size:12.5px;color:#9aa0ad;margin-bottom:16px;">Koliko je komada izgubljeno u prethodnom mesecu jer je artikal bio na nuli.</div>'
+               '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;">'
+               '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:14px;padding:16px;text-align:center;">'
+               '<div style="font-size:24px;font-weight:800;color:#dc2626;">~' + _fmt(ok.get("izgubljeno_kom", 0)) + '</div>'
+               '<div style="font-size:11.5px;color:#9b6b6b;margin-top:3px;font-weight:600;">Izgubljeno (kom) · ' + _h_escape(_mes) + '</div></div>'
+               '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:14px;padding:16px;text-align:center;">'
+               '<div style="font-size:24px;font-weight:800;color:#2563eb;">' + _fmt(ok.get("objekata_na_0", 0)) + '</div>'
+               '<div style="font-size:11.5px;color:#5b7bb0;margin-top:3px;font-weight:600;">U koliko objekata je lager na 0</div></div>'
+               '</div></div>')
+        st.markdown(_oh, unsafe_allow_html=True)
+        _pa = ok.get("po_artiklu", [])
+        if _pa:
+            _df = pd.DataFrame([{"Artikal": r["artikal"], "U koliko objekata na 0": r["objekata"],
+                                 "Izgubljeno (kom) · " + _mes: r["izgubljeno"]} for r in _pa])
+            st.dataframe(_df, hide_index=True, use_container_width=True, height=min(60 + 35 * len(_pa), 520))
 
     def _card_open(naslov, podnaslov=""):
         _h = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px;margin-bottom:20px;'
@@ -2333,13 +2501,21 @@ def prikazi_direktore():
             _sales = {}
         _dsales = _direktor_blok_iz_prodaje(sistem, _sales)
 
+        # Iz analitike (objava sistema): prosek po objektu, OOS po količinama, profit
+        _ppo = d.get("prosek_po_objektu")
+        _okd = d.get("oos_kom")
+
         if _dsales:
             _part = _partial_iz_stavki(podaci.get("stavke") or [])
             _dsales["oos"] = _part.get("oos")
             _dsales["oos_po_artiklu"] = _part.get("oos_po_artiklu")
             if _pf:
                 _dsales["profit"] = _pf
-            st.caption("Prodaja i trend su iz tabele prodaje (poslednji objavljeni Izveštaj prodaje).")
+            if _ppo:
+                _dsales["prosek_po_objektu"] = _ppo
+            if _okd:
+                _dsales["oos_kom"] = _okd
+            st.caption("Prodaja i grupe su iz tabele prodaje; prosek po objektu, OOS i profitabilnost su iz analitike sistema.")
             _render_sistem_report(_dsales, True)
         elif d.get("prodaja_trend"):
             _render_sistem_report(d, True)
@@ -2347,16 +2523,20 @@ def prikazi_direktore():
             _base = _partial_iz_stavki(podaci.get("stavke") or [])
             if _pf:
                 _base["profit"] = _pf
-            else:
+            if _ppo:
+                _base["prosek_po_objektu"] = _ppo
+            if _okd:
+                _base["oos_kom"] = _okd
+            if not (_pf or _ppo or _okd):
                 st.info("Prodaja i trend se pojave kad objaviš Izveštaj prodaje (ako tabela prodaje sadrži ovaj sistem), "
                         "ili kad ponovo objaviš ovaj sistem. Ispod je što je već dostupno.")
             _render_sistem_report(_base, False)
 
-        if not _pf:
+        if not (_pf or _ppo or _okd):
             st.markdown("<div style='margin-top:10px;padding:11px 14px;background:#fff7ed;border:1px solid #fed7aa;"
-                        "border-radius:10px;font-size:12.5px;color:#9a5b1e;'>💰 Deo <b>Profitabilnost</b> se pojavi čim "
-                        "ponovo objaviš ovaj sistem — tek pri objavi (novom verzijom aplikacije) se profit sačuva. "
-                        "Fajl je isti kao i do sad.</div>", unsafe_allow_html=True)
+                        "border-radius:10px;font-size:12.5px;color:#9a5b1e;'>Delovi <b>Prosečna prodaja po objektu</b>, "
+                        "<b>OOS po količinama</b> i <b>Profitabilnost</b> se pojave čim ponovo objaviš ovaj sistem "
+                        "(novom verzijom aplikacije). Fajl je isti kao i do sad.</div>", unsafe_allow_html=True)
         return
 
     # ---------- KARTICA 3: IZVEŠTAJ PRODAJE (dashboard, pun ekran) ----------
