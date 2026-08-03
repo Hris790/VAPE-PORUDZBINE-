@@ -247,6 +247,78 @@ def stavke_iz_rezultata(result, engine):
         })
     return stavke
 
+
+def direktor_blok(engine, res):
+    """Iz rezultata analitike spakuj podatke za DIREKTORSKI izveštaj (prodaja, trend,
+    poređenja, po grupama, OOS). Bezbedno — nikad ne ruši objavu (sve u try/except)."""
+    out = {}
+    try:
+        ml = list(engine.mesec_labels)
+    except Exception:
+        ml = []
+
+    def _col(lb, suf):
+        c = str(lb) + suf
+        return c if c in res.columns else None
+
+    # Trend prodaje po mesecu (kom + rsd)
+    trend = []
+    for lb in ml:
+        cp = _col(lb, "_Prodaja")
+        cr = _col(lb, "_Promet")
+        if cp:
+            try:
+                trend.append({"mesec": lb, "kom": int(res[cp].sum()),
+                              "rsd": int(res[cr].sum()) if cr else 0})
+            except Exception:
+                pass
+    out["prodaja_trend"] = trend
+    _last = ml[-1] if ml else None
+    out["prodaja_tekuci"] = trend[-1] if trend else {"mesec": _last, "kom": 0, "rsd": 0}
+
+    # Poređenja: prošli mesec, 6-mesečni prosek, isti mesec lani (ako ima podataka)
+    comp = {}
+    if len(trend) >= 2:
+        comp["prosli_mesec"] = trend[-2]
+        _prev6 = trend[-7:-1] if len(trend) >= 7 else trend[:-1]
+        if _prev6:
+            comp["prosek_6m"] = {"kom": int(round(sum(t["kom"] for t in _prev6) / len(_prev6))), "n": len(_prev6)}
+    if _last and " " in str(_last):
+        _mnaz, _god = str(_last).rsplit(" ", 1)
+        if _god.isdigit():
+            _lani = _mnaz + " " + str(int(_god) - 1)
+            for t in trend:
+                if t["mesec"] == _lani:
+                    comp["isti_mesec_lani"] = t
+                    break
+    out["poredjenja"] = comp
+
+    # Prodaja po grupama (tekući mesec)
+    grupe = []
+    _lc = _col(_last, "_Prodaja") if _last else None
+    if _lc and ("Grupa" in res.columns):
+        try:
+            g = res.groupby("Grupa")[_lc].sum().sort_values(ascending=False)
+            for naz, kom in g.items():
+                grupe.append({"grupa": str(naz), "kom": int(kom)})
+        except Exception:
+            pass
+    out["po_grupama"] = grupe
+
+    # Out of stock (na osnovu lagera danas)
+    try:
+        _oos = res[(res["Lager_danas"] == 0) & (res["Predikcija"] > 0)]
+        out["oos"] = {"kombinacija_na_0": int(len(_oos)), "izgubljeno_kom": int(_oos["Predikcija"].sum())}
+        _pa = (_oos.groupby("Naziv artikla")
+               .agg(objekata=("ID KOMITENTA", "nunique"), izgubljeno=("Predikcija", "sum"))
+               .sort_values("izgubljeno", ascending=False).head(10))
+        out["oos_po_artiklu"] = [{"artikal": str(i), "objekata": int(r["objekata"]),
+                                  "izgubljeno": int(r["izgubljeno"])} for i, r in _pa.iterrows()]
+    except Exception:
+        pass
+
+    return out
+
 # =====================================================================
 # PRIJAVA (dve uloge: analitika / administracija)
 # =====================================================================
@@ -2842,6 +2914,10 @@ with tab_obj:
                         _mlbl2 = mesec_label(_mk2)
                         _stavke = stavke_iz_rezultata(_res, _eng)
                         _payload = {"mesec_label": _mlbl2, "meta": {"pred_label": _eng.pred_label, "order_label": _eng.order_label, "min_lager": _eng.min_lager, "meseci": round(float(_o_mes), 1), "generisano": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"), "n_objekata": int(len({_s2['idk'] for _s2 in _stavke})), "ukupno_kom": int(sum(_s2['kol'] for _s2 in _stavke))}, "stavke": _stavke}
+                        try:
+                            _payload["direktor"] = direktor_blok(_eng, _res)
+                        except Exception:
+                            _payload["direktor"] = None
                         sb_objavi(_mk2, _osist, _payload)
                         st.success(f"\u2705 Objavljeno: {_osist} \u2014 {_mlbl2} \u00b7 {len(_stavke)} stavki, {_payload['meta']['n_objekata']} objekata. Osveži (F5) da se ažurira lista gore.")
                     except Exception as _e:
