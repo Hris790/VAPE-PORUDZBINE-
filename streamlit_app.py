@@ -382,6 +382,66 @@ def direktor_blok(engine, res):
     except Exception:
         pass
 
+    # ---- Profitabilnost (identično kao u analitici; puni se samo ako ima cena) ----
+    try:
+        if getattr(engine, "has_prices", False) and len(getattr(engine, "df_profit_obj", [])) > 0:
+            prof = engine.df_profit_obj.copy()
+            a_labels = list(engine.analitika_labels) if getattr(engine, "analitika_labels", None) else list(ml)
+            n_mes = max(len(a_labels), 1)
+            pf = {}
+            pf["period"] = ", ".join(a_labels) if a_labels else "svi meseci"
+            pf["n_mes"] = n_mes
+            pf["n_obj"] = int(getattr(engine, "num_komitenti", len(prof)))
+            pf["total_trosak"] = int(prof["Trosak_mkt"].sum())
+            pf["total_bruto"] = int(prof["Bruto_profit"].sum())
+            pf["total_neto"] = int(prof["Neto_profit"].sum())
+            _dfoos = getattr(engine, "df_oos", None)
+            _has_oos = _dfoos is not None and len(_dfoos) > 0
+            pf["total_oos"] = int(_dfoos["Izgubljeni_profit"].sum()) if _has_oos else 0
+            # mesečni trend bruto / neto
+            _bm = []; _nm = []
+            for lb in a_labels:
+                cb = "Bruto_" + str(lb); cn = "Neto_" + str(lb)
+                _bm.append([lb, int(prof[cb].sum()) if cb in prof.columns else 0])
+                _nm.append([lb, int(prof[cn].sum()) if cn in prof.columns else 0])
+            pf["bruto_po_mes"] = _bm
+            pf["neto_po_mes"] = _nm
+            # profitabilnost po objektima
+            ukupno = len(prof)
+            _neg = prof[prof["Neto_profit"] <= 0]
+            _oos_neg = prof[(prof["Neto_profit"] <= 0) & (prof["Potencijalni_profit"] > 0)]
+            _pravi_neg = prof[(prof["Neto_profit"] <= 0) & (prof["Potencijalni_profit"] <= 0)]
+            pf["obj_ukupno"] = int(ukupno)
+            pf["obj_profit"] = int(ukupno - len(_neg))
+            pf["obj_oos_neg"] = int(len(_oos_neg))
+            pf["obj_pravi_neg"] = int(len(_pravi_neg))
+            _tpo = float(getattr(engine, "trosak_po_objektu", 0) or 0)
+            _usteda = len(_pravi_neg) * _tpo + (abs(_pravi_neg["Neto_profit"].sum()) if len(_pravi_neg) > 0 else 0)
+            pf["usteda_ukupno"] = int(_usteda)
+            pf["objekti"] = [{"id": int(r["ID KOMITENTA"]), "neto": int(r["Neto_profit"]),
+                              "potencijal": int(r["Potencijalni_profit"]), "bruto": int(r["Bruto_profit"]),
+                              "trosak": int(r["Trosak_mkt"]), "oos": int(r["Izgubljeno_OOS"])}
+                             for _, r in prof.iterrows()]
+            # OOS u dinarima (identično kao analitika)
+            if _has_oos:
+                pf["oos_0_danas"] = int((_dfoos.get("Lager_danas", 0) == 0).sum()) if "Lager_danas" in _dfoos.columns else 0
+                _om = []
+                for lb in a_labels:
+                    ci = "Izgub_" + str(lb); co = "OOS_" + str(lb)
+                    _om.append([lb, int(_dfoos[ci].sum()) if ci in _dfoos.columns else 0,
+                                int((_dfoos[co] > 0).sum()) if co in _dfoos.columns else 0])
+                pf["oos_po_mes"] = _om
+                _oa = (_dfoos.groupby(["id artikla", "Naziv artikla"])
+                       .agg(Objekata=("ID KOMITENTA", "nunique"), OOS_meseci=("OOS_meseci", "sum"),
+                            Izgubljeni_profit=("Izgubljeni_profit", "sum"))
+                       .reset_index().sort_values("Izgubljeni_profit", ascending=False))
+                pf["oos_artikli"] = [{"naziv": str(r["Naziv artikla"]), "objekata": int(r["Objekata"]),
+                                      "meseci": int(r["OOS_meseci"]), "rsd": int(r["Izgubljeni_profit"])}
+                                     for _, r in _oa.iterrows()]
+            out["profit"] = pf
+    except Exception:
+        pass
+
     return out
 
 # =====================================================================
@@ -1890,6 +1950,10 @@ def prikazi_direktore():
             _gh += '</div>'
             st.markdown(_gh, unsafe_allow_html=True)
 
+        _pf_blok = dd.get("profit") or {}
+        if _pf_blok and (_pf_blok.get("total_bruto") is not None):
+            _render_profit_blok(_pf_blok)
+            return
         oos = dd.get("oos", {}) or {}
         if oos:
             _oh = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px;margin-bottom:14px;'
@@ -1910,6 +1974,150 @@ def prikazi_direktore():
                 _df = pd.DataFrame([{"Artikal": r["artikal"], "U koliko objekata na 0": r["objekata"],
                                      "Izgubljeno (kom)": r["izgubljeno"]} for r in _pa])
                 st.dataframe(_df, hide_index=True, use_container_width=True)
+
+    def _card_open(naslov, podnaslov=""):
+        _h = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px;margin-bottom:20px;'
+              'box-shadow:0 2px 12px rgba(80,40,140,.05);">'
+              '<div style="font-size:15px;font-weight:800;margin-bottom:' + ("4px" if podnaslov else "16px") + ';">' + naslov + '</div>')
+        if podnaslov:
+            _h += '<div style="font-size:12.5px;color:#9aa0ad;margin-bottom:16px;">' + podnaslov + '</div>'
+        return _h
+
+    def _rsd(v):
+        try:
+            return _fmt(int(round(v))) + " RSD"
+        except Exception:
+            return str(v) + " RSD"
+
+    def _bar_row(lb, val, maxv, boja):
+        _w = int(abs(val) / maxv * 100) if maxv else 0
+        _w = min(_w, 100)
+        return ('<div style="display:grid;grid-template-columns:70px 1fr 120px;align-items:center;gap:10px;margin-bottom:7px;">'
+                '<span style="font-size:11.5px;color:#888;text-align:right;">' + str(lb) + '</span>'
+                '<div style="height:16px;background:#f5f0ff;border-radius:4px;overflow:hidden;">'
+                '<div style="height:100%;width:' + str(_w) + '%;background:' + boja + ';border-radius:4px;"></div></div>'
+                '<span style="font-size:11.5px;font-weight:700;color:#555;">' + _rsd(val) + '</span></div>')
+
+    def _render_profit_blok(pf):
+        if not pf:
+            return
+        n_mes = int(pf.get("n_mes", 1)) or 1
+        st.markdown("<div style='margin:26px 0 2px;height:1px;background:linear-gradient(90deg,transparent,#e6def5,transparent);'></div>"
+                    "<div style='font-size:16px;font-weight:800;margin:16px 0 4px;'>💰 Profitabilnost</div>"
+                    "<div style='font-size:12.5px;color:#9aa0ad;margin-bottom:16px;'>Period: <b>" + _h_escape(str(pf.get("period", ""))) + "</b> · "
+                    + str(pf.get("n_obj", 0)) + " objekata · " + str(n_mes) + " meseci</div>", unsafe_allow_html=True)
+        # 4 KPI kartice u dinarima
+        _kards = [
+            ("Trošak marketinga", pf.get("total_trosak", 0), "#a855f7", ""),
+            ("Bruto profit", pf.get("total_bruto", 0), "#10b981", ""),
+            ("Neto profit", pf.get("total_neto", 0), "#7c3aed" if pf.get("total_neto", 0) > 0 else "#ec4899", ""),
+            ("OOS izgubljen", pf.get("total_oos", 0), "#ec4899", "-"),
+        ]
+        _kh = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px;">'
+        for (lab, tot, col, pre) in _kards:
+            _mes = int(round(tot / n_mes))
+            _kh += ('<div style="background:#fff;border:1px solid #efeaf7;border-left:4px solid ' + col + ';border-radius:14px;padding:15px 17px;'
+                    'box-shadow:0 2px 12px rgba(80,40,140,.06);">'
+                    '<div style="font-size:10.5px;color:#9aa0ad;font-weight:700;letter-spacing:.4px;text-transform:uppercase;margin-bottom:6px;">' + lab + '</div>'
+                    '<div style="font-size:19px;font-weight:800;color:' + col + ';">' + pre + _rsd(tot) + '</div>'
+                    '<div style="font-size:11px;color:#aab;margin-top:3px;">' + pre + _rsd(_mes) + ' / mesec</div></div>')
+        _kh += '</div>'
+        st.markdown(_kh, unsafe_allow_html=True)
+        # Mesečni trend bruto / neto
+        _bm = pf.get("bruto_po_mes", []); _nm = pf.get("neto_po_mes", [])
+        if _bm or _nm:
+            _cb, _cn = st.columns(2)
+            with _cb:
+                _mx = max([abs(v) for _, v in _bm] or [1]) or 1
+                _html = _card_open("📈 Mesečni trend bruto profita")
+                for lb, v in _bm:
+                    _html += _bar_row(lb, v, _mx, "#a855f7")
+                st.markdown(_html + "</div>", unsafe_allow_html=True)
+            with _cn:
+                _mx = max([abs(v) for _, v in _nm] or [1]) or 1
+                _html = _card_open("📉 Mesečni trend neto profita")
+                for lb, v in _nm:
+                    _html += _bar_row(lb, v, _mx, "#7c3aed" if v >= 0 else "#ec4899")
+                st.markdown(_html + "</div>", unsafe_allow_html=True)
+        # Profitabilnost po objektima — donut + procena uštede
+        _uk = int(pf.get("obj_ukupno", 0))
+        if _uk > 0:
+            _pr = int(pf.get("obj_profit", 0)); _on = int(pf.get("obj_oos_neg", 0)); _pn = int(pf.get("obj_pravi_neg", 0))
+            import math as _m
+            _cx, _cy, _rO, _rI = 90, 90, 78, 50
+            def _arc(cx, cy, r, sd, ed):
+                s = _m.radians(sd - 90); e = _m.radians(ed - 90)
+                lg = 1 if (ed - sd) > 180 else 0
+                return (cx + r * _m.cos(s), cy + r * _m.sin(s), cx + r * _m.cos(e), cy + r * _m.sin(e), lg)
+            _segs = [(_pr, "#10b981"), (_on, "#f59e0b"), (_pn, "#ec4899")]
+            _tot = sum(s[0] for s in _segs) or 1
+            _nonzero = [s for s in _segs if s[0] > 0]
+            _paths = ""
+            if len(_nonzero) == 1:
+                # jedan segment = pun prsten (SVG luk od 360° se ne iscrtava)
+                _col = _nonzero[0][1]
+                _paths = ('<circle cx="' + str(_cx) + '" cy="' + str(_cy) + '" r="' + str(_rO) + '" fill="' + _col + '"/>'
+                          '<circle cx="' + str(_cx) + '" cy="' + str(_cy) + '" r="' + str(_rI) + '" fill="#ffffff"/>')
+            else:
+                _ang = 0.0
+                for _val, _col in _segs:
+                    if _val <= 0:
+                        continue
+                    _sw = _val / _tot * 360.0
+                    x1, y1, x2, y2, lg = _arc(_cx, _cy, _rO, _ang, _ang + _sw)
+                    xi2, yi2, xi1, yi1, _ = _arc(_cx, _cy, _rI, _ang, _ang + _sw)
+                    _paths += ('<path d="M' + ("%.2f" % x1) + ',' + ("%.2f" % y1) + ' A' + str(_rO) + ',' + str(_rO) + ' 0 ' + str(lg) + ' 1 '
+                               + ("%.2f" % x2) + ',' + ("%.2f" % y2) + ' L' + ("%.2f" % xi2) + ',' + ("%.2f" % yi2)
+                               + ' A' + str(_rI) + ',' + str(_rI) + ' 0 ' + str(lg) + ' 0 ' + ("%.2f" % xi1) + ',' + ("%.2f" % yi1)
+                               + ' Z" fill="' + _col + '"/>')
+                    _ang += _sw
+            _svg = ('<svg width="180" height="180" viewBox="0 0 180 180" xmlns="http://www.w3.org/2000/svg">' + _paths
+                    + '<text x="90" y="86" text-anchor="middle" font-size="26" font-weight="800" fill="#1f2430">' + str(_uk) + '</text>'
+                    + '<text x="90" y="104" text-anchor="middle" font-size="10" fill="#9aa0ad">objekata</text></svg>')
+            _leg = ('<div style="display:flex;flex-direction:column;gap:10px;">'
+                    '<div style="display:flex;align-items:center;gap:8px;"><span style="width:12px;height:12px;border-radius:3px;background:#10b981;"></span>'
+                    '<span style="font-size:13px;color:#374151;">Profitabilni objekti: <b>' + str(_pr) + '</b></span></div>'
+                    '<div style="display:flex;align-items:center;gap:8px;"><span style="width:12px;height:12px;border-radius:3px;background:#f59e0b;"></span>'
+                    '<span style="font-size:13px;color:#374151;">Neprofitabilni zbog OOS: <b>' + str(_on) + '</b></span></div>'
+                    '<div style="display:flex;align-items:center;gap:8px;"><span style="width:12px;height:12px;border-radius:3px;background:#ec4899;"></span>'
+                    '<span style="font-size:13px;color:#374151;">Pravi neprofitabilni: <b>' + str(_pn) + '</b></span></div>'
+                    '<div style="margin-top:8px;font-size:12.5px;color:#6b7280;line-height:1.5;">Procena uštede ako se pravi neprofitabilni ugase: '
+                    '<b style="color:#16a34a;">' + _rsd(pf.get("usteda_ukupno", 0)) + '</b> za period.</div></div>')
+            _ph = (_card_open("🏪 Profitabilnost po objektima")
+                   + '<div style="display:grid;grid-template-columns:200px 1fr;align-items:center;gap:18px;">'
+                   + '<div style="text-align:center;">' + _svg + '</div>' + _leg + '</div></div>')
+            st.markdown(_ph, unsafe_allow_html=True)
+            # tabela objekata
+            _objs = pf.get("objekti", [])
+            if _objs:
+                _km = sb_komitenti_map()
+                _rows = []
+                for o in _objs:
+                    _nz = _km.get(int(o["id"]), "") or ("ID " + str(o["id"]))
+                    _rows.append({"Objekat": _nz, "Neto profit (RSD)": o["neto"],
+                                  "Bruto (RSD)": o["bruto"], "Trošak (RSD)": o["trosak"],
+                                  "Izgubljeno OOS (RSD)": o["oos"], "Potencijal (RSD)": o["potencijal"]})
+                st.markdown("<div style='font-size:13px;font-weight:700;color:#374151;margin:4px 0 8px;'>Svi objekti (od najlošijeg neto profita):</div>", unsafe_allow_html=True)
+                st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True, height=340)
+        # OOS — izgubljena zarada (u dinarima)
+        _oa = pf.get("oos_artikli", [])
+        _total_oos = int(pf.get("total_oos", 0))
+        if _total_oos > 0 or _oa:
+            _oh = _card_open("🔴 Out of stock — izgubljena zarada", "Koliko dinara je izgubljeno jer je artikal bio na nuli.")
+            _mesv = int(round(_total_oos / n_mes))
+            _oh += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:6px;">'
+            for (lab, val) in [("Izgubljen profit · " + str(n_mes) + " mes.", _rsd(_total_oos)),
+                               ("Prosečno mesečno", _rsd(_mesv)),
+                               ("Kombinacija na 0 danas", _fmt(pf.get("oos_0_danas", 0)))]:
+                _oh += ('<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:14px;padding:15px;text-align:center;">'
+                        '<div style="font-size:18px;font-weight:800;color:#dc2626;">' + str(val) + '</div>'
+                        '<div style="font-size:11px;color:#9b6b6b;margin-top:3px;font-weight:600;">' + lab + '</div></div>')
+            _oh += '</div></div>'
+            st.markdown(_oh, unsafe_allow_html=True)
+            if _oa:
+                _df = pd.DataFrame([{"Artikal": r["naziv"], "U koliko objekata": r["objekata"],
+                                     "OOS meseci": r["meseci"], "Izgubljeni profit (RSD)": r["rsd"]} for r in _oa])
+                st.dataframe(_df, hide_index=True, use_container_width=True, height=320)
 
     def _partial_iz_stavki(stavke):
         out = {}
@@ -2097,22 +2305,20 @@ def prikazi_direktore():
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key="dir_dl_xlsx", use_container_width=True)
                 else:
-                    st.caption("Analitika za ovaj sistem nije dostupna (objavi ponovo novom verzijom + dodaj kolonu 'analitika_xlsx').")
+                    st.caption("Analitika (Excel) za ovaj sistem biće dostupna čim se sistem ponovo objavi.")
         st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
 
         d = podaci.get("direktor")
         if d and d.get("prodaja_trend"):
             _render_sistem_report(d, True)
         else:
-            # Pokušaj iz tabele prodaje (Izveštaj prodaje) — bez ponovne objave
-            _sales = st.session_state.get("_sales_dir")
-            if _sales is None:
-                _izvp = sb_ucitaj_izvestaj_prodaje()
-                try:
-                    _sales = json.loads(_izvp["prodaja_json"]) if (_izvp and _izvp.get("prodaja_json")) else {}
-                except Exception:
-                    _sales = {}
-                st.session_state["_sales_dir"] = _sales
+            # Pokušaj iz tabele prodaje (Izveštaj prodaje) — bez ponovne objave.
+            # Čitamo sveže svaki put (sb_ucitaj_izvestaj_prodaje je keširan 60s na nivou podataka).
+            _izvp = sb_ucitaj_izvestaj_prodaje()
+            try:
+                _sales = json.loads(_izvp["prodaja_json"]) if (_izvp and _izvp.get("prodaja_json")) else {}
+            except Exception:
+                _sales = {}
             _dsales = _direktor_blok_iz_prodaje(sistem, _sales)
             if _dsales:
                 _part = _partial_iz_stavki(podaci.get("stavke") or [])
