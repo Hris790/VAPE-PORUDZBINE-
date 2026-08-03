@@ -706,9 +706,10 @@ def _clean_komitent_naziv(t):
     return _norm_ws(t)
 
 
-def admin_build_komitenti():
+def admin_build_komitenti(only_ids=None):
     """Napravi mapu {id_kupca: naziv} iz padajuce liste na stranici jedne porudzbine
-    i sacuvaj u Supabase tabelu 'komitenti'. Vraca (broj, greska)."""
+    i sacuvaj u Supabase tabelu 'komitenti'. Ako je only_ids zadat (skup/lista id-jeva),
+    cuva SAMO te (da ne prebrise nazive/kontakte iz fajla). Vraca (broj, greska)."""
     import re, html
     s, base, err = _admin_session()
     if err:
@@ -725,8 +726,11 @@ def admin_build_komitenti():
         mapa = {}
         for _v, _naz in re.findall(r'<option value="(\d+)"[^>]*>(.*?)</option>', _sel.group(1), re.S):
             mapa[int(_v)] = _clean_komitent_naziv(html.unescape(_naz))
+        if only_ids is not None:
+            _want = set(int(x) for x in only_ids)
+            mapa = {k: v for k, v in mapa.items() if k in _want}
         if not mapa:
-            return (0, "Lista komitenata je prazna.")
+            return (0, "Nema naziva za povlačenje (lista prazna ili nijedan ID se ne poklapa).")
         try:
             sb_komitenti_save(mapa)
         except Exception as _e:
@@ -1051,6 +1055,23 @@ def prikazi_administraciju():
         '</div>', unsafe_allow_html=True)
     st.markdown('<div class="adm-prog"><span class="t">Pregledano ' + str(n_done) + ' / ' + str(n_obj) + '</span>'
                 '<div class="bar"><div style="width:' + str(_pct) + '%"></div></div></div>', unsafe_allow_html=True)
+
+    _bez_naziva = [o["idk"] for o in objekti if not ((komfull.get(int(o["idk"]), {}) or {}).get("naziv"))]
+    if _bez_naziva:
+        _fc1, _fc2 = st.columns([2, 1])
+        with _fc1:
+            st.caption("ℹ️ " + str(len(_bez_naziva)) + " objekata nema naziv iz šifarnika "
+                       "(nisu u fajlu). Nazivi koji fale mogu da se povuku direktno iz admina.")
+        with _fc2:
+            if st.button("🔗 Poveži nazive iz admina", key="fill_names", use_container_width=True):
+                with st.spinner("Čitam nazive iz admina..."):
+                    _bn, _be = admin_build_komitenti(only_ids=_bez_naziva)
+                if _bn == 0:
+                    st.error(_be or "Nije uspelo.")
+                else:
+                    st.session_state["_komfull"] = sb_komitenti_full()
+                    st.success("Povučeno " + str(_bn) + " naziva iz admina.")
+                    st.rerun()
 
     with st.expander("📦 Porudžbina ubačena za ceo sistem (grupna akcija)"):
         st.caption("Za sisteme gde mi direktno ubacujemo porudžbine (npr. BB TRADE, KNEZ) — jednim klikom se svi objekti označe kao Ubačena porudžbina i postaju pregledani. Ne koristiti za sisteme gde se objekti zovu pojedinačno.")
