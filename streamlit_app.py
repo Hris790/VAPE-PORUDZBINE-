@@ -1037,17 +1037,20 @@ def prikazi_administraciju():
     .stMultiSelect [data-baseweb="tag"] span{color:#5b21b6 !important;}
     </style>""", unsafe_allow_html=True)
 
-    _hc1, _hc2 = st.columns([6, 1])
+    _hc1, _hc2 = st.columns([5, 1.7])
     with _hc1:
         st.markdown('<div class="adm-hdr"><div class="adm-logo"><div></div></div>'
                     '<span class="t1">VAPE Porudžbine</span><span class="t2">· Administracija</span></div>',
                     unsafe_allow_html=True)
     with _hc2:
-        st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
-        if st.button("Odjava", key="adm_odjava"):
+        st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+        if st.button("Odjava", key="adm_odjava", use_container_width=True):
             for _k in ("authenticated", "role"):
                 st.session_state.pop(_k, None)
             st.rerun()
+        if st.button("🔄 Ažuriraj podatke iz admina", key="refresh_all_admin",
+                     use_container_width=True, type="primary"):
+            st.session_state["_req_refresh_admin"] = True
 
     if not sb_dostupan():
         st.error("Veza sa bazom trenutno nije podešena. Javi se analitičaru.")
@@ -1150,41 +1153,37 @@ def prikazi_administraciju():
     st.markdown('<div class="adm-prog"><span class="t">Pregledano ' + str(n_done) + ' / ' + str(n_obj) + '</span>'
                 '<div class="bar"><div style="width:' + str(_pct) + '%"></div></div></div>', unsafe_allow_html=True)
 
-    # --- Globalno dugme: povuci SVE iz admina za ceo sistem odjednom ---
+    # --- Izvrši osvežavanje iz admina (traženo dugmetom "Ažuriraj" u zaglavlju) ---
     _bez_naziva = [o["idk"] for o in objekti if not ((komfull.get(int(o["idk"]), {}) or {}).get("naziv"))]
-    _gc1, _gc2 = st.columns([2, 1])
-    with _gc2:
-        if st.button("🔄 Ažuriraj podatke iz admina", key="refresh_all_admin",
-                     use_container_width=True, type="primary"):
-            try:
-                _cut_all = datetime.date(int(str(mesec_key).split("-")[0]), int(str(mesec_key).split("-")[1]), 1)
-            except Exception:
-                _cut_all = None
-            with st.spinner("Povlačim sve iz admina za ceo sistem (nazivi + prethodne porudžbine + dopuna)... može potrajati par minuta."):
-                if _bez_naziva:
-                    admin_build_komitenti(only_ids=_bez_naziva)
-                _kf = sb_komitenti_full()
-                st.session_state["_komfull"] = _kf
-                _idk_naziv = {o["idk"]: (_kf.get(int(o["idk"]), {}) or {}).get("naziv", "") for o in objekti}
-                _bulk, _be_all = admin_istorija_bulk(_idk_naziv, _cut_all)
-            if _be_all and not _bulk:
-                st.error(_be_all)
-            else:
-                _n_hist = 0
-                for o in objekti:
-                    _lst = sorted(_bulk.get(o["idk"], []), key=_datum_sort_key, reverse=True)
-                    st.session_state["hist_" + str(sistem) + "_" + str(o["idk"])] = {"lst": _lst, "err": ""}
-                    if _lst:
-                        _n_hist += 1
-                st.success("✅ Ažurirano iz admina. Objekata sa porudžbinama posle 01.: " + str(_n_hist)
-                           + ". Prethodne porudžbine i dodatna porudžbina su spremni u svakom objektu.")
-                st.rerun()
-    with _gc1:
-        if _bez_naziva:
-            st.caption("ℹ️ " + str(len(_bez_naziva)) + " objekata bez naziva. "
-                       "Klikni Ažuriraj podatke iz admina — povuče nazive, prethodne porudžbine i dopunu za ceo sistem.")
+    if st.session_state.pop("_req_refresh_admin", False):
+        try:
+            _cut_all = datetime.date(int(str(mesec_key).split("-")[0]), int(str(mesec_key).split("-")[1]), 1)
+        except Exception:
+            _cut_all = None
+        with st.spinner("Povlačim sve iz admina za ceo sistem (nazivi + prethodne porudžbine + dopuna)... može potrajati par minuta."):
+            if _bez_naziva:
+                admin_build_komitenti(only_ids=_bez_naziva)
+            _kf = sb_komitenti_full()
+            st.session_state["_komfull"] = _kf
+            _idk_naziv = {o["idk"]: (_kf.get(int(o["idk"]), {}) or {}).get("naziv", "") for o in objekti}
+            _bulk, _be_all = admin_istorija_bulk(_idk_naziv, _cut_all)
+        if _be_all and not _bulk:
+            st.error(_be_all)
         else:
-            st.caption("Klikni Ažuriraj podatke iz admina da se za ceo sistem povuku prethodne porudžbine i izračuna dopuna (trebovano posle 01.).")
+            _n_hist = 0
+            for o in objekti:
+                _lst = sorted(_bulk.get(o["idk"], []), key=_datum_sort_key, reverse=True)
+                st.session_state["hist_" + str(sistem) + "_" + str(o["idk"])] = {"lst": _lst, "err": ""}
+                if _lst:
+                    _n_hist += 1
+            st.session_state["_refresh_done"] = {"sis": sistem, "mes": mesec_key, "n": _n_hist}
+            st.rerun()
+    _rf = st.session_state.get("_refresh_done")
+    if _rf and _rf.get("sis") == sistem and _rf.get("mes") == mesec_key:
+        st.success("✅ Ažurirano iz admina — prethodne porudžbine i dopuna su spremni u svakom objektu. "
+                   "Objekata sa porudžbinama posle 01.: " + str(_rf.get("n", 0)) + ".")
+    elif _bez_naziva:
+        st.caption("ℹ️ " + str(len(_bez_naziva)) + " objekata bez naziva. Klikni Ažuriraj podatke iz admina gore desno (ispod Odjave).")
 
     with st.expander("📦 Porudžbina ubačena za ceo sistem (grupna akcija)"):
         st.caption("Za sisteme gde mi direktno ubacujemo porudžbine (npr. BB TRADE, KNEZ) — jednim klikom se svi objekti označe kao Ubačena porudžbina i postaju pregledani. Ne koristiti za sisteme gde se objekti zovu pojedinačno.")
