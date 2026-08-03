@@ -1507,26 +1507,24 @@ def prikazi_administraciju():
                         st.success("Povezano " + str(_bn) + " komitenata.")
                         st.rerun()
             else:
-                if st.button("Učitaj istoriju porudžbina", key="lh_" + str(sel_id), use_container_width=True):
-                    _load_hist()
-                    st.rerun()
                 _hist = st.session_state.get(_hk)
-                if _hist:
-                    if _hist["err"]:
-                        st.error(_hist["err"])
-                    elif not _hist["lst"]:
-                        st.caption("Nema porudžbina za ovaj objekat u poslednja ~3 meseca.")
-                    else:
-                        st.caption("Pronađeno " + str(len(_hist["lst"])) + " porudžbina — klikni na datum za sadržaj.")
-                        for _o in _hist["lst"]:
-                            with st.expander("📅 " + (_o["datum"] or "?") + "   ·   " + (_o["status"] or "") + "   ·   " + (_o["cena"] or "")):
-                                if _o.get("stavke"):
-                                    import pandas as _pdh
-                                    _hd = _pdh.DataFrame([{"Artikal": _s["naziv"], "Kol.": _s["kol"], "Cena": _s["cena"]}
-                                                          for _s in _o["stavke"]])
-                                    st.dataframe(_hd, hide_index=True, use_container_width=True)
-                                else:
-                                    st.caption("Nema stavki (ili nisu učitane).")
+                if _hist is None:
+                    st.caption("Klikni Ažuriraj podatke iz admina (gore) — prethodne porudžbine se prikažu automatski.")
+                elif _hist.get("err"):
+                    st.error(_hist["err"])
+                elif not _hist.get("lst"):
+                    st.caption("Nema porudžbina za ovaj objekat posle 01. u mesecu.")
+                else:
+                    st.caption("Pronađeno " + str(len(_hist["lst"])) + " porudžbina — klikni na datum za sadržaj.")
+                    for _o in _hist["lst"]:
+                        with st.expander("📅 " + (_o["datum"] or "?") + "   ·   " + (_o["status"] or "") + "   ·   " + (_o["cena"] or "")):
+                            if _o.get("stavke"):
+                                import pandas as _pdh
+                                _hd = _pdh.DataFrame([{"Artikal": _s["naziv"], "Kol.": _s["kol"], "Cena": _s["cena"]}
+                                                      for _s in _o["stavke"]])
+                                st.dataframe(_hd, hide_index=True, use_container_width=True)
+                            else:
+                                st.caption("Nema stavki (ili nisu učitane).")
         with _dc2:
             if "Ubačena porudžbina" in (v.get("reakcije") or []):
                 st.info("📦 Porudžbina je ubačena za ceo sistem (grupno).")
