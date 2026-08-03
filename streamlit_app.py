@@ -503,6 +503,26 @@ def _admin_secret(k, d=""):
     return os.environ.get(k, d)
 
 
+def sb_komitenti_map():
+    cli = _sb()
+    if cli is None:
+        return {}
+    try:
+        res = cli.table("komitenti").select("idk,naziv").execute()
+        return {int(r["idk"]): (r.get("naziv") or "") for r in (res.data or [])}
+    except Exception:
+        return {}
+
+
+def sb_komitenti_save(mapping):
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    rows = [{"idk": int(k), "naziv": v} for k, v in mapping.items()]
+    for _i in range(0, len(rows), 500):
+        cli.table("komitenti").upsert(rows[_i:_i + 500], on_conflict="idk").execute()
+
+
 def posalji_u_admin(id_kupca, items):
     """Prijavi se u admin i kreira porudzbinu direktno (bez rucnog uvoza).
     items = lista dict {'idArticle': int, 'quantity': int}.
@@ -555,6 +575,140 @@ def posalji_u_admin(id_kupca, items):
         return (True, "Porudžbina je poslata u admin (vidi „Pregled porudžbina“).")
     except requests.exceptions.RequestException as _e:
         return (False, "Greška u komunikaciji sa adminom: " + str(_e))
+
+
+# =====================================================================
+# ISTORIJA PORUDŽBINA IZ ADMINA (za detaljnu karticu)
+# =====================================================================
+def _admin_session():
+    """Prijavi se u admin. Vraca (session, base_url, greska)."""
+    import re, requests
+    base = (_admin_secret("ADMIN_BASE_URL", "https://admin.vapeshop.rs") or "").rstrip("/")
+    email = _admin_secret("ADMIN_LOGIN_EMAIL", "")
+    pwd = _admin_secret("ADMIN_LOGIN_PASSWORD", "")
+    if not email or not pwd:
+        return (None, base, "Nije podešena admin prijava (Secrets).")
+    _tok = re.compile(r'name="__RequestVerificationToken"[^>]*value="([^"]+)"')
+    s = requests.Session()
+    s.headers.update({"User-Agent": "Mozilla/5.0", "Accept-Language": "sr,en;q=0.8"})
+    try:
+        r = s.get(base + "/login", timeout=30)
+        m = _tok.search(r.text)
+        if not m:
+            return (None, base, "Ne mogu da otvorim login admina.")
+        s.post(base + "/login",
+               data={"Email": email, "Password": pwd, "__RequestVerificationToken": m.group(1)},
+               headers={"Referer": base + "/login"}, timeout=30, allow_redirects=True)
+        chk = s.get(base + "/orders", timeout=30)
+        if ("/login" in chk.url) or ('name="Password"' in chk.text):
+            return (None, base, "Prijava na admin nije uspela (proveri Secrets / pristup).")
+        return (s, base, "")
+    except requests.exceptions.RequestException as _e:
+        return (None, base, "Greška u vezi sa adminom: " + str(_e))
+
+
+def _norm_ws(t):
+    import re
+    return re.sub(r"\s+", " ", (t or "")).strip()
+
+
+def admin_build_komitenti():
+    """Napravi mapu {id_kupca: naziv} iz padajuce liste na stranici jedne porudzbine
+    i sacuvaj u Supabase tabelu 'komitenti'. Vraca (broj, greska)."""
+    import re, html
+    s, base, err = _admin_session()
+    if err:
+        return (0, err)
+    try:
+        lst = s.get(base + "/orders", timeout=45)
+        _ids = re.findall(r'/order/details/(\d+)', lst.text)
+        if not _ids:
+            return (0, "Nema porudžbina za čitanje šifara komitenata.")
+        det = s.get(base + "/order/details/" + _ids[0], timeout=45)
+        _sel = re.search(r'<select[^>]*id="selectUser"[^>]*>(.*?)</select>', det.text, re.S)
+        if not _sel:
+            return (0, "Ne mogu da nađem listu komitenata.")
+        mapa = {}
+        for _v, _naz in re.findall(r'<option value="(\d+)"[^>]*>(.*?)</option>', _sel.group(1), re.S):
+            mapa[int(_v)] = _norm_ws(html.unescape(_naz))
+        if not mapa:
+            return (0, "Lista komitenata je prazna.")
+        try:
+            sb_komitenti_save(mapa)
+        except Exception as _e:
+            return (len(mapa), "Pročitano " + str(len(mapa)) + ", ali čuvanje nije uspelo: " + str(_e))
+        return (len(mapa), "")
+    except Exception as _e:
+        return (0, "Greška: " + str(_e))
+
+
+def _parse_order_items(html_text):
+    """Iz /order/details/{id} izvuci stavke: [{ida, naziv, kol, cena}] i idUser."""
+    import re, html as _h
+    _iduser = None
+    _mu = re.search(r'data-original-user="(\d+)"', html_text)
+    if _mu:
+        _iduser = int(_mu.group(1))
+    _blok = re.search(r'id="panelOrderItems".*?<tbody>(.*?)</tbody>', html_text, re.S)
+    stavke = []
+    if _blok:
+        for _row in re.findall(r'<tr[^>]*>(.*?)</tr>', _blok.group(1), re.S):
+            _a = re.search(r'/article/edit/(\d+)"[^>]*>(.*?)</a>', _row, re.S)
+            _pc = re.findall(r'class="price-cell">\s*([^<]*?)\s*</td>', _row)
+            if not _a:
+                continue
+            _kol = _pc[0].strip() if len(_pc) >= 1 else ""
+            _cena = _pc[1].strip() if len(_pc) >= 2 else ""
+            stavke.append({"ida": int(_a.group(1)),
+                           "naziv": _norm_ws(_h.unescape(_a.group(2))),
+                           "kol": _kol, "cena": _cena})
+    return stavke, _iduser
+
+
+def admin_istorija_komitenta(id_kupca, naziv, datum_od, datum_do, max_por=40):
+    """Vrati listu porudzbina komitenta iz admina u periodu [datum_od, datum_do]
+    (format dd.MM.yyyy), sa stavkama. Vraca (lista, greska)."""
+    import re, html as _h
+    s, base, err = _admin_session()
+    if err:
+        return ([], err)
+    naziv_n = _norm_ws(naziv)
+    try:
+        resp = s.post(base + "/orders", data={
+            "orderStatuses": ["1", "10", "20", "30", "40", "50", "60", "70", "80", "90", "95"],
+            "keyword": "", "idLoad": "", "startDate": datum_od, "endDate": datum_do},
+            headers={"Referer": base + "/orders", "X-Requested-With": "XMLHttpRequest"}, timeout=90)
+        body = resp.text or ""
+        rezultat = []
+        for _row in re.findall(r'<tr[^>]*>(.*?)</tr>', body, re.S):
+            if '/order/details/' not in _row:
+                continue
+            _rowtxt = _norm_ws(_h.unescape(_row))
+            if naziv_n and naziv_n not in _rowtxt:
+                continue
+            _mid = re.search(r'/order/details/(\d+)', _row)
+            if not _mid:
+                continue
+            _oid = _mid.group(1)
+            _md = re.search(r'(\d{2}\.\d{2}\.\d{4})(?:\s+(\d{2}:\d{2}))?', _rowtxt)
+            _datum = (_md.group(1) + (" " + _md.group(2) if _md.group(2) else "")) if _md else ""
+            _ms = re.search(r'labelOrderStatus[^"]*"[^>]*>([^<]+)</span>', _row)
+            _status = _norm_ws(_h.unescape(_ms.group(1))) if _ms else ""
+            _mc = re.search(r'price-cell">\s*([\d.]+)\s*RSD', _row)
+            _cena = (_mc.group(1) + " RSD") if _mc else ""
+            rezultat.append({"id": _oid, "datum": _datum, "status": _status, "cena": _cena})
+        # najnovije prvo, ogranicenje
+        rezultat = rezultat[:max_por]
+        for _o in rezultat:
+            try:
+                det = s.get(base + "/order/details/" + _o["id"], timeout=45)
+                _st, _iu = _parse_order_items(det.text)
+                _o["stavke"] = _st
+            except Exception:
+                _o["stavke"] = []
+        return (rezultat, "")
+    except Exception as _e:
+        return ([], "Greška pri čitanju istorije: " + str(_e))
 
 
 def prikazi_administraciju():
@@ -912,6 +1066,50 @@ def prikazi_administraciju():
                     if st.button("↺ Pošalji ponovo (" + _lbl + ")", key="axr_" + _tag + "_" + str(sel_id)):
                         st.session_state.pop(_sk, None)
                         st.rerun()
+
+            st.markdown('<div class="adm-lbl" style="margin-top:18px;">🧾 Prethodne porudžbine (admin · ~3 meseca)</div>', unsafe_allow_html=True)
+            _hk = "hist_" + str(sistem) + "_" + str(sel_id)
+            if st.session_state.get("_komitenti_map") is None:
+                st.session_state["_komitenti_map"] = sb_komitenti_map()
+            _kmap = st.session_state.get("_komitenti_map") or {}
+            _naziv_kom = _kmap.get(int(sel_id), "")
+            if not _naziv_kom:
+                st.caption("Da bi se videla istorija, jednom treba povezati šifre komitenata iz admina.")
+                if st.button("🔗 Poveži šifre komitenata (jednokratno)", key="bk_" + str(sel_id)):
+                    with st.spinner("Čitam listu komitenata iz admina..."):
+                        _bn, _be = admin_build_komitenti()
+                    if _bn == 0:
+                        st.error(_be or "Nije uspelo.")
+                    else:
+                        st.session_state["_komitenti_map"] = sb_komitenti_map()
+                        st.success("Povezano " + str(_bn) + " komitenata.")
+                        st.rerun()
+            else:
+                if st.button("Učitaj istoriju porudžbina", key="lh_" + str(sel_id), use_container_width=True):
+                    import datetime as _dt2
+                    _do = _dt2.date.today()
+                    _od = _do - _dt2.timedelta(days=92)
+                    with st.spinner("Čitam porudžbine iz admina (može par sekundi)..."):
+                        _lst, _le = admin_istorija_komitenta(
+                            sel_id, _naziv_kom, _od.strftime("%d.%m.%Y"), _do.strftime("%d.%m.%Y"))
+                    st.session_state[_hk] = {"lst": _lst, "err": _le}
+                _hist = st.session_state.get(_hk)
+                if _hist:
+                    if _hist["err"]:
+                        st.error(_hist["err"])
+                    elif not _hist["lst"]:
+                        st.caption("Nema porudžbina za ovaj objekat u poslednja ~3 meseca.")
+                    else:
+                        st.caption("Pronađeno " + str(len(_hist["lst"])) + " porudžbina — klikni na datum za sadržaj.")
+                        for _o in _hist["lst"]:
+                            with st.expander("📅 " + (_o["datum"] or "?") + "   ·   " + (_o["status"] or "") + "   ·   " + (_o["cena"] or "")):
+                                if _o.get("stavke"):
+                                    import pandas as _pdh
+                                    _hd = _pdh.DataFrame([{"Artikal": _s["naziv"], "Kol.": _s["kol"], "Cena": _s["cena"]}
+                                                          for _s in _o["stavke"]])
+                                    st.dataframe(_hd, hide_index=True, use_container_width=True)
+                                else:
+                                    st.caption("Nema stavki (ili nisu učitane).")
         with _dc2:
             if "Ubačena porudžbina" in (v.get("reakcije") or []):
                 st.info("📦 Porudžbina je ubačena za ceo sistem (grupno).")
