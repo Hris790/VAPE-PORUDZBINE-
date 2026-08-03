@@ -184,11 +184,13 @@ HIT_CRVENO_ART   = 8    # ILI >= ovoliko artikala na nuli -> HITNO
 HIT_ZUTO_KOM     = 5
 HIT_ZUTO_ART     = 3
 def hitnost_objekta(stavke_obj):
-    """stavke_obj = lista stavki za jedan objekat (sve imaju porudzbinu > 0).
-    izgubljeno = predvidjena mesecna prodaja na artiklima koji su TRENUTNO na 0 lagera
-    (koliko kom mesecno objekat propušta jer je polica prazna)."""
-    n_nula = sum(1 for s in stavke_obj if int(s.get('lager', 0)) == 0)
-    izgubljeno = sum(int(s.get('pred', 0)) for s in stavke_obj if int(s.get('lager', 0)) == 0)
+    """stavke_obj = lista stavki za jedan objekat (mogu biti i artikli sa porudzbinom 0).
+    Urgentnost racunamo SAMO na artiklima koje predlazemo za porudzbinu (kol > 0),
+    da mrtvi artikli (bez prodaje, bez porudzbine) ne bi lazno dizali hitnost.
+    izgubljeno = predvidjena mesecna prodaja na artiklima koji su TRENUTNO na 0 lagera."""
+    _ord = [s for s in stavke_obj if int(s.get('kol', 0)) > 0]
+    n_nula = sum(1 for s in _ord if int(s.get('lager', 0)) == 0)
+    izgubljeno = sum(int(s.get('pred', 0)) for s in _ord if int(s.get('lager', 0)) == 0)
     if izgubljeno >= HIT_CRVENO_KOM or n_nula >= HIT_CRVENO_ART:
         nivo = 'crveno'
     elif izgubljeno >= HIT_ZUTO_KOM or n_nula >= HIT_ZUTO_ART:
@@ -202,9 +204,13 @@ HIT_RANG  = {'crveno': 0, 'zuto': 1, 'zeleno': 2}
 HIT_TEKST = {'crveno': 'Hitno', 'zuto': 'Srednje', 'zeleno': 'Može da čeka'}
 
 def stavke_iz_rezultata(result, engine):
-    """Napravi listu stavki (samo Porudzbina_2 > 0) za cuvanje u Supabase."""
+    """Napravi listu stavki za cuvanje u Supabase.
+    Cuvamo SVE artikle (i one sa porudzbinom 0) za objekte koji imaju bar
+    jedan artikal za porudzbinu — da koleginice u detalju vide ceo asortiman
+    objekta, a ne samo ono sto se poruci."""
     reg = engine.region_map if hasattr(engine, 'region_map') else {}
-    order = result[result['Porudzbina_2'] > 0]
+    _ordered_ids = set(result[result['Porudzbina_2'] > 0]['ID KOMITENTA'].tolist())
+    order = result[result['ID KOMITENTA'].isin(_ordered_ids)]
     stavke = []
     for _, r in order.iterrows():
         idk = int(r['ID KOMITENTA'])
@@ -467,6 +473,96 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
     doc.build(el)
     buf.seek(0)
     return buf.getvalue()
+
+
+def _admin_order_xlsx(rows):
+    """rows = lista tuplova (id_kupca, id_artikla, kolicina).
+    Vraca bajtove .xlsx u formatu koji admin (Nova porudzbina iz Excel-a) ocekuje:
+    kolone 'Id kupca', 'Id artikla', 'Kolicina' (tacno kao u sablonu)."""
+    import io as _io
+    from openpyxl import Workbook as _WB
+    _wb = _WB()
+    _ws = _wb.active
+    _ws.title = "Sheet1"
+    _ws.append(["Id kupca", "Id artikla", "Količina"])
+    for _k, _a, _q in rows:
+        _ws.append([int(_k), int(_a), int(_q)])
+    _buf = _io.BytesIO()
+    _wb.save(_buf)
+    return _buf.getvalue()
+
+
+def _admin_secret(k, d=""):
+    try:
+        import streamlit as _s
+        if hasattr(_s, "secrets") and k in _s.secrets:
+            return str(_s.secrets[k])
+    except Exception:
+        pass
+    import os
+    return os.environ.get(k, d)
+
+
+def posalji_u_admin(id_kupca, items):
+    """Prijavi se u admin i kreira porudzbinu direktno (bez rucnog uvoza).
+    items = lista dict {'idArticle': int, 'quantity': int}.
+    Vraca (ok: bool, poruka: str)."""
+    import re, requests
+    base = (_admin_secret("ADMIN_BASE_URL", "https://admin.vapeshop.rs") or "").rstrip("/")
+    email = _admin_secret("ADMIN_LOGIN_EMAIL", "")
+    pwd = _admin_secret("ADMIN_LOGIN_PASSWORD", "")
+    if not email or not pwd:
+        return (False, "Nije podešena admin prijava. Analitičar treba da doda ADMIN_LOGIN_EMAIL i ADMIN_LOGIN_PASSWORD u Secrets.")
+    items = [{"idArticle": int(i["idArticle"]), "quantity": int(i["quantity"])}
+             for i in items if int(i.get("quantity", 0)) > 0]
+    if not items:
+        return (False, "Nema stavki za slanje (sve količine su 0).")
+    _tok = re.compile(r'name="__RequestVerificationToken"[^>]*value="([^"]+)"')
+    s = requests.Session()
+    s.headers.update({"User-Agent": "Mozilla/5.0", "Accept-Language": "sr,en;q=0.8"})
+    try:
+        r = s.get(base + "/login", timeout=30)
+        m = _tok.search(r.text)
+        if not m:
+            return (False, "Ne mogu da otvorim login stranicu admina (proveri ADMIN_BASE_URL).")
+        s.post(base + "/login",
+               data={"Email": email, "Password": pwd,
+                     "__RequestVerificationToken": m.group(1)},
+               headers={"Referer": base + "/login"}, timeout=30, allow_redirects=True)
+        chk = s.get(base + "/orders-processing/new-order-from-excel", timeout=30)
+        if ("/login" in chk.url) or ('name="Password"' in chk.text):
+            return (False, "Prijava na admin nije uspela. Proveri email/lozinku u Secrets — ili admin blokira pristup sa servera aplikacije.")
+        m2 = _tok.search(chk.text)
+        if not m2:
+            return (False, "Ne mogu da nađem sigurnosni token na stranici za uvoz.")
+        xlsx = _admin_order_xlsx([(id_kupca, it["idArticle"], it["quantity"]) for it in items])
+        up = s.post(base + "/orders-processing/load-order-from-excel",
+                    files={"fileArticles": ("porudzbina.xlsx", xlsx,
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                    data={"__RequestVerificationToken": m2.group(1)},
+                    headers={"Referer": base + "/orders-processing/new-order-from-excel"},
+                    timeout=90, allow_redirects=True)
+        if up.status_code >= 400:
+            return (False, "Učitavanje Excel-a u admin nije prošlo (status " + str(up.status_code) + ").")
+        m3 = _tok.search(up.text)
+        _tok_val = (m3.group(1) if m3 else m2.group(1))
+        cr = s.post(base + "/orders-processing/create-order-from-in-memory-cart",
+                    json={"idUser": int(id_kupca), "items": items},
+                    headers={"RequestVerificationToken": _tok_val,
+                             "X-Requested-With": "XMLHttpRequest",
+                             "Referer": base + "/orders-processing/load-order-from-excel"},
+                    timeout=90)
+        if cr.status_code >= 400:
+            return (False, "Kreiranje porudžbine u adminu nije prošlo (status " + str(cr.status_code) + ").")
+        try:
+            j = cr.json()
+        except Exception:
+            return (False, "Admin je vratio neočekivan odgovor pri kreiranju porudžbine.")
+        if str(j.get("responseHeaderValue", "")).lower() == "ok":
+            return (True, "Porudžbina #" + str(j.get("idOrder", "?")) + " je kreirana u adminu.")
+        return (False, str(j.get("message", "Admin je odbio porudžbinu.")))
+    except requests.exceptions.RequestException as _e:
+        return (False, "Greška u komunikaciji sa adminom: " + str(_e))
 
 
 def prikazi_administraciju():
@@ -781,6 +877,45 @@ def prikazi_administraciju():
                     _njihova_new[str(int(_a["ida"]))] = 0
             if not _njihov_active:
                 st.caption("Njihova por. se unosi tek kad izabereš trebovanje Po njihovom sistemu.")
+
+            _nase_rows = [(sel_id, int(a["ida"]), int(a["kol"])) for a in _arts if int(a["kol"]) > 0]
+            _njih_rows = [(sel_id, int(a["ida"]), int(_njihova_new.get(str(int(a["ida"])), 0)))
+                          for a in _arts if int(_njihova_new.get(str(int(a["ida"])), 0)) > 0]
+            st.markdown('<div class="adm-lbl" style="margin-top:14px;">Ubaci u admin (šalje se direktno)</div>', unsafe_allow_html=True)
+            _nase_items = [{"idArticle": _a, "quantity": _q} for (_k, _a, _q) in _nase_rows]
+            _njih_items = [{"idArticle": _a, "quantity": _q} for (_k, _a, _q) in _njih_rows]
+            _xa, _xb = st.columns(2)
+            with _xa:
+                if st.button("📦 Naše količine → admin", key="axn_" + str(sel_id),
+                             use_container_width=True, disabled=(len(_nase_items) == 0),
+                             help="Naš predlog porudžbine — kreira porudžbinu u adminu"):
+                    with st.spinner("Šaljem u admin..."):
+                        _ok, _msg = posalji_u_admin(sel_id, _nase_items)
+                    (st.success if _ok else st.error)(_msg)
+            with _xb:
+                if st.button("📦 Njihove količine → admin", key="axj_" + str(sel_id),
+                             use_container_width=True, disabled=(len(_njih_items) == 0),
+                             help="Ono što su stvarno poručili (Njihova por.)"):
+                    with st.spinner("Šaljem u admin..."):
+                        _ok, _msg = posalji_u_admin(sel_id, _njih_items)
+                    (st.success if _ok else st.error)(_msg)
+            with st.expander("⬇️ Ili preuzmi Excel (ručni uvoz)"):
+                _ya, _yb = st.columns(2)
+                with _ya:
+                    st.download_button("Naše količine (.xlsx)",
+                        data=_admin_order_xlsx(_nase_rows),
+                        file_name="admin_" + str(sistem) + "_" + str(sel_id) + "_nase.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dxn_" + str(sel_id), use_container_width=True,
+                        disabled=(len(_nase_rows) == 0))
+                with _yb:
+                    st.download_button("Njihove količine (.xlsx)",
+                        data=_admin_order_xlsx(_njih_rows),
+                        file_name="admin_" + str(sistem) + "_" + str(sel_id) + "_njihove.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dxj_" + str(sel_id), use_container_width=True,
+                        disabled=(len(_njih_rows) == 0))
+                st.caption("Rezerva ako direktno slanje ne prođe: Porudžbine → Nova porudžbina iz Excel-a.")
         with _dc2:
             if "Ubačena porudžbina" in (v.get("reakcije") or []):
                 st.info("📦 Porudžbina je ubačena za ceo sistem (grupno).")
