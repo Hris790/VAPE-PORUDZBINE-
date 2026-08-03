@@ -820,6 +820,51 @@ def admin_istorija_komitenta(id_kupca, naziv, datum_od, datum_do, max_por=40):
         return ([], "Greška pri čitanju istorije: " + str(_e))
 
 
+def _to_int_kol(s):
+    """Parsiraj količinu iz stringa (npr. '12', '12,00', '12.0') u int."""
+    import re
+    s = str(s).strip()
+    if not s:
+        return 0
+    s = re.split(r'[.,]', s)[0]
+    s = re.sub(r'[^\d-]', '', s)
+    try:
+        return int(s)
+    except Exception:
+        return 0
+
+
+def _treb_posle_preseka(hist_lst, cutoff_date):
+    """Iz učitane istorije porudžbina saberi količine po artiklu za porudžbine
+    datirane >= cutoff_date, izuzimajući otkazane/stornirane. Vrati {ida: kom}."""
+    import datetime as _dt
+    out = {}
+    if not hist_lst:
+        return out
+    for _o in hist_lst:
+        _dstr = (_o.get("datum") or "").strip()
+        _md = _dstr.split(" ")[0] if _dstr else ""
+        _ok_datum = True
+        if cutoff_date and _md:
+            try:
+                _dd = _dt.datetime.strptime(_md, "%d.%m.%Y").date()
+                _ok_datum = _dd >= cutoff_date
+            except Exception:
+                _ok_datum = True
+        if not _ok_datum:
+            continue
+        _stat = (_o.get("status") or "").lower()
+        if ("otkaz" in _stat) or ("storn" in _stat) or ("odbij" in _stat) or ("ponist" in _stat) or ("poništ" in _stat):
+            continue
+        for _s in (_o.get("stavke") or []):
+            try:
+                _ida = int(_s.get("ida"))
+            except Exception:
+                continue
+            out[_ida] = out.get(_ida, 0) + _to_int_kol(_s.get("kol"))
+    return out
+
+
 def prikazi_administraciju():
     st.set_page_config(page_title="VAPE — Porudžbine", page_icon="📦",
                        layout="wide", initial_sidebar_state="collapsed")
@@ -1037,6 +1082,10 @@ def prikazi_administraciju():
     tab_lista, tab_detalj = st.tabs(["Lista objekata", "Detalj / obrada"])
 
     with tab_lista:
+        try:
+            _cut_list = datetime.date(int(str(mesec_key).split("-")[0]), int(str(mesec_key).split("-")[1]), 1)
+        except Exception:
+            _cut_list = None
         _rows = ""
         for o in objekti:
             z = _zona_disp(o["nivo"])
@@ -1047,8 +1096,15 @@ def prikazi_administraciju():
             else:
                 stat = '<span class="stat">Nepregledano</span>'
             _rc = "row-red" if o["nivo"] == "crveno" else ("row-org" if o["nivo"] == "zuto" else "")
+            # oznaka: da li je već trebovano posle 01. (samo za objekte čija je istorija učitana)
+            _treb_mark = ""
+            _hf = st.session_state.get("hist_" + str(sistem) + "_" + str(o["idk"]))
+            if _hf and not _hf.get("err"):
+                _tt = int(sum(_treb_posle_preseka(_hf.get("lst") or [], _cut_list).values()))
+                if _tt > 0:
+                    _treb_mark = ' <span title="Trebovano posle 01." style="color:#b45309;font-weight:700;">⚠️ posle 01. (' + str(_tt) + ')</span>'
             _nazlist = (komfull.get(int(o["idk"]), {}) or {}).get("naziv", "")
-            _nazcell = ('<td>' + _h_escape(_nazlist) + '</td>') if _nazlist else '<td class="mut">— naknadno</td>'
+            _nazcell = ('<td>' + _h_escape(_nazlist) + _treb_mark + '</td>') if _nazlist else ('<td class="mut">— naknadno' + _treb_mark + '</td>')
             _rows += ('<tr class="' + _rc + '">'
                 '<td class="idc">' + str(o["idk"]) + '</td>'
                 + _nazcell +
@@ -1125,30 +1181,78 @@ def prikazi_administraciju():
 
         _dc1, _dc2 = st.columns([1.7, 1])
         with _dc1:
-            st.markdown('<div class="adm-lbl">Porudžbina i lager · upiši „Njihovu por."</div>', unsafe_allow_html=True)
+            st.markdown('<div class="adm-lbl">Porudžbina i lager · upiši Njihovu por.</div>', unsafe_allow_html=True)
             _arts = sorted(o["lst"], key=lambda x: (int(x["lager"]), -int(x["kol"])))
             _njm = v.get("njihova") or {}
+
+            # --- Presek = 01. u mesecu izveštaja; trebovano posle preseka iz istorije ---
+            import datetime as _dtp
+            try:
+                _yy, _mm = str(mesec_key).split("-")[:2]
+                _cutoff = _dtp.date(int(_yy), int(_mm), 1)
+            except Exception:
+                _cutoff = None
+            _hk = "hist_" + str(sistem) + "_" + str(sel_id)
+            _naziv_kom = _knaziv
+            _hist_cache = st.session_state.get(_hk)
+            _treb_loaded = bool(_hist_cache and not _hist_cache.get("err"))
+            _treb_map = _treb_posle_preseka(_hist_cache.get("lst") or [], _cutoff) if _treb_loaded else {}
+            _treb_total = int(sum(_treb_map.values()))
+
+            def _load_hist():
+                import datetime as _dt2
+                _do = _dt2.date.today()
+                _od = _do - _dt2.timedelta(days=92)
+                if _cutoff and _cutoff < _od:
+                    _od = _cutoff  # da presek sigurno uđe u opseg
+                with st.spinner("Čitam porudžbine iz admina (par sekundi)..."):
+                    _lst, _le = admin_istorija_komitenta(
+                        sel_id, _naziv_kom, _od.strftime("%d.%m.%Y"), _do.strftime("%d.%m.%Y"))
+                st.session_state[_hk] = {"lst": _lst, "err": _le}
+
             def _sd(lg):
                 lg = int(lg)
                 return "🔴" if lg == 0 else ("🟡" if lg <= 2 else "🟢")
-            _adf = pd.DataFrame([{
-                " ": _sd(a["lager"]),
-                "Artikal": str(a["naziv"]),
-                "Naša por.": int(a["kol"]),
-                "Predikcija": int(a.get("pred", 0)),
-                "Lager": int(a["lager"]),
-                "Njihova por.": int(_njm.get(str(int(a["ida"])), 0)),
-            } for a in _arts])
-            _dised = [" ", "Artikal", "Naša por.", "Predikcija", "Lager"]
+
+            _dodatna_map = {}
+            _rows_adf = []
+            for a in _arts:
+                _ida = int(a["ida"]); _lg = int(a["lager"]); _kol = int(a["kol"])
+                _por = int(_treb_map.get(_ida, 0))
+                _realni = _lg + _por
+                _dod = max(_kol - _por, 0)
+                _dodatna_map[_ida] = _dod
+                _rows_adf.append({
+                    " ": _sd(_realni),
+                    "Artikal": str(a["naziv"]),
+                    "Predikcija": int(a.get("pred", 0)),
+                    "Lager (izv.)": _lg,
+                    "Posle 01.": _por,
+                    "Realni lager": _realni,
+                    "Naša por.": _kol,
+                    "Dodatna por.": _dod,
+                    "Njihova por.": int(_njm.get(str(_ida), 0)),
+                })
+            _adf = pd.DataFrame(_rows_adf)
+            _dised = [" ", "Artikal", "Predikcija", "Lager (izv.)", "Posle 01.",
+                      "Realni lager", "Naša por.", "Dodatna por."]
             if not _njihov_active:
                 _dised.append("Njihova por.")
+            if _treb_loaded and _treb_total > 0:
+                st.markdown('<div style="background:#fff4e5;border:1px solid #f0b429;border-radius:8px;'
+                            'padding:8px 12px;margin:2px 0 10px;color:#8a5a00;font-size:13px;font-weight:600;">'
+                            '⚠️ Ovaj objekat je već trebovao ' + str(_treb_total) + ' kom posle 01. — '
+                            'porudžbina je umanjena (vidi kolonu Dodatna por.).</div>', unsafe_allow_html=True)
             _edited = st.data_editor(_adf, hide_index=True, use_container_width=True,
                 disabled=_dised,
                 column_config={
                     " ": st.column_config.TextColumn(" ", width="small"),
-                    "Naša por.": st.column_config.NumberColumn(_por_lbl, help="Predlog porudžbine za zadati broj meseci"),
                     "Predikcija": st.column_config.NumberColumn("Predikcija (mesec)", help="Predviđena prodaja za mesec dana"),
-                    "Lager": st.column_config.NumberColumn("Lager"),
+                    "Lager (izv.)": st.column_config.NumberColumn("Lager (izveštaj)", help="Lager iz izveštaja — presek na 01. u mesecu"),
+                    "Posle 01.": st.column_config.NumberColumn("Posle 01.", help="Koliko je već trebovano iz admina posle 01. u mesecu"),
+                    "Realni lager": st.column_config.NumberColumn("Realni lager", help="Lager (izveštaj) + poručeno posle 01."),
+                    "Naša por.": st.column_config.NumberColumn(_por_lbl, help="Preporučena porudžbina (za zadati broj meseci)"),
+                    "Dodatna por.": st.column_config.NumberColumn("Dodatna por.", help="Naša por. minus već poručeno posle 01. — ovo se šalje u admin"),
                     "Njihova por.": st.column_config.NumberColumn("Njihova por.", help="Koliko su stvarno poručili", min_value=0, step=1),
                 }, key="ed_" + str(sel_id))
             _njihova_new = {}
@@ -1160,10 +1264,26 @@ def prikazi_administraciju():
             if not _njihov_active:
                 st.caption("Njihova por. se unosi tek kad izabereš trebovanje Po njihovom sistemu.")
 
-            _nase_rows = [(sel_id, int(a["ida"]), int(a["kol"])) for a in _arts if int(a["kol"]) > 0]
+            # Naše količine = preporučena porudžbina umanjena za već trebovano posle 01. (min 0)
+            _nase_rows = [(sel_id, int(a["ida"]), int(_dodatna_map.get(int(a["ida"]), 0)))
+                          for a in _arts if int(_dodatna_map.get(int(a["ida"]), 0)) > 0]
             _njih_rows = [(sel_id, int(a["ida"]), int(_njihova_new.get(str(int(a["ida"])), 0)))
                           for a in _arts if int(_njihova_new.get(str(int(a["ida"])), 0)) > 0]
             st.markdown('<div class="adm-lbl" style="margin-top:16px;">Ubaci u admin</div>', unsafe_allow_html=True)
+            if _treb_loaded:
+                if _treb_total > 0:
+                    st.caption("✅ Posle 01. je već trebovano " + str(_treb_total)
+                               + " kom — Naše količine se šalju umanjeno (vidi kolonu Dodatna por.).")
+                else:
+                    st.caption("✅ Nema trebovanja posle 01. — šalju se pune količine.")
+            elif _naziv_kom:
+                if st.button("🔄 Proveri trebovano posle 01. (umanji porudžbinu)",
+                             key="chk_" + str(sel_id), use_container_width=True):
+                    _load_hist()
+                    st.rerun()
+                st.caption("Dok ne proveriš, šalju se pune Naše količine.")
+            else:
+                st.caption("Za proveru trebovanja posle 01. učitaj šifarnik komitenata (potreban je naziv).")
             _nase_items = [{"idArticle": _a, "quantity": _q} for (_k, _a, _q) in _nase_rows]
             _njih_items = [{"idArticle": _a, "quantity": _q} for (_k, _a, _q) in _njih_rows]
 
@@ -1199,8 +1319,6 @@ def prikazi_administraciju():
                         st.rerun()
 
             st.markdown('<div class="adm-lbl" style="margin-top:18px;">🧾 Prethodne porudžbine (admin · ~3 meseca)</div>', unsafe_allow_html=True)
-            _hk = "hist_" + str(sistem) + "_" + str(sel_id)
-            _naziv_kom = _knaziv
             if not _naziv_kom:
                 st.caption("Nema naziva za ovaj objekat — učitaj šifarnik komitenata u Objavi izveštaja (ili poveži iz admina).")
                 if st.button("🔗 Poveži šifre komitenata iz admina", key="bk_" + str(sel_id)):
@@ -1214,13 +1332,8 @@ def prikazi_administraciju():
                         st.rerun()
             else:
                 if st.button("Učitaj istoriju porudžbina", key="lh_" + str(sel_id), use_container_width=True):
-                    import datetime as _dt2
-                    _do = _dt2.date.today()
-                    _od = _do - _dt2.timedelta(days=92)
-                    with st.spinner("Čitam porudžbine iz admina (može par sekundi)..."):
-                        _lst, _le = admin_istorija_komitenta(
-                            sel_id, _naziv_kom, _od.strftime("%d.%m.%Y"), _do.strftime("%d.%m.%Y"))
-                    st.session_state[_hk] = {"lst": _lst, "err": _le}
+                    _load_hist()
+                    st.rerun()
                 _hist = st.session_state.get(_hk)
                 if _hist:
                     if _hist["err"]:
