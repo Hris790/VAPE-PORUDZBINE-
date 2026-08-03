@@ -503,13 +503,30 @@ def _admin_secret(k, d=""):
     return os.environ.get(k, d)
 
 
-def sb_komitenti_map():
+def _sb_select_all(table, columns, step=1000):
+    """Pročitaj SVE redove iz tabele kroz paginaciju (Supabase/PostgREST vraća
+    max 1000 po upitu). Vraća listu dict-ova."""
     cli = _sb()
     if cli is None:
+        return []
+    out = []
+    start = 0
+    while True:
+        res = cli.table(table).select(columns).range(start, start + step - 1).execute()
+        batch = res.data or []
+        out.extend(batch)
+        if len(batch) < step:
+            break
+        start += step
+    return out
+
+
+def sb_komitenti_map():
+    if _sb() is None:
         return {}
     try:
-        res = cli.table("komitenti").select("idk,naziv").execute()
-        return {int(r["idk"]): (r.get("naziv") or "") for r in (res.data or [])}
+        rows = _sb_select_all("komitenti", "idk,naziv")
+        return {int(r["idk"]): (r.get("naziv") or "") for r in rows}
     except Exception:
         return {}
 
@@ -524,24 +541,23 @@ def sb_komitenti_save(mapping):
 
 
 def sb_komitenti_full():
-    """Vrati {idk: {naziv,email,telefon,mesto,adresa}}. Radi i ako kolone kontakata
-    još ne postoje (tada su prazne)."""
-    cli = _sb()
-    if cli is None:
+    """Vrati {idk: {naziv,email,telefon,mesto,adresa}} za SVE komitente (paginacija).
+    Radi i ako kolone kontakata još ne postoje (tada su prazne)."""
+    if _sb() is None:
         return {}
     try:
-        res = cli.table("komitenti").select("idk,naziv,email,telefon,mesto,adresa").execute()
+        rows = _sb_select_all("komitenti", "idk,naziv,email,telefon,mesto,adresa")
         out = {}
-        for r in (res.data or []):
+        for r in rows:
             out[int(r["idk"])] = {"naziv": r.get("naziv") or "", "email": r.get("email") or "",
                                   "telefon": r.get("telefon") or "", "mesto": r.get("mesto") or "",
                                   "adresa": r.get("adresa") or ""}
         return out
     except Exception:
         try:
-            res = cli.table("komitenti").select("idk,naziv").execute()
+            rows = _sb_select_all("komitenti", "idk,naziv")
             return {int(r["idk"]): {"naziv": r.get("naziv") or "", "email": "", "telefon": "",
-                                    "mesto": "", "adresa": ""} for r in (res.data or [])}
+                                    "mesto": "", "adresa": ""} for r in rows}
         except Exception:
             return {}
 
@@ -1060,8 +1076,8 @@ def prikazi_administraciju():
     if _bez_naziva:
         _fc1, _fc2 = st.columns([2, 1])
         with _fc1:
-            st.caption("ℹ️ " + str(len(_bez_naziva)) + " objekata nema naziv iz šifarnika "
-                       "(nisu u fajlu). Nazivi koji fale mogu da se povuku direktno iz admina.")
+            st.caption("ℹ️ " + str(len(_bez_naziva)) + " objekata nema naziv u šifarniku. "
+                       "Ako si ubacila fajl, klikni Osveži (F5); ostatak se može povući iz admina.")
         with _fc2:
             if st.button("🔗 Poveži nazive iz admina", key="fill_names", use_container_width=True):
                 with st.spinner("Čitam nazive iz admina..."):
@@ -2555,6 +2571,18 @@ with tab_obj:
         if not sb_dostupan():
             st.caption("Nedostupno dok Supabase nije podešen.")
         else:
+            _dc1, _dc2 = st.columns([2, 1])
+            with _dc2:
+                if st.button("🔍 Proveri šifarnik u bazi", key="kom_check", use_container_width=True):
+                    _all = _sb_select_all("komitenti", "idk,naziv,email")
+                    _sa_naz = sum(1 for r in _all if (r.get("naziv") or "").strip())
+                    _sa_mail = sum(1 for r in _all if (r.get("email") or "").strip())
+                    st.session_state["_kom_check"] = {"uk": len(_all), "naz": _sa_naz, "mail": _sa_mail}
+            _chk = st.session_state.get("_kom_check")
+            if _chk:
+                with _dc1:
+                    st.caption("U bazi: " + str(_chk["uk"]) + " komitenata · sa nazivom " + str(_chk["naz"])
+                               + " · sa mejlom " + str(_chk["mail"]) + ".")
             up_k = st.file_uploader("Excel šifarnika komitenata (.xlsx)", type=['xlsx', 'xls'],
                                     key="kom_upl", label_visibility="collapsed")
             if up_k is not None:
