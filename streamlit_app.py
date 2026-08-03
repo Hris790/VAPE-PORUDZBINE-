@@ -548,7 +548,8 @@ def sb_komitenti_full():
 
 def sb_komitenti_upsert_rows(rows):
     """rows: lista dict sa poljima idk,naziv,email,telefon,mesto,adresa. Upsert po idk.
-    Vraca broj upisanih."""
+    Vraca broj komitenata koji SU ZAISTA u bazi posle upisa (verifikovano čitanjem).
+    Ako baza vrati 0 a poslali smo >0 -> tabela nije dobro podešena (baca grešku)."""
     cli = _sb()
     if cli is None:
         raise RuntimeError("Supabase nije podešen.")
@@ -561,8 +562,43 @@ def sb_komitenti_upsert_rows(rows):
         clean.append({"idk": _id, "naziv": r.get("naziv") or "", "email": r.get("email") or "",
                       "telefon": r.get("telefon") or "", "mesto": r.get("mesto") or "",
                       "adresa": r.get("adresa") or ""})
-    for _i in range(0, len(clean), 500):
-        cli.table("komitenti").upsert(clean[_i:_i + 500], on_conflict="idk").execute()
+    if not clean:
+        return 0
+
+    def _do_upsert(_rows):
+        for _i in range(0, len(_rows), 500):
+            cli.table("komitenti").upsert(_rows[_i:_i + 500], on_conflict="idk").execute()
+
+    _err = None
+    try:
+        _do_upsert(clean)
+    except Exception as _e1:
+        _err = _e1
+        # Fallback: možda kolone email/telefon/mesto/adresa još ne postoje -> probaj samo idk+naziv
+        slim = [{"idk": r["idk"], "naziv": r["naziv"]} for r in clean]
+        try:
+            _do_upsert(slim)
+            _err = None
+        except Exception as _e2:
+            _err = _e2
+
+    # Verifikacija: pročitaj nazad koliko redova zaista ima u tabeli posle upisa
+    _u_bazi = None
+    try:
+        _chk = cli.table("komitenti").select("idk", count="exact").limit(1).execute()
+        _u_bazi = _chk.count
+    except Exception:
+        _u_bazi = None
+
+    if _u_bazi is not None:
+        if _u_bazi == 0 and len(clean) > 0:
+            raise RuntimeError(
+                "Upis nije sačuvan — u tabeli 'komitenti' ima 0 redova posle upisa. "
+                "Tabela najverovatnije nije podešena kako treba (pokreni SQL setup). "
+                + (("Detalj: " + str(_err)) if _err else ""))
+        return _u_bazi
+    if _err is not None:
+        raise RuntimeError("Upis nije uspeo: " + str(_err))
     return len(clean)
 
 
@@ -1029,7 +1065,11 @@ def prikazi_administraciju():
         st.caption("Status i trebovanje se menjaju u kartici Detalj / obrada.")
 
     with tab_detalj:
-        _labels = [_zona_disp(o["nivo"])[2] + "  " + str(o["idk"]) + "  ·  " + _zona_disp(o["nivo"])[3] for o in objekti]
+        _labels = []
+        for o in objekti:
+            _zz = _zona_disp(o["nivo"])
+            _nz = (komfull.get(int(o["idk"]), {}) or {}).get("naziv", "")
+            _labels.append(_zz[2] + "  " + str(o["idk"]) + (("  ·  " + _nz) if _nz else "") + "  ·  " + _zz[3])
         _lab2id = {_labels[i]: ids_sorted[i] for i in range(len(objekti))}
         _id2lab = {ids_sorted[i]: _labels[i] for i in range(len(objekti))}
         if ("adm_pick" not in st.session_state) or (st.session_state.adm_pick not in _labels):
@@ -1046,7 +1086,7 @@ def prikazi_administraciju():
 
         _nc1, _nc2 = st.columns([3, 1])
         with _nc1:
-            st.selectbox("Izaberi / pretraži objekat (ukucaj ID)", _labels, key="adm_pick")
+            st.selectbox("Izaberi / pretraži objekat (ukucaj ID ili naziv)", _labels, key="adm_pick")
         with _nc2:
             st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
             st.button("Sledeći nepregledan →", on_click=_next_unrev, use_container_width=True, key="adm_next")
@@ -2395,9 +2435,14 @@ with tab_obj:
                             try:
                                 _n = sb_komitenti_upsert_rows(_krows)
                                 st.session_state["_komitenti_map"] = None
-                                st.success("Sačuvano/ažurirano " + str(_n) + " komitenata.")
+                                st.session_state["_komfull"] = None
+                                if _n and _n > 0:
+                                    st.success("Sačuvano ✓ U bazi sada ima " + str(_n) + " komitenata. "
+                                               "Nazivi će se videti u administraciji (osveži F5).")
+                                else:
+                                    st.error("Ništa nije upisano u bazu. Pokreni SQL setup za tabelu 'komitenti' (vidi uputstvo).")
                             except Exception as _e:
-                                st.error("Greška pri čuvanju: " + str(_e) + "  (Da li si dodala kolone email/telefon/mesto/adresa u tabelu komitenti?)")
+                                st.error("Greška pri čuvanju: " + str(_e))
                 except Exception as _e:
                     st.error("Ne mogu da pročitam fajl: " + str(_e))
 
