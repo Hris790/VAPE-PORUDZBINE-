@@ -2128,18 +2128,22 @@ def prikazi_direktore():
                 _render_sistem_report(_partial_iz_stavki(podaci.get("stavke") or []), False)
         return
 
-    # ---------- KARTICA 3: IZVEŠTAJ PRODAJE (dashboard) ----------
+    # ---------- KARTICA 3: IZVEŠTAJ PRODAJE (dashboard, pun ekran) ----------
     if _view == "prodaja":
-        st.markdown('<div style="font-size:20px;font-weight:800;margin:6px 0 12px;">💹 Izveštaj prodaje</div>', unsafe_allow_html=True)
+        # Proširi na pun ekran (samo ovaj prikaz)
+        st.markdown("<style>.block-container{max-width:100% !important;"
+                    "padding-left:1rem !important;padding-right:1rem !important;padding-top:10px !important;}</style>",
+                    unsafe_allow_html=True)
         _izv = sb_ucitaj_izvestaj_prodaje()
         if not _izv or not _izv.get("html"):
             st.info("Izveštaj prodaje još nije objavljen. Analitičar ga pravi u delu Objava izveštaja → Izveštaj prodaje.")
             return
         _mlbl = _izv.get("mesec_label") or ""
         _gen = _izv.get("generisano") or ""
-        _tc1, _tc2 = st.columns([2, 1])
+        _tc1, _tc2 = st.columns([4, 1])
         with _tc1:
-            st.caption("Poslednji mesec: " + str(_mlbl) + ("  ·  generisano " + str(_gen) if _gen else ""))
+            st.caption("💹 Izveštaj prodaje · poslednji mesec " + str(_mlbl)
+                       + ("  ·  generisano " + str(_gen) if _gen else ""))
         with _tc2:
             _xb64 = _izv.get("xlsx_b64")
             if _xb64:
@@ -2152,7 +2156,7 @@ def prikazi_direktore():
                 except Exception:
                     pass
         import streamlit.components.v1 as _components
-        _components.html(_izv["html"], height=1400, scrolling=True)
+        _components.html(_izv["html"], height=2600, scrolling=True)
         return
 
 
