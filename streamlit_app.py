@@ -1027,12 +1027,12 @@ def prikazi_administraciju():
     /* streamlit kontrole suptilnije */
     .stButton>button{border-radius:9px;font-weight:600;}
     button[data-testid="baseButton-primary"]{background:#7c3aed !important;border-color:#7c3aed !important;color:#fff !important;}
-    /* dugmad za slanje u admin — jasno obojena i krupnija */
-    [class*="st-key-axn_"] button{background:#17a34a !important;border-color:#17a34a !important;color:#fff !important;font-weight:700 !important;font-size:15px !important;padding:12px 8px !important;box-shadow:0 2px 8px rgba(23,163,74,.25) !important;}
+    /* dugmad za slanje u admin — jasno obojena, kompaktna */
+    [class*="st-key-axn_"] button{background:#16a34a !important;border-color:#16a34a !important;color:#fff !important;font-weight:600 !important;font-size:13px !important;padding:7px 12px !important;border-radius:8px !important;box-shadow:none !important;}
     [class*="st-key-axn_"] button:hover{background:#128a3e !important;border-color:#128a3e !important;}
-    [class*="st-key-axj_"] button{background:#f2820c !important;border-color:#f2820c !important;color:#fff !important;font-weight:700 !important;font-size:15px !important;padding:12px 8px !important;box-shadow:0 2px 8px rgba(242,130,12,.25) !important;}
-    [class*="st-key-axj_"] button:hover{background:#d97008 !important;border-color:#d97008 !important;}
-    .stButton button[kind="primary"]{background:#7c3aed !important;border-color:#7c3aed !important;color:#fff !important;}
+    [class*="st-key-axj_"] button{background:#f59e0b !important;border-color:#f59e0b !important;color:#fff !important;font-weight:600 !important;font-size:13px !important;padding:7px 12px !important;border-radius:8px !important;box-shadow:none !important;}
+    [class*="st-key-axj_"] button:hover{background:#d97706 !important;border-color:#d97706 !important;}
+    .stButton button[kind="primary"]{background:#7c3aed !important;border-color:#7c3aed !important;color:#fff !important;font-size:13.5px !important;padding:8px 14px !important;border-radius:8px !important;font-weight:600 !important;}
     .stMultiSelect [data-baseweb="tag"]{background:#f2effc !important;color:#5b21b6 !important;border:none !important;}
     .stMultiSelect [data-baseweb="tag"] span{color:#5b21b6 !important;}
     </style>""", unsafe_allow_html=True)
@@ -1322,37 +1322,6 @@ def prikazi_administraciju():
         _hk = "hist_" + str(sistem) + "_" + str(sel_id)
         _naziv_kom = _knaziv
 
-        def _load_hist():
-            import datetime as _dt2
-            _do = _dt2.date.today()
-            _od = _do - _dt2.timedelta(days=92)
-            if _cutoff and _cutoff < _od:
-                _od = _cutoff  # da presek sigurno uđe u opseg
-            with st.spinner("Čitam porudžbine iz admina (par sekundi)..."):
-                _lst, _le = admin_istorija_komitenta(
-                    sel_id, _naziv_kom, _od.strftime("%d.%m.%Y"), _do.strftime("%d.%m.%Y"))
-            st.session_state[_hk] = {"lst": _lst, "err": _le}
-
-        # Dugme gore desno: povuci sve iz admina (istorija + dodatna porudžbina) odjednom
-        _tc1, _tc2 = st.columns([2.4, 1])
-        with _tc2:
-            if _naziv_kom:
-                if st.button("🔄 Ažuriraj iz admina", key="refresh_admin_" + str(sel_id),
-                             use_container_width=True, type="primary"):
-                    _load_hist()
-                    st.rerun()
-            else:
-                st.button("🔄 Ažuriraj iz admina", key="refresh_admin_dis_" + str(sel_id),
-                          use_container_width=True, disabled=True)
-        with _tc1:
-            _hc0 = st.session_state.get(_hk)
-            if _hc0 and not _hc0.get("err") and _hc0.get("lst") is not None:
-                st.caption("✅ Podaci iz admina ažurirani — prethodne porudžbine i dodatna porudžbina su ispod.")
-            elif not _naziv_kom:
-                st.caption("Za ažuriranje iz admina potreban je naziv (učitaj šifarnik komitenata).")
-            else:
-                st.caption("Klikni Ažuriraj iz admina da se povuku prethodne porudžbine i izračuna dodatna.")
-
         _dc1, _dc2 = st.columns([1.7, 1])
         with _dc1:
             st.markdown('<div class="adm-lbl">Porudžbina i lager · upiši Njihovu por.</div>', unsafe_allow_html=True)
@@ -1388,35 +1357,40 @@ def prikazi_administraciju():
                     "Njihova por.": int(_njm.get(str(_ida), 0)),
                 })
             _adf = pd.DataFrame(_rows_adf)
-            _dised = [" ", "Artikal", "Predikcija", "Lager (izv.)", "Posle 01.",
-                      "Realni lager", "Naša por.", "Dodatna por."]
-            if not _njihov_active:
-                _dised.append("Njihova por.")
             if _treb_loaded and _treb_total > 0:
                 st.markdown('<div style="background:#fff4e5;border:1px solid #f0b429;border-radius:8px;'
                             'padding:8px 12px;margin:2px 0 10px;color:#8a5a00;font-size:13px;font-weight:600;">'
-                            '⚠️ Ovaj objekat je već trebovao ' + str(_treb_total) + ' kom posle 01. — '
-                            'porudžbina je umanjena (vidi kolonu Dodatna por.).</div>', unsafe_allow_html=True)
-            _edited = st.data_editor(_adf, hide_index=True, use_container_width=True,
-                disabled=_dised,
-                column_config={
-                    " ": st.column_config.TextColumn(" ", width="small"),
-                    "Predikcija": st.column_config.NumberColumn("Predikcija (mesec)", help="Predviđena prodaja za mesec dana"),
-                    "Lager (izv.)": st.column_config.NumberColumn("Lager (izveštaj)", help="Lager iz izveštaja — presek na 01. u mesecu"),
-                    "Posle 01.": st.column_config.NumberColumn("Posle 01.", help="Koliko je već trebovano iz admina posle 01. u mesecu"),
-                    "Realni lager": st.column_config.NumberColumn("Realni lager", help="Lager (izveštaj) + poručeno posle 01."),
-                    "Naša por.": st.column_config.NumberColumn(_por_lbl, help="Preporučena porudžbina (za zadati broj meseci)"),
-                    "Dodatna por.": st.column_config.NumberColumn("🟩 Dodatna por.", help="Naša por. minus već poručeno posle 01. — ovo se šalje u admin"),
-                    "Njihova por.": st.column_config.NumberColumn("Njihova por.", help="Koliko su stvarno poručili", min_value=0, step=1),
-                }, key="ed_" + str(sel_id))
-            _njihova_new = {}
-            for _i, _a in enumerate(_arts):
-                try:
-                    _njihova_new[str(int(_a["ida"]))] = int(_edited.iloc[_i]["Njihova por."])
-                except Exception:
-                    _njihova_new[str(int(_a["ida"]))] = 0
-            if not _njihov_active:
-                st.caption("Njihova por. se unosi tek kad izabereš trebovanje Po njihovom sistemu.")
+                            '⚠️ Već trebovano ' + str(_treb_total) + ' kom posle 01. — porudžbina je umanjena '
+                            '(zelena kolona Dodatna por.).</div>', unsafe_allow_html=True)
+            _colcfg = {
+                " ": st.column_config.TextColumn(" ", width="small"),
+                "Predikcija": st.column_config.NumberColumn("Predikcija (mesec)", help="Predviđena prodaja za mesec dana"),
+                "Lager (izv.)": st.column_config.NumberColumn("Lager (izveštaj)", help="Lager iz izveštaja — presek na 01. u mesecu"),
+                "Posle 01.": st.column_config.NumberColumn("Posle 01.", help="Koliko je već trebovano iz admina posle 01. u mesecu"),
+                "Realni lager": st.column_config.NumberColumn("Realni lager", help="Lager (izveštaj) + poručeno posle 01."),
+                "Naša por.": st.column_config.NumberColumn(_por_lbl, help="Preporučena porudžbina (za zadati broj meseci)"),
+                "Dodatna por.": st.column_config.NumberColumn("Dodatna por.", help="Naša por. minus već poručeno posle 01. — ovo se šalje u admin"),
+                "Njihova por.": st.column_config.NumberColumn("Njihova por.", help="Koliko su stvarno poručili", min_value=0, step=1),
+            }
+            if _njihov_active:
+                _order = [" ", "Artikal", "Predikcija", "Lager (izv.)", "Posle 01.",
+                          "Realni lager", "Naša por.", "Dodatna por.", "Njihova por."]
+                _edited = st.data_editor(_adf[_order], hide_index=True, use_container_width=True,
+                    disabled=[c for c in _order if c != "Njihova por."],
+                    column_config=_colcfg, key="ed_" + str(sel_id))
+                _njihova_new = {}
+                for _i, _a in enumerate(_arts):
+                    try:
+                        _njihova_new[str(int(_a["ida"]))] = int(_edited.iloc[_i]["Njihova por."])
+                    except Exception:
+                        _njihova_new[str(int(_a["ida"]))] = 0
+            else:
+                _order = [" ", "Artikal", "Predikcija", "Lager (izv.)", "Posle 01.",
+                          "Realni lager", "Naša por.", "Dodatna por."]
+                _sty = _adf[_order].style.set_properties(subset=["Dodatna por."], **{
+                    "background-color": "#dcfce7", "color": "#14532d", "font-weight": "700"})
+                st.dataframe(_sty, hide_index=True, use_container_width=True, column_config=_colcfg)
+                _njihova_new = {str(int(a["ida"])): int(_njm.get(str(int(a["ida"])), 0)) for a in _arts}
 
             # Naše količine = preporučena porudžbina umanjena za već trebovano posle 01. (min 0)
             _nase_rows = [(sel_id, int(a["ida"]), int(_dodatna_map.get(int(a["ida"]), 0)))
@@ -1434,31 +1408,6 @@ def prikazi_administraciju():
                 st.caption("ℹ️ Klikni Ažuriraj iz admina (gore) da se količine umanje za već poručeno posle 01.")
             else:
                 st.caption("Za proveru trebovanja posle 01. učitaj šifarnik komitenata (potreban je naziv).")
-            # Upadljiv (zeleni) prikaz porudžbine koja se šalje u admin.
-            # Zavisi od izabranog trebovanja: „po njihovom" -> njihova kolona; inače naša (umanjena).
-            if _njihov_active:
-                _box_rows = _njih_rows
-                _title = "➡️ NJIHOVO TREBOVANJE — šalje se u admin"
-            else:
-                _box_rows = _nase_rows
-                _title = ("➡️ DODATNA PORUDŽBINA — šalje se (umanjeno za već poručeno)"
-                          if (_treb_loaded and _treb_total > 0)
-                          else "➡️ NAŠE TREBOVANJE — šalje se u admin")
-            if _box_rows:
-                _naz_by_ida = {int(a["ida"]): str(a["naziv"]) for a in _arts}
-                _tot_send = sum(_q for (_k, _a, _q) in _box_rows)
-                _items_html = "".join(
-                    '<div style="display:flex;justify-content:space-between;padding:2px 0;border-top:1px solid #bbf7d0;">'
-                    '<span>' + _h_escape(_naz_by_ida.get(_a, str(_a))) + '</span>'
-                    '<span style="font-weight:800;">' + str(_q) + ' kom</span></div>'
-                    for (_k, _a, _q) in _box_rows)
-                st.markdown(
-                    '<div style="background:#e7f9ee;border:2px solid #22c55e;border-radius:10px;'
-                    'padding:10px 14px;margin:8px 0 12px;">'
-                    '<div style="color:#166534;font-weight:800;font-size:13px;margin-bottom:4px;">'
-                    + _title + '  (' + str(_tot_send) + ' kom)</div>'
-                    '<div style="color:#14532d;font-size:13px;">' + _items_html + '</div></div>',
-                    unsafe_allow_html=True)
             _nase_items = [{"idArticle": _a, "quantity": _q} for (_k, _a, _q) in _nase_rows]
             _njih_items = [{"idArticle": _a, "quantity": _q} for (_k, _a, _q) in _njih_rows]
 
@@ -1471,14 +1420,14 @@ def prikazi_administraciju():
                     _ok, _msg = posalji_u_admin(sel_id, _items)
                 st.session_state[_sk] = {"ok": _ok, "msg": _msg}
 
-            _xa, _xb = st.columns(2)
+            _xa, _xb, _xsp = st.columns([1.3, 1.3, 1])
             with _xa:
-                _clk_nas = st.button("📦 Naše količine → ADMIN", key="axn_" + str(sel_id),
-                                     type="primary", use_container_width=True,
+                _clk_nas = st.button("📦 Naše → admin", key="axn_" + str(sel_id),
+                                     use_container_width=True,
                                      disabled=(len(_nase_items) == 0))
             with _xb:
-                _clk_nj = st.button("📦 Njihove količine → ADMIN", key="axj_" + str(sel_id),
-                                    type="primary", use_container_width=True,
+                _clk_nj = st.button("📦 Njihove → admin", key="axj_" + str(sel_id),
+                                    use_container_width=True,
                                     disabled=(len(_njih_items) == 0))
             if _clk_nas:
                 _push_admin("nas", _nase_items)
@@ -1548,7 +1497,7 @@ def prikazi_administraciju():
             _nap = st.text_area("Napomena", value=(v.get("napomena", "") or ""), key="nap_" + str(sel_id),
                                 height=72, label_visibility="collapsed",
                                 placeholder="npr. zvati posle 15h, tražiti vlasnika...")
-            if st.button("Sačuvaj status", key="savest_" + str(sel_id), use_container_width=True, type="primary"):
+            if st.button("💾 Sačuvaj status", key="savest_" + str(sel_id), type="primary"):
                 if not _can:
                     st.error("Izaberi bar jednu reakciju — ne može da se sačuva samo napomena.")
                 elif _tip_val == "njihov" and sum(int(x) for x in _njihova_new.values()) == 0:
