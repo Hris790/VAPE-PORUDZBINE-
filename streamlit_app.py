@@ -274,6 +274,56 @@ def sb_plan_meseci():
         return []
     return [r["mesec"] for r in (res.data or [])]
 
+# ---- Rokovi (postavlja direktor; 3 posebna: administracija / sistemi / prodaja) ----
+@st.cache_data(ttl=30)
+def sb_rokovi_all():
+    cli = _sb()
+    if cli is None:
+        return {}
+    try:
+        res = cli.table("rokovi").select("mesec,rok_admin,rok_sistemi,rok_prodaja,napomena").execute()
+        return {r["mesec"]: r for r in (res.data or [])}
+    except Exception:
+        return {}
+
+def sb_rokovi_get(mesec_key):
+    try:
+        return sb_rokovi_all().get(mesec_key, {}) or {}
+    except Exception:
+        return {}
+
+def sb_rokovi_set(mesec_key, rok_admin, rok_sistemi, rok_prodaja, napomena):
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    payload = {"mesec": mesec_key,
+               "rok_admin": rok_admin or None, "rok_sistemi": rok_sistemi or None,
+               "rok_prodaja": rok_prodaja or None, "napomena": napomena or "",
+               "azurirano": datetime.datetime.now().isoformat()}
+    cli.table("rokovi").upsert(payload, on_conflict="mesec").execute()
+    try:
+        sb_rokovi_all.clear()
+    except Exception:
+        pass
+
+def _rok_fmt(s):
+    """'YYYY-MM-DD' -> 'DD.MM.YYYY' (ili prazno)."""
+    if not s:
+        return ""
+    try:
+        return datetime.date.fromisoformat(str(s)[:10]).strftime("%d.%m.%Y")
+    except Exception:
+        return str(s)
+
+def _rok_je_prosao(s):
+    """True ako je rok (YYYY-MM-DD) prošao (danas je posle roka)."""
+    if not s:
+        return False
+    try:
+        return datetime.date.today() > datetime.date.fromisoformat(str(s)[:10])
+    except Exception:
+        return False
+
 # ---- HITNOST po objektu (na osnovu niskog lagera) ----
 # Pragovi su namerno apsolutni i lako se menjaju (dole dve brojke).
 HIT_CRVENO_KOM   = 15   # >= ovoliko kom/mesec na artiklima bez lagera -> HITNO
@@ -1385,6 +1435,16 @@ def prikazi_administraciju():
         st.warning("Nema dostupnih sistema.")
         return
 
+    # Rok koji je direktor postavio za ovaj mesec (administracija radi do tog roka)
+    _rk_adm = sb_rokovi_get(mesec_key).get("rok_admin")
+    if _rk_adm:
+        _proso = _rok_je_prosao(_rk_adm)
+        _bg = "#fef2f2;border-color:#fecaca;color:#b42318" if _proso else "#f0fdf4;border-color:#bbf7d0;color:#166534"
+        _txt = ("Rok je istekao (" + _rok_fmt(_rk_adm) + ") — izveštaj je zaključan i predat direktoru."
+                if _proso else "Rok za predaju izveštaja (" + _sel_lbl + "): " + _rok_fmt(_rk_adm))
+        st.markdown('<div style="background:' + _bg + ';border:1px solid;border-radius:10px;padding:9px 14px;'
+                    'font-size:12.5px;font-weight:600;margin:2px 0 12px;">⏰ ' + _txt + '</div>', unsafe_allow_html=True)
+
     _pcx = st.columns([1.5, 1, 2])
     with _pcx[0]:
         if st.button("📄 Napravi PDF izveštaj (" + _sel_lbl + ")", key="pdf_make", use_container_width=True):
@@ -1421,7 +1481,7 @@ def prikazi_administraciju():
 
     # --- Zaključavanje meseca: predato ručno ili istekao rok (rok postavljaju direktori) ---
     _predato = bool(meta.get("predato"))
-    _rok = meta.get("rok")  # 'YYYY-MM-DD' ako je postavljen
+    _rok = sb_rokovi_get(mesec_key).get("rok_admin") or meta.get("rok")  # 'YYYY-MM-DD' ako je postavljen
     _rok_prosao = False
     if _rok:
         try:
@@ -2323,7 +2383,7 @@ def prikazi_direktore():
                     'Pregled izveštaja i efikasnosti administracije.</div>', unsafe_allow_html=True)
         st.markdown('<div style="font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:#9aa0ad;'
                     'font-weight:700;margin-bottom:12px;">Kartice</div>', unsafe_allow_html=True)
-        _cc1, _cc2, _cc3 = st.columns(3)
+        _cc1, _cc2, _cc3, _cc4 = st.columns(4)
         with _cc1:
             with st.container(border=True):
                 st.markdown('<div style="font-size:32px;">📊</div>'
@@ -2348,16 +2408,95 @@ def prikazi_direktore():
                             unsafe_allow_html=True)
                 if st.button("Otvori →", key="dir_open_prod", use_container_width=True):
                     st.session_state["dir_view"] = "prodaja"; st.rerun()
+        with _cc4:
+            with st.container(border=True):
+                st.markdown('<div style="font-size:32px;">📅</div>'
+                            '<div style="font-size:16px;font-weight:800;margin:6px 0 4px;">Rokovi</div>'
+                            '<div style="font-size:13px;color:#8b8fa0;line-height:1.5;margin-bottom:12px;">Postavi rokove po mesecu: administracija, izveštaj po sistemu i osvežavanje izveštaja prodaje.</div>',
+                            unsafe_allow_html=True)
+                if st.button("Otvori →", key="dir_open_rok", use_container_width=True):
+                    st.session_state["dir_view"] = "rokovi"; st.rerun()
         return
 
     if st.button("← Nazad na kartice", key="dir_back"):
         st.session_state["dir_view"] = "dash"; st.rerun()
+
+    # ---------- KARTICA 4: ROKOVI ----------
+    if _view == "rokovi":
+        st.markdown('<div style="font-size:20px;font-weight:800;margin:6px 0 6px;">📅 Rokovi</div>', unsafe_allow_html=True)
+        st.caption("Postavi rokove po mesecu. Administracija radi do svog roka pa se zaključava; izveštaj efikasnosti "
+                   "vidiš tek kad rok prođe. Za izveštaj po sistemu direktori vide poruku o roku dok se ne objavi. "
+                   "Izveštaj prodaje se uvek vidi, a rok i napomena stoje u uglu.")
+
+        # meseci: par unazad + par unapred + objavljeni
+        _today = datetime.date.today()
+        _opts = set(_mes_keys)
+        _yy, _mm = _today.year, _today.month - 2
+        while _mm <= 0:
+            _mm += 12; _yy -= 1
+        for _ in range(9):
+            _opts.add(str(_yy) + "-" + ("0" + str(_mm))[-2:])
+            _mm += 1
+            if _mm > 12:
+                _mm = 1; _yy += 1
+        _opts = sorted(_opts, reverse=True)
+        _rsel = st.selectbox("Mesec", _opts, format_func=mesec_label, key="rok_mes_sel")
+        _post = sb_rokovi_get(_rsel)
+
+        def _dflt(v):
+            try:
+                return datetime.date.fromisoformat(str(v)[:10])
+            except Exception:
+                return _today
+
+        _r1, _r2, _r3 = st.columns(3)
+        with _r1:
+            _da = st.date_input("Rok — Izveštaj administracije", value=_dflt(_post.get("rok_admin")),
+                                key="rok_admin_in", format="DD.MM.YYYY")
+        with _r2:
+            _ds = st.date_input("Rok — Izveštaj po sistemu", value=_dflt(_post.get("rok_sistemi")),
+                                key="rok_sis_in", format="DD.MM.YYYY")
+        with _r3:
+            _dp = st.date_input("Rok — Osvežavanje izveštaja prodaje", value=_dflt(_post.get("rok_prodaja")),
+                                key="rok_prod_in", format="DD.MM.YYYY")
+        _nap = st.text_area("Napomena (za izveštaj prodaje — šta osvežiti, na šta obratiti pažnju)",
+                            value=_post.get("napomena") or "", key="rok_nap_in", height=80)
+        if st.button("💾 Sačuvaj rokove", key="rok_save", type="primary"):
+            try:
+                sb_rokovi_set(_rsel, _da.isoformat(), _ds.isoformat(), _dp.isoformat(), _nap)
+                st.success("Rokovi za " + mesec_label(_rsel) + " sačuvani.")
+                st.rerun()
+            except Exception as _e:
+                st.error("Greška pri čuvanju: " + str(_e))
+
+        _all = sb_rokovi_all()
+        if _all:
+            st.markdown("<div style='margin:18px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;"
+                        "color:#9aa0ad;font-weight:700;'>Postavljeni rokovi</div>", unsafe_allow_html=True)
+            _rows = []
+            for _mk in sorted(_all.keys(), reverse=True):
+                _v = _all[_mk]
+                _rows.append({"Mesec": mesec_label(_mk),
+                              "Administracija": _rok_fmt(_v.get("rok_admin")),
+                              "Po sistemu": _rok_fmt(_v.get("rok_sistemi")),
+                              "Izveštaj prodaje": _rok_fmt(_v.get("rok_prodaja")),
+                              "Napomena": (_v.get("napomena") or "")[:60]})
+            st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
+        return
 
     # ---------- KARTICA 1: EFIKASNOST ADMINISTRACIJE ----------
     if _view == "efikasnost":
         st.markdown('<div style="font-size:20px;font-weight:800;margin:6px 0 14px;">📊 Izveštaj efikasnosti administracije</div>', unsafe_allow_html=True)
         _sel_lbl = st.selectbox("Mesec", _mlbls, index=0, key="dir_efik_mes")
         mesec_key = _mes_keys[_mlbls.index(_sel_lbl)]
+
+        # Zaključavanje: izveštaj efikasnosti se vidi TEK kad prođe rok administracije.
+        _rok_a = sb_rokovi_get(mesec_key).get("rok_admin")
+        if _rok_a and not _rok_je_prosao(_rok_a):
+            st.info("Izveštaj efikasnosti za " + _sel_lbl + " biće dostupan posle roka administracije: "
+                    + _rok_fmt(_rok_a) + ". Do tada administracija još obrađuje podatke.")
+            return
+
         _pc1, _pc2 = st.columns([1, 2])
         with _pc1:
             if st.button("📄 Napravi PDF izveštaj", key="dir_pdf_make", use_container_width=True):
@@ -2458,7 +2597,12 @@ def prikazi_direktore():
 
         podaci = sb_ucitaj(mesec_key, sistem)
         if not podaci:
-            st.info("Izveštaj za ovaj sistem/mesec nije objavljen.")
+            _rs = sb_rokovi_get(mesec_key).get("rok_sistemi")
+            if _rs:
+                st.info("Izveštaj za „" + _h_escape(str(sistem)) + "“ (" + _sel_lbl
+                        + ") biće objavljen najkasnije do " + _rok_fmt(_rs) + ".")
+            else:
+                st.info("Izveštaj za ovaj sistem/mesec još nije objavljen.")
             return
 
         # Preuzimanje analitike (Excel, bez sheeta o modelu)
@@ -2566,6 +2710,22 @@ def prikazi_direktore():
                         key="dir_prod_xlsx", use_container_width=True)
                 except Exception:
                     pass
+        # Rok za osvežavanje + napomena (u uglu) — iz rokova tekućeg meseca
+        _tt = datetime.date.today()
+        _curmk = str(_tt.year) + "-" + ("0" + str(_tt.month))[-2:]
+        _rp = sb_rokovi_get(_curmk)
+        _rpd = _rp.get("rok_prodaja")
+        _rpn = (_rp.get("napomena") or "").strip()
+        if _rpd or _rpn:
+            _corner = ('<div style="display:flex;justify-content:flex-end;margin:-4px 0 10px;">'
+                       '<div style="max-width:520px;background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;'
+                       'padding:10px 14px;font-size:12.5px;color:#9a5b1e;">')
+            if _rpd:
+                _corner += '⏰ Rok za osvežavanje podataka: <b>' + _rok_fmt(_rpd) + '</b>'
+            if _rpn:
+                _corner += ('<div style="margin-top:5px;color:#7c5320;"><b>Napomena:</b> ' + _h_escape(_rpn) + '</div>')
+            _corner += '</div></div>'
+            st.markdown(_corner, unsafe_allow_html=True)
         import streamlit.components.v1 as _components
         _components.html(_izv["html"], height=2600, scrolling=True)
         return
