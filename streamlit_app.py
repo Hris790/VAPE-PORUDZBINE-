@@ -327,6 +327,15 @@ def _rok_fmt(s):
     except Exception:
         return str(s)
 
+def _dt_fmt(s):
+    """ISO datetime -> 'DD.MM.YYYY u HH:MM' (ili original ako ne uspe)."""
+    if not s:
+        return ""
+    try:
+        return datetime.datetime.fromisoformat(str(s)).strftime("%d.%m.%Y u %H:%M")
+    except Exception:
+        return str(s)
+
 def _rok_je_prosao(s):
     """True ako je rok (YYYY-MM-DD) prošao (danas je posle roka)."""
     if not s:
@@ -406,8 +415,14 @@ def _potraz_num(v):
     if isinstance(v, (int, float)):
         return float(v)
     try:
-        s = str(v).strip().replace(" ", "")
-        return float(s) if s else None
+        s = str(v).strip().replace(" ", "").replace(" ", "")
+        if s == "":
+            return None
+        if "," in s and "." in s:      # 1.879.376,60 -> tačke=hiljade, zarez=decimala
+            s = s.replace(".", "").replace(",", ".")
+        elif "," in s:                  # 1879376,60
+            s = s.replace(",", ".")
+        return float(s)
     except Exception:
         return None
 
@@ -550,10 +565,18 @@ def potraz_section_df(sekcija, sheet, popuna):
             col = str(k["col"])
             val = rv.get(col, rr["cells"].get(col, ""))
             if k["tip"] == "num":
-                data[labels[idx]].append(_potraz_num(val))
+                data[labels[idx]].append(_potraz_num(val))          # float ili None
+            elif k["tip"] in ("dd_a", "dd_b"):
+                sv = "" if val is None else str(val).strip()
+                data[labels[idx]].append(sv if sv != "" else None)   # None za prazno -> ćelija prazna, ne „None"
             else:
                 data[labels[idx]].append("" if val is None else str(val))
-    return pd.DataFrame(data, columns=labels), labels, col_order
+    df = pd.DataFrame(data, columns=labels)
+    # numeričke kolone kao pravi brojevi (prazno -> NaN, da se ne ispisuje „None")
+    for idx, k in enumerate(sekcija["kolone"]):
+        if k["tip"] == "num":
+            df[labels[idx]] = pd.to_numeric(df[labels[idx]], errors="coerce")
+    return df, labels, col_order
 
 def potraz_col_config(sekcija, labels, df, dd_a, dd_b):
     cfg = {}
@@ -566,10 +589,12 @@ def potraz_col_config(sekcija, labels, df, dd_a, dd_b):
                 existing = [str(x) for x in df[lab].dropna().unique() if str(x).strip() != ""]
             except Exception:
                 existing = []
-            opts = [""] + base + [e for e in existing if e not in base]
+            opts = base + [e for e in existing if e not in base]
             cfg[lab] = st.column_config.SelectboxColumn(lab, options=opts, required=False, width="medium")
         elif tip == "num":
-            cfg[lab] = st.column_config.NumberColumn(lab, format="%.2f")
+            cfg[lab] = st.column_config.NumberColumn(lab, format="localized")
+        elif "komentar" in lab.lower():
+            cfg[lab] = st.column_config.TextColumn(lab, width="large")
         else:
             cfg[lab] = st.column_config.TextColumn(lab)
     return cfg
@@ -591,7 +616,7 @@ def sb_potraz_get(mesec_key):
     if cli is None:
         return None
     try:
-        res = cli.table("izvestaj_potrazivanja").select("mesec,naziv,original_b64,struktura,popuna,predato,predato_at").eq("mesec", mesec_key).limit(1).execute()
+        res = cli.table("izvestaj_potrazivanja").select("mesec,naziv,original_b64,struktura,popuna,predato,predato_at,azurirano").eq("mesec", mesec_key).limit(1).execute()
         if res.data:
             return res.data[0]
     except Exception:
@@ -675,6 +700,8 @@ def potraz_admin_ui():
     except Exception:
         st.error("Greška u podacima izveštaja.")
         return
+    st.caption("📄 Fajl: " + str(rec.get("naziv", "") or "—") + "  ·  poslednje ažuriranje: "
+               + (_dt_fmt(rec.get("azurirano")) or "—"))
     _predato = bool(rec.get("predato"))
     _rok_pz = sb_rokovi_get(_mk).get("rok_potraz")
     if _rok_pz and not _predato:
@@ -688,18 +715,31 @@ def potraz_admin_ui():
         st.caption("Stanje na dan: " + str(struct.get("stanje_na_dan", "")) + ". Dopuni iznose, statuse i komentare, pa klikni Prosledi direktoru.")
     dd_a = struct.get("dd_a", [])
     dd_b = struct.get("dd_b", [])
+    def _sek_boja(naslov):
+        n = str(naslov).upper()
+        if "FAKTUR" in n:
+            return ("#16a34a", "#ecfdf5", "#bbf7d0")   # zelena — po fakturi
+        if "ODJAV" in n:
+            return ("#2563eb", "#eff6ff", "#bfdbfe")   # plava — po odjavi
+        return ("#7c3aed", "#faf5ff", "#e9d5ff")       # ljubičasta — ostalo
     edited = {}
     for L in struct.get("listovi", []):
         sh = L["sheet"]
-        st.markdown("<div style='margin:16px 0 2px;font-size:15px;font-weight:800;color:#7c3aed;'>" + _h_escape(sh) + "</div>", unsafe_allow_html=True)
-        for sidx, s in enumerate(L["sekcije"]):
-            st.markdown("<div style='font-size:12.5px;font-weight:700;color:#6b7280;margin:8px 0 2px;'>" + _h_escape(str(s["naslov"])) + "</div>", unsafe_allow_html=True)
-            df, labels, col_order = potraz_section_df(s, sh, pop)
-            cfg = potraz_col_config(s, labels, df, dd_a, dd_b)
-            _ed = st.data_editor(df, column_config=cfg, hide_index=True, use_container_width=True,
-                                 num_rows="fixed", key="pz_ed_" + _mk + "_" + sh + "_" + str(sidx),
-                                 disabled=_predato)
-            edited[(sh, sidx)] = (_ed, col_order, s)
+        with st.container(border=True):
+            st.markdown("<div style='display:inline-block;background:linear-gradient(135deg,#a855f7,#ec4899);color:#fff;"
+                        "font-weight:800;font-size:14px;padding:5px 14px;border-radius:20px;margin:2px 0 6px;'>👤 "
+                        + _h_escape(sh) + "</div>", unsafe_allow_html=True)
+            for sidx, s in enumerate(L["sekcije"]):
+                _cbc, _cbg, _cbb = _sek_boja(s["naslov"])
+                st.markdown("<div style='display:inline-block;background:" + _cbg + ";color:" + _cbc + ";border:1px solid "
+                            + _cbb + ";font-weight:700;font-size:12px;padding:3px 11px;border-radius:8px;margin:10px 0 4px;'>"
+                            + _h_escape(str(s["naslov"])) + "</div>", unsafe_allow_html=True)
+                df, labels, col_order = potraz_section_df(s, sh, pop)
+                cfg = potraz_col_config(s, labels, df, dd_a, dd_b)
+                _ed = st.data_editor(df, column_config=cfg, hide_index=True, use_container_width=True,
+                                     num_rows="fixed", key="pz_ed_" + _mk + "_" + sh + "_" + str(sidx),
+                                     disabled=_predato)
+                edited[(sh, sidx)] = (_ed, col_order, s)
     if not _predato:
         _b1, _b2 = st.columns(2)
         with _b1:
@@ -742,7 +782,8 @@ def potraz_director_ui():
     _tc1, _tc2 = st.columns([3, 1])
     with _tc1:
         st.caption("Stanje na dan: " + str(struct.get("stanje_na_dan", ""))
-                   + "  ·  predato " + str(rec.get("predato_at") or ""))
+                   + "  ·  predato " + str(rec.get("predato_at") or "")
+                   + "  ·  poslednje ažuriranje: " + (_dt_fmt(rec.get("azurirano")) or "—"))
     with _tc2:
         try:
             _xb = potraz_export(rec.get("original_b64"), struct, pop)
@@ -752,13 +793,34 @@ def potraz_director_ui():
                 key="pz_dir_dl", use_container_width=True)
         except Exception as _e:
             st.caption("Izvoz trenutno nije moguć.")
+    def _sek_boja2(naslov):
+        n = str(naslov).upper()
+        if "FAKTUR" in n:
+            return ("#16a34a", "#ecfdf5", "#bbf7d0")
+        if "ODJAV" in n:
+            return ("#2563eb", "#eff6ff", "#bfdbfe")
+        return ("#7c3aed", "#faf5ff", "#e9d5ff")
     for L in struct.get("listovi", []):
         sh = L["sheet"]
-        st.markdown("<div style='margin:16px 0 2px;font-size:15px;font-weight:800;color:#7c3aed;'>" + _h_escape(sh) + "</div>", unsafe_allow_html=True)
-        for s in L["sekcije"]:
-            st.markdown("<div style='font-size:12.5px;font-weight:700;color:#6b7280;margin:8px 0 2px;'>" + _h_escape(str(s["naslov"])) + "</div>", unsafe_allow_html=True)
-            df, labels, col_order = potraz_section_df(s, sh, pop)
-            st.dataframe(df, hide_index=True, use_container_width=True)
+        with st.container(border=True):
+            st.markdown("<div style='display:inline-block;background:linear-gradient(135deg,#a855f7,#ec4899);color:#fff;"
+                        "font-weight:800;font-size:14px;padding:5px 14px;border-radius:20px;margin:2px 0 6px;'>👤 "
+                        + _h_escape(sh) + "</div>", unsafe_allow_html=True)
+            for s in L["sekcije"]:
+                _cbc, _cbg, _cbb = _sek_boja2(s["naslov"])
+                st.markdown("<div style='display:inline-block;background:" + _cbg + ";color:" + _cbc + ";border:1px solid "
+                            + _cbb + ";font-weight:700;font-size:12px;padding:3px 11px;border-radius:8px;margin:10px 0 4px;'>"
+                            + _h_escape(str(s["naslov"])) + "</div>", unsafe_allow_html=True)
+                df, labels, col_order = potraz_section_df(s, sh, pop)
+                # numeričke kolone -> lepo formatiranje sa hiljadama; boje zaglavlja
+                _numcols = [labels[i] for i, k in enumerate(s["kolone"]) if k["tip"] == "num"]
+                try:
+                    _sty = df.style.format({c: (lambda v: "" if (v is None or pd.isna(v)) else "{:,.2f}".format(v).replace(",", " ")) for c in _numcols})
+                    _sty = _sty.set_properties(subset=_numcols, **{"color": "#1f2430", "font-weight": "600"})
+                    _sty = _sty.set_table_styles([{"selector": "th", "props": [("background-color", _cbg), ("color", _cbc)]}])
+                    st.dataframe(_sty, hide_index=True, use_container_width=True)
+                except Exception:
+                    st.dataframe(df, hide_index=True, use_container_width=True)
 
 # ---- HITNOST po objektu (na osnovu niskog lagera) ----
 # Pragovi su namerno apsolutni i lako se menjaju (dole dve brojke).
@@ -4691,7 +4753,8 @@ with tab_obj:
                         st.markdown("**" + mesec_label(_r.get("mesec", "")) + "**"
                                     + ("  ✅ predato" if _r.get("predato") else "  ⏳ u obradi"))
                     with _rc2:
-                        st.caption(str(_r.get("naziv", "")))
+                        st.caption("📄 " + str(_r.get("naziv", "")) + "  ·  poslednje ažuriranje: "
+                                   + (_dt_fmt(_r.get("azurirano")) or "—"))
                     with _rc3:
                         if st.button("Obriši", key="pz_del_" + str(_r.get("mesec")), use_container_width=True):
                             try:
