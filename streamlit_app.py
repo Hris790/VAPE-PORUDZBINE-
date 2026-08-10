@@ -418,13 +418,24 @@ def _potraz_num(v):
         s = str(v).strip().replace(" ", "").replace(" ", "")
         if s == "":
             return None
-        if "," in s and "." in s:      # 1.879.376,60 -> tačke=hiljade, zarez=decimala
+        if s == "—":
+            return None
+        if "," in s:                    # zarez = decimala; tačke = hiljade
             s = s.replace(".", "").replace(",", ".")
-        elif "," in s:                  # 1879376,60
-            s = s.replace(",", ".")
+        elif s.count(".") > 1:          # 1.000.000 -> tačke su hiljade
+            s = s.replace(".", "")
         return float(s)
     except Exception:
         return None
+
+def _potraz_fmt_num(v):
+    """Broj -> '1 879 376,60' (razmak hiljade, zarez decimala); prazno -> ''."""
+    if v is None:
+        return ""
+    try:
+        return "{:,.2f}".format(float(v)).replace(",", " ").replace(".", ",")
+    except Exception:
+        return str(v)
 
 def potraz_parse(xlsx_bytes):
     """Rasčlani Excel potraživanja u strukturu (listovi -> sekcije -> kolone/redovi) sa
@@ -582,32 +593,33 @@ def potraz_section_df(sekcija, sheet, popuna):
         counts[base] = c
         labels.append(base if c == 1 else base + " (" + str(c) + ")")
         col_order.append(str(k["col"]))
+    # prvo izračunaj vrednosti (brojevi) po ćeliji, pa Za uplatu, pa formatiraj za prikaz
+    c_dug, c_lager, c_zau = _potraz_role_cols(kolone)
+    disabled = []
     data = {lab: [] for lab in labels}
     for rr in sekcija["redovi"]:
         rv = popuna.get(sheet, {}).get(str(rr["r"]), {})
+        # izračunaj Za uplatu = Ukupni dug − Vrednost lagera (ako oba postoje)
+        _zau_val = None
+        if c_zau and c_dug:
+            _dug = _potraz_num(rv.get(c_dug, rr["cells"].get(c_dug, "")))
+            _lag = _potraz_num(rv.get(c_lager, rr["cells"].get(c_lager, ""))) if c_lager else None
+            _zau_val = (_dug - (_lag or 0)) if _dug is not None else None
         for idx, k in enumerate(kolone):
             col = str(k["col"])
             val = rv.get(col, rr["cells"].get(col, ""))
-            if k["tip"] == "num":
-                data[labels[idx]].append(_potraz_num(val))
+            if c_zau and col == c_zau:
+                data[labels[idx]].append(_potraz_fmt_num(_zau_val))   # računato, tekst
+            elif k["tip"] == "num":
+                data[labels[idx]].append(_potraz_fmt_num(_potraz_num(val)))
             elif k["tip"] in ("dd_a", "dd_b"):
                 sv = "" if val is None else str(val).strip()
-                data[labels[idx]].append(sv if sv != "" else None)
+                data[labels[idx]].append(sv if sv not in ("", "—") else "—")  # „—" = prazno
             else:
                 data[labels[idx]].append("" if val is None else str(val))
     df = pd.DataFrame(data, columns=labels)
-    for idx, k in enumerate(kolone):
-        if k["tip"] == "num":
-            df[labels[idx]] = pd.to_numeric(df[labels[idx]], errors="coerce")
-    # Za uplatu = Ukupni dug − Vrednost lagera (računato; kolona read-only)
-    disabled = []
-    c_dug, c_lager, c_zau = _potraz_role_cols(kolone)
-    if c_zau and c_dug and c_lager:
-        lab_dug = labels[col_order.index(c_dug)]
-        lab_lag = labels[col_order.index(c_lager)]
-        lab_zau = labels[col_order.index(c_zau)]
-        df[lab_zau] = df[lab_dug] - df[lab_lag]
-        disabled.append(lab_zau)
+    if c_zau:
+        disabled.append(labels[col_order.index(c_zau)])
     return df, labels, col_order, disabled
 
 def potraz_col_config(sekcija, labels, df, dd_a, dd_b):
@@ -619,13 +631,13 @@ def potraz_col_config(sekcija, labels, df, dd_a, dd_b):
         if tip in ("dd_a", "dd_b"):
             base = list(dd_a if tip == "dd_a" else dd_b)
             try:
-                existing = [str(x) for x in df[lab].dropna().unique() if str(x).strip() != ""]
+                existing = [str(x) for x in df[lab].dropna().unique() if str(x).strip() not in ("", "—")]
             except Exception:
                 existing = []
-            opts = base + [e for e in existing if e not in base]
+            opts = ["—"] + base + [e for e in existing if e not in base]
             cfg[lab] = st.column_config.SelectboxColumn(lab, options=opts, required=False, width="medium")
         elif tip == "num":
-            cfg[lab] = st.column_config.NumberColumn(lab, format="localized")
+            cfg[lab] = st.column_config.TextColumn(lab, help="Iznos u RSD (npr. 1 000 000 ili 1000000).")
         elif "komentar" in lab.lower():
             cfg[lab] = st.column_config.TextColumn(lab, width="large")
         else:
@@ -696,29 +708,71 @@ def sb_potraz_obrisi(mesec_key):
         except Exception:
             pass
 
-def _potraz_collect(edited):
-    """Iz izmenjenih data_editor tabela sklopi popunu {sheet: {r: {col: val}}}.
-    „Za uplatu" se uvek preračuna = Ukupni dug − Vrednost lagera."""
-    newpop = {}
+def _potraz_collect(edited, base=None):
+    """Iz izmenjenih data_editor tabela sklopi popunu {sheet: {r: {col: val}}}, čuvajući
+    sve ostale ćelije iz `base`. Brojevi se parsiraju, „—" -> prazno, Za uplatu = dug − lager."""
+    newpop = json.loads(json.dumps(base)) if base else {}
     for (sh, sidx), (ed, col_order, sek) in edited.items():
         newpop.setdefault(sh, {})
-        c_dug, c_lager, c_zau = _potraz_role_cols(_potraz_eff_kolone(sek))
+        eff = _potraz_eff_kolone(sek)
+        tip_of = {str(k["col"]): k["tip"] for k in eff}
+        c_dug, c_lager, c_zau = _potraz_role_cols(eff)
         for ri, rr in enumerate(sek["redovi"]):
             newpop[sh].setdefault(str(rr["r"]), {})
             for ci, col in enumerate(col_order):
+                if c_zau and col == c_zau:
+                    continue  # računa se ispod
                 try:
                     val = ed.iloc[ri, ci]
                 except Exception:
                     val = ""
                 if val is None or (isinstance(val, float) and pd.isna(val)):
                     val = ""
-                newpop[sh][str(rr["r"])][col] = val
+                if tip_of.get(col) == "num":
+                    nv = _potraz_num(val)
+                    newpop[sh][str(rr["r"])][col] = (round(nv, 2) if nv is not None else "")
+                elif tip_of.get(col) in ("dd_a", "dd_b"):
+                    sv = str(val).strip()
+                    newpop[sh][str(rr["r"])][col] = ("" if sv in ("", "—") else sv)
+                else:
+                    newpop[sh][str(rr["r"])][col] = val
             # Za uplatu = Ukupni dug − Vrednost lagera (računato)
             if c_zau and c_dug:
                 _dug = _potraz_num(newpop[sh][str(rr["r"])].get(c_dug))
                 _lag = _potraz_num(newpop[sh][str(rr["r"])].get(c_lager)) if c_lager else None
-                newpop[sh][str(rr["r"])][c_zau] = ((_dug - (_lag or 0)) if _dug is not None else "")
+                newpop[sh][str(rr["r"])][c_zau] = (round(_dug - (_lag or 0), 2) if _dug is not None else "")
     return newpop
+
+def _potraz_norm_work(struct, pop):
+    """Normalizuj popunu za radnu kopiju: brojevi zaokruženi na 2 decimale, „—" -> '',
+    Za uplatu preračunata. Time round-trip prikaz<->čuvanje ostaje stabilan (bez petlje)."""
+    w = json.loads(json.dumps(pop or {}))
+    for L in struct.get("listovi", []):
+        sh = L["sheet"]
+        w.setdefault(sh, {})
+        for s in L["sekcije"]:
+            eff = _potraz_eff_kolone(s)
+            tip_of = {str(k["col"]): k["tip"] for k in eff}
+            c_dug, c_lager, c_zau = _potraz_role_cols(eff)
+            for rr in s["redovi"]:
+                row = w[sh].setdefault(str(rr["r"]), {})
+                for col, tp in tip_of.items():
+                    cur = row.get(col, rr["cells"].get(col, ""))
+                    if c_zau and col == c_zau:
+                        continue
+                    if tp == "num":
+                        nv = _potraz_num(cur)
+                        row[col] = (round(nv, 2) if nv is not None else "")
+                    elif tp in ("dd_a", "dd_b"):
+                        sv = str(cur or "").strip()
+                        row[col] = "" if sv in ("", "—") else sv
+                    else:
+                        row[col] = "" if cur is None else str(cur)
+                if c_zau and c_dug:
+                    _d = _potraz_num(row.get(c_dug))
+                    _l = _potraz_num(row.get(c_lager)) if c_lager else None
+                    row[c_zau] = (round(_d - (_l or 0), 2) if _d is not None else "")
+    return w
 
 def potraz_admin_ui():
     st.markdown("<div style='font-size:18px;font-weight:800;margin:4px 0 10px;'>💳 Izveštaj potraživanja</div>", unsafe_allow_html=True)
@@ -762,6 +816,14 @@ def potraz_admin_ui():
         if "ODJAV" in n:
             return ("#2563eb", "#eff6ff", "#bfdbfe")   # plava — po odjavi
         return ("#7c3aed", "#faf5ff", "#e9d5ff")       # ljubičasta — ostalo
+    # Radna kopija (u sesiji) — da se Za uplatu računa odmah dok kucaju, pre čuvanja
+    _wkey = "pzwork_" + _mk
+    if st.session_state.get("pzwork_for") != _mk:
+        st.session_state[_wkey] = _potraz_norm_work(struct, pop)
+        st.session_state["pzwork_for"] = _mk
+    _work = st.session_state.get(_wkey) or _potraz_norm_work(struct, pop)
+
+    _has_zau = False
     edited = {}
     for L in struct.get("listovi", []):
         sh = L["sheet"]
@@ -774,22 +836,27 @@ def potraz_admin_ui():
                 st.markdown("<div style='display:inline-block;background:" + _cbg + ";color:" + _cbc + ";border:1px solid "
                             + _cbb + ";font-weight:700;font-size:12px;padding:3px 11px;border-radius:8px;margin:10px 0 4px;'>"
                             + _h_escape(str(s["naslov"])) + "</div>", unsafe_allow_html=True)
-                df, labels, col_order, _disabled = potraz_section_df(s, sh, pop)
-                if _disabled and not _predato:
-                    st.caption("ℹ️ Za uplatu se računa automatski: Ukupan dug − Vrednost lagera. "
-                               "Upišite Ukupan dug i sačuvajte — kolona se popuni sama.")
+                df, labels, col_order, _disabled = potraz_section_df(s, sh, _work)
+                if _disabled and not _predato and not _has_zau:
+                    _has_zau = True
+                    st.caption("ℹ️ Za uplatu se računa automatski (Ukupan dug − Vrednost lagera) čim upišete Ukupan dug.")
                 cfg = potraz_col_config(s, labels, df, dd_a, dd_b)
                 _dis = True if _predato else (_disabled or False)
                 _ed = st.data_editor(df, column_config=cfg, hide_index=True, use_container_width=True,
                                      num_rows="fixed", key="pz_ed_" + _mk + "_" + sh + "_" + str(sidx),
                                      disabled=_dis)
                 edited[(sh, sidx)] = (_ed, col_order, s)
+    # Primeni izmene na radnu kopiju i preračunaj Za uplatu; ako ima promene -> osveži prikaz
     if not _predato:
+        _newwork = _potraz_collect(edited, base=_work)
+        if _newwork != _work:
+            st.session_state[_wkey] = _newwork
+            st.rerun()
         _b1, _b2 = st.columns(2)
         with _b1:
             if st.button("💾 Sačuvaj (bez prosleđivanja)", key="pz_adm_save", use_container_width=True):
                 try:
-                    sb_potraz_popuni(_mk, json.dumps(_potraz_collect(edited), default=str))
+                    sb_potraz_popuni(_mk, json.dumps(_work, default=str))
                     st.success("Sačuvano.")
                     st.rerun()
                 except Exception as _e:
@@ -797,7 +864,7 @@ def potraz_admin_ui():
         with _b2:
             if st.button("📨 Prosledi direktoru", key="pz_adm_send", use_container_width=True, type="primary"):
                 try:
-                    sb_potraz_popuni(_mk, json.dumps(_potraz_collect(edited), default=str), predato=True)
+                    sb_potraz_popuni(_mk, json.dumps(_work, default=str), predato=True)
                     st.success("Prosleđeno direktoru.")
                     st.rerun()
                 except Exception as _e:
@@ -857,11 +924,8 @@ def potraz_director_ui():
                             + _h_escape(str(s["naslov"])) + "</div>", unsafe_allow_html=True)
                 df, labels, col_order, _disabled = potraz_section_df(s, sh, pop)
                 # numeričke kolone -> lepo formatiranje sa hiljadama; boje zaglavlja
-                _numcols = [labels[i] for i, k in enumerate(_potraz_eff_kolone(s)) if k["tip"] == "num"]
                 try:
-                    _sty = df.style.format({c: (lambda v: "" if (v is None or pd.isna(v)) else "{:,.2f}".format(v).replace(",", " ")) for c in _numcols})
-                    _sty = _sty.set_properties(subset=_numcols, **{"color": "#1f2430", "font-weight": "600"})
-                    _sty = _sty.set_table_styles([{"selector": "th", "props": [("background-color", _cbg), ("color", _cbc)]}])
+                    _sty = df.style.set_table_styles([{"selector": "th", "props": [("background-color", _cbg), ("color", _cbc)]}])
                     st.dataframe(_sty, hide_index=True, use_container_width=True)
                 except Exception:
                     st.dataframe(df, hide_index=True, use_container_width=True)
