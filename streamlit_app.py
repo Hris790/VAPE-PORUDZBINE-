@@ -976,6 +976,26 @@ def hitnost_objekta(stavke_obj):
         nivo = 'zeleno'
     return nivo, n_nula, izgubljeno
 
+def hitnost_objekta_dodatna(stavke_obj, poruceno):
+    """Kao hitnost_objekta, ali na osnovu DODATNE porudžbine — pošto su objekti već
+    sami poručili (posle preseka), računamo hitnost na onome što STVARNO još treba:
+    dodatna = preporuka − već poručeno (min 0), realni lager = lager + već poručeno."""
+    def _por(s):
+        try:
+            return int(poruceno.get(int(s.get('ida', -1)), 0))
+        except Exception:
+            return 0
+    _ord = [s for s in stavke_obj if max(int(s.get('kol', 0)) - _por(s), 0) > 0]
+    n_nula = sum(1 for s in _ord if int(s.get('lager', 0)) + _por(s) <= 0)
+    izgubljeno = sum(int(s.get('pred', 0)) for s in _ord if int(s.get('lager', 0)) + _por(s) <= 0)
+    if izgubljeno >= HIT_CRVENO_KOM or n_nula >= HIT_CRVENO_ART:
+        nivo = 'crveno'
+    elif izgubljeno >= HIT_ZUTO_KOM or n_nula >= HIT_ZUTO_ART:
+        nivo = 'zuto'
+    else:
+        nivo = 'zeleno'
+    return nivo, n_nula, izgubljeno
+
 HIT_EMOJI = {'crveno': '🔴', 'zuto': '🟡', 'zeleno': '🟢'}
 HIT_RANG  = {'crveno': 0, 'zuto': 1, 'zeleno': 2}
 HIT_TEKST = {'crveno': 'Hitno', 'zuto': 'Srednje', 'zeleno': 'Može da čeka'}
@@ -2206,9 +2226,17 @@ def prikazi_administraciju():
     po_obj = {}
     for s in stavke:
         po_obj.setdefault(int(s["idk"]), []).append(s)
+    # Presek za „posle 01." (za preračun hitnosti po DODATNOJ porudžbini kad su podaci povučeni)
+    _cut_hit = _admin_presek(meta, mesec_key)
     objekti = []
     for idk, lst in po_obj.items():
-        nivo, n_nula, izgub = hitnost_objekta(lst)
+        # Ako je istorija iz admina povučena za ovaj objekat — hitnost po dodatnoj porudžbini
+        _hh = st.session_state.get("hist_" + str(sistem) + "_" + str(idk))
+        if _hh and (_hh.get("lst") is not None) and _cut_hit:
+            _por_map = _treb_posle_preseka(_hh.get("lst") or [], _cut_hit)
+            nivo, n_nula, izgub = hitnost_objekta_dodatna(lst, _por_map)
+        else:
+            nivo, n_nula, izgub = hitnost_objekta(lst)
         objekti.append({"idk": idk, "artikala": len(lst), "na_nuli": n_nula,
                         "izgub": izgub, "nivo": nivo, "lst": lst})
     objekti.sort(key=lambda r: (HIT_RANG[r["nivo"]], -r["izgub"]))
