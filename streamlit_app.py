@@ -4980,7 +4980,25 @@ with tab_obj:
             with _od1:
                 _osist = st.text_input("Naziv sistema (kako će koleginice videti)", value=os.path.splitext(up_o.name)[0].strip(), key="obj_sist")
             with _od2:
-                st.text_input("Mesec porudžbine (automatski)", value=_mlbl, disabled=True, key="obj_mes_disp")
+                # Auto mesec = poslednji mesec u fajlu + 1; ali dozvoli izbor (npr. objaviti pod Jul)
+                if _mk:
+                    _auto_y, _auto_m = int(_mk[:4]), int(_mk[5:7])
+                else:
+                    _tt2 = datetime.date.today(); _auto_y, _auto_m = _tt2.year, _tt2.month
+                _mo_keys = []
+                _yy2, _mm2 = _auto_y, _auto_m - 3
+                while _mm2 <= 0:
+                    _mm2 += 12; _yy2 -= 1
+                for _ in range(6):
+                    _mo_keys.append(str(_yy2) + "-" + ("0" + str(_mm2))[-2:])
+                    _mm2 += 1
+                    if _mm2 > 12:
+                        _mm2 = 1; _yy2 += 1
+                _auto_key = str(_auto_y) + "-" + ("0" + str(_auto_m))[-2:]
+                _def_i = _mo_keys.index(_auto_key) if _auto_key in _mo_keys else len(_mo_keys) - 1
+                _o_mes_key = st.selectbox("Mesec porudžbine", _mo_keys, index=_def_i,
+                                          format_func=mesec_label, key="obj_mes_sel",
+                                          help="Automatski je poslednji mesec iz fajla + 1, ali možeš da objaviš pod drugim mesecom (npr. Jul).")
             if not sb_dostupan():
                 st.info("Objava nije moguća dok Supabase nije podešen.")
             elif st.button("📤 Objavi za koleginice", use_container_width=True, key="obj_btn"):
@@ -4992,11 +5010,8 @@ with tab_obj:
                         _eng = PredictionEngine(_obytes, _o_excluded, alpha, beta, _o_min_lager, _o_min_order, _o_tr, None, _o_min_pa, meseci=float(_o_mes), max_per_artikal=_o_max_pa)
                         _res = _eng.run(_pb)
                         _pb.empty()
-                        _lg2, _lm2 = _eng.meseci_order[-1]
-                        _om2 = int(_lm2) + 1; _oy2 = int(_lg2)
-                        while _om2 > 12:
-                            _om2 -= 12; _oy2 += 1
-                        _mk2 = str(_oy2) + "-" + ("0" + str(_om2))[-2:]
+                        # mesec pod kojim se objavljuje = izabrani mesec (podrazumevano auto)
+                        _mk2 = _o_mes_key
                         _mlbl2 = mesec_label(_mk2)
                         _stavke = stavke_iz_rezultata(_res, _eng)
                         _payload = {"mesec_label": _mlbl2, "meta": {"pred_label": _eng.pred_label, "order_label": _eng.order_label, "min_lager": _eng.min_lager, "meseci": round(float(_o_mes), 1), "generisano": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"), "n_objekata": int(len({_s2['idk'] for _s2 in _stavke})), "ukupno_kom": int(sum(_s2['kol'] for _s2 in _stavke))}, "stavke": _stavke}
