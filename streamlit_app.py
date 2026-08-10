@@ -186,6 +186,26 @@ def sb_predaj(mesec_key, sistem):
         pass
 
 
+def sb_start_snapshot(mesec_key, sistem, snap):
+    """Zabeleži „startni rezultat" (zone u trenutku prvog povlačenja porudžbina od 01.)
+    u meta.start_zone. Jednom snimljeno — koristi se u PDF izveštaju kao START."""
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    res = cli.table("porudzbine").select("podaci").eq("mesec", mesec_key).eq("sistem", sistem.strip()).limit(1).execute()
+    if not res.data:
+        raise RuntimeError("Nema objavljenog izveštaja za taj mesec/sistem.")
+    podaci = res.data[0].get("podaci") or {}
+    meta = podaci.get("meta") or {}
+    meta["start_zone"] = snap
+    podaci["meta"] = meta
+    cli.table("porudzbine").update({"podaci": podaci}).eq("mesec", mesec_key).eq("sistem", sistem.strip()).execute()
+    try:
+        sb_ucitaj.clear()
+    except Exception:
+        pass
+
+
 @st.cache_data(ttl=30)
 def sb_pregled():
     """Lagani pregled svega objavljenog: mesec, sistem, kada (bez povlacenja stavki)."""
@@ -1488,9 +1508,15 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
             return naz in (obrada.get(o["idk"], {}).get("reakcije") or [])
 
         n = len(objekti)
-        nred = sum(1 for o in objekti if o["nivo"] == "crveno")
-        norg = sum(1 for o in objekti if o["nivo"] == "zuto")
-        ngrn = sum(1 for o in objekti if o["nivo"] == "zeleno")
+        # START zone: ako je zabeležen „startni rezultat" (posle porudžbina do objave) — koristi njega;
+        # inače sirova preporuka (staro ponašanje).
+        _sz = ((podaci.get("meta") or {}).get("start_zone")) if isinstance(podaci.get("meta"), dict) else None
+        if _sz:
+            nred = int(_sz.get("crveno", 0)); norg = int(_sz.get("zuto", 0)); ngrn = int(_sz.get("zeleno", 0))
+        else:
+            nred = sum(1 for o in objekti if o["nivo"] == "crveno")
+            norg = sum(1 for o in objekti if o["nivo"] == "zuto")
+            ngrn = sum(1 for o in objekti if o["nivo"] == "zeleno")
         rev = [o for o in objekti if obrada.get(o["idk"], {}).get("reakcije")]
         nrev = len(rev)
         nPoz = sum(1 for o in objekti if _ima(o, "Pozvala sam"))
@@ -2330,6 +2356,57 @@ def prikazi_administraciju():
         st.success("✅ Ažurirano iz admina — prethodne porudžbine i dopuna su spremni u svakom objektu. "
                    "Prikazuje se šta su objekti sami poručili od " + _pcs + " (posle preseka). "
                    "Objekata sa takvim porudžbinama: " + str(_rf.get("n", 0)) + ".")
+
+    # --- Startni rezultat: povuci porudžbine od preseka (jednom, pa se zaključa) ---
+    _pk_s = _admin_presek(meta, mesec_key)
+    _pk_lbl = _pk_s.strftime("%d.%m.") if _pk_s else "01."
+    if st.session_state.pop("_req_start_snap", False) and not _zakljucan and not (isinstance(meta, dict) and meta.get("start_zone")):
+        with st.spinner("Povlačim porudžbine od " + _pk_lbl + " za ceo sistem (beležim startni rezultat)... može potrajati par minuta."):
+            if _bez_naziva:
+                admin_build_komitenti(only_ids=_bez_naziva)
+            _kfs = sb_komitenti_full(); st.session_state["_komfull"] = _kfs
+            _idk_naziv_s = {o["idk"]: (_kfs.get(int(o["idk"]), {}) or {}).get("naziv", "") for o in objekti}
+            _bulk_s, _be_s = admin_istorija_bulk(_idk_naziv_s, _pk_s)
+        if _be_s and not _bulk_s:
+            st.error(_be_s)
+        else:
+            _cr = _zu = _ze = 0; _nh = 0
+            for o in objekti:
+                _lst_s = sorted(_bulk_s.get(o["idk"], []), key=_datum_sort_key, reverse=True)
+                st.session_state["hist_" + str(sistem) + "_" + str(o["idk"])] = {"lst": _lst_s, "err": ""}
+                if _lst_s:
+                    _nh += 1
+                _pm_s = _treb_posle_preseka(_lst_s, _pk_s) if _pk_s else {}
+                _nivo_s, _, _ = hitnost_objekta_dodatna(o["lst"], _pm_s)
+                if _nivo_s == "crveno":
+                    _cr += 1
+                elif _nivo_s == "zuto":
+                    _zu += 1
+                else:
+                    _ze += 1
+            try:
+                sb_start_snapshot(mesec_key, sistem, {"n": len(objekti), "crveno": _cr, "zuto": _zu, "zeleno": _ze,
+                                                      "kada": datetime.datetime.now().strftime("%d.%m.%Y %H:%M")})
+                st.session_state["_refresh_done"] = {"sis": sistem, "mes": mesec_key, "n": _nh}
+                st.rerun()
+            except Exception as _e:
+                st.error("Greška pri čuvanju startnog rezultata: " + str(_e))
+
+    _snap = meta.get("start_zone") if isinstance(meta, dict) else None
+    if _snap:
+        st.markdown('<div style="background:#eef2ff;border:1px solid #c7d2fe;border-radius:10px;padding:9px 14px;'
+                    'font-size:12.5px;color:#3730a3;margin:2px 0 12px;">📌 <b>Startni rezultat zabeležen</b> ('
+                    + str(_snap.get("kada", "")) + '): ' + str(_snap.get("crveno", 0)) + ' hitno · '
+                    + str(_snap.get("zuto", 0)) + ' srednje · ' + str(_snap.get("zeleno", 0))
+                    + ' dobro. Ovo je START u izveštaju.</div>', unsafe_allow_html=True)
+    elif not _zakljucan:
+        _sc1, _sc2 = st.columns([2, 3])
+        with _sc1:
+            if st.button("📌 Povuci porudžbine od " + _pk_lbl + " (zabeleži start)", key="pull_start", use_container_width=True):
+                st.session_state["_req_start_snap"] = True
+                st.rerun()
+        with _sc2:
+            st.caption("Povuci JEDNOM na početku rada — beleži se startno stanje (hitno/srednje/dobro) za izveštaj i zaključava se. Kasnije koristi Ažuriraj iz admina gore.")
 
     with st.expander("📦 Porudžbina ubačena za ceo sistem (grupna akcija)"):
         st.caption("Za sisteme gde mi direktno ubacujemo porudžbine (npr. BB TRADE, KNEZ) — jednim klikom se svi objekti označe kao Ubačena porudžbina i postaju pregledani. Ne koristiti za sisteme gde se objekti zovu pojedinačno.")
