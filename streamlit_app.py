@@ -2132,6 +2132,12 @@ def prikazi_direktore():
         return
 
     _mlbls = [mesec_label(k) for k in _mes_keys]
+    # Podrazumevani mesec za prikaze = prethodni mesec (u avgustu se gleda jul); ako ga nema, najnoviji.
+    _pv_y0 = _tdy0.year; _pv_m0 = _tdy0.month - 1
+    if _pv_m0 <= 0:
+        _pv_m0 += 12; _pv_y0 -= 1
+    _prev_mk = str(_pv_y0) + "-" + ("0" + str(_pv_m0))[-2:]
+    _prev_idx = _mes_keys.index(_prev_mk) if _prev_mk in _mes_keys else 0
     _view = st.session_state.get("dir_view", "dash")
 
     # ---- Render izveštaja po sistemu (isti prikaz za pune i delimične podatke) ----
@@ -2746,7 +2752,7 @@ def prikazi_direktore():
     # ---------- KARTICA 1: EFIKASNOST ADMINISTRACIJE ----------
     if _view == "efikasnost":
         st.markdown('<div style="font-size:20px;font-weight:800;margin:6px 0 14px;">📊 Izveštaj efikasnosti administracije</div>', unsafe_allow_html=True)
-        _sel_lbl = st.selectbox("Mesec", _mlbls, index=0, key="dir_efik_mes")
+        _sel_lbl = st.selectbox("Mesec", _mlbls, index=_prev_idx, key="dir_efik_mes")
         mesec_key = _mes_keys[_mlbls.index(_sel_lbl)]
 
         # Zaključavanje: izveštaj efikasnosti se vidi TEK kad prođe rok administracije.
@@ -2841,7 +2847,7 @@ def prikazi_direktore():
         st.markdown('<div style="font-size:20px;font-weight:800;margin:6px 0 12px;">📈 Detaljan izveštaj po sistemima</div>', unsafe_allow_html=True)
         _c1, _c2 = st.columns(2)
         with _c1:
-            _sel_lbl = st.selectbox("Mesec", _mlbls, index=0, key="dir_sis_mes")
+            _sel_lbl = st.selectbox("Mesec", _mlbls, index=_prev_idx, key="dir_sis_mes")
         mesec_key = _mes_keys[_mlbls.index(_sel_lbl)]
         _sisteme = sb_sisteme(mesec_key)
         if not _sisteme:
@@ -4102,15 +4108,23 @@ with tab_obj:
         else:
             _today = datetime.date.today()
             _mopts = []
-            _yy = _today.year; _mm = _today.month
-            for _i in range(6):
+            _yy = _today.year; _mm = _today.month - 3  # uključi i prethodne mesece
+            while _mm <= 0:
+                _mm += 12; _yy -= 1
+            for _i in range(9):
                 _mopts.append(str(_yy) + "-" + ("0" + str(_mm))[-2:])
                 _mm += 1
                 if _mm > 12:
                     _mm = 1; _yy += 1
+            # podrazumevano: prethodni mesec (u avgustu se radi izveštaj za jul)
+            _pv_y = _today.year; _pv_m = _today.month - 1
+            if _pv_m <= 0:
+                _pv_m += 12; _pv_y -= 1
+            _prev_key = str(_pv_y) + "-" + ("0" + str(_pv_m))[-2:]
+            _def_idx = _mopts.index(_prev_key) if _prev_key in _mopts else 0
             _pc1, _pc2, _pc3 = st.columns([1.3, 1, 1])
             with _pc1:
-                _pmes = st.selectbox("Mesec", _mopts, format_func=mesec_label, key="plan_mes")
+                _pmes = st.selectbox("Mesec", _mopts, index=_def_idx, format_func=mesec_label, key="plan_mes")
             with _pc2:
                 _pdat = st.date_input("Objaviću do", value=_today, key="plan_dat", format="DD.MM.YYYY")
             with _pc3:
@@ -4144,9 +4158,14 @@ with tab_obj:
                 if _mm > 12:
                     _mm = 1; _yy += 1
             _sy_opts = sorted([o for o in _sy_opts if o], reverse=True)
+            _sy_pvy = _sy_today.year; _sy_pvm = _sy_today.month - 1
+            if _sy_pvm <= 0:
+                _sy_pvm += 12; _sy_pvy -= 1
+            _sy_prev = str(_sy_pvy) + "-" + ("0" + str(_sy_pvm))[-2:]
+            _sy_idx = _sy_opts.index(_sy_prev) if _sy_prev in _sy_opts else 0
             _syc1, _syc2 = st.columns([1, 2])
             with _syc1:
-                _sy_mes = st.selectbox("Mesec", _sy_opts, format_func=mesec_label, key="syx_mes")
+                _sy_mes = st.selectbox("Mesec", _sy_opts, index=_sy_idx, format_func=mesec_label, key="syx_mes")
             with _syc2:
                 _sy_file = st.file_uploader("Word dokument (.docx)", type=["docx"], key="syx_up")
             if st.button("📤 Sačuvaj SYX izveštaj", key="syx_save", use_container_width=True,
