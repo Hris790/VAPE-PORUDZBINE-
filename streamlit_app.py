@@ -708,6 +708,19 @@ def sb_potraz_obrisi(mesec_key):
         except Exception:
             pass
 
+def sb_potraz_reopen(mesec_key):
+    """Vrati predati izveštaj potraživanja na dopunu (otključaj)."""
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    cli.table("izvestaj_potrazivanja").update({"predato": False, "predato_at": None,
+        "azurirano": datetime.datetime.now().isoformat()}).eq("mesec", mesec_key).execute()
+    for fn in (sb_potraz_list, sb_potraz_get):
+        try:
+            fn.clear()
+        except Exception:
+            pass
+
 def _potraz_collect(edited, base=None):
     """Iz izmenjenih data_editor tabela sklopi popunu {sheet: {r: {col: val}}}, čuvajući
     sve ostale ćelije iz `base`. Brojevi se parsiraju, „—" -> prazno, Za uplatu = dug − lager."""
@@ -804,7 +817,18 @@ def potraz_admin_ui():
         else:
             st.info("⏰ Rok za predaju potraživanja: " + _rok_fmt(_rok_pz) + ".")
     if _predato:
-        st.success("Ovaj izveštaj je predat direktoru (" + str(rec.get("predato_at") or "") + "). Prikaz je samo za pregled.")
+        _pc_a, _pc_b = st.columns([3, 1])
+        with _pc_a:
+            st.success("Ovaj izveštaj je predat direktoru (" + str(rec.get("predato_at") or "") + "). Prikaz je samo za pregled.")
+        with _pc_b:
+            if st.button("🔓 Vrati na dopunu", key="pz_reopen", use_container_width=True):
+                try:
+                    sb_potraz_reopen(_mk)
+                    st.session_state.pop("pzwork_for", None)  # osveži radnu kopiju
+                    st.success("Otključano — možeš ponovo da dopunjavaš.")
+                    st.rerun()
+                except Exception as _e:
+                    st.error("Greška: " + str(_e))
     else:
         st.caption("Stanje na dan: " + str(struct.get("stanje_na_dan", "")) + ". Dopuni iznose, statuse i komentare, pa klikni Prosledi direktoru.")
     dd_a = struct.get("dd_a", [])
@@ -1941,6 +1965,22 @@ def _to_int_kol(s):
         return 0
 
 
+def _admin_presek(meta, mesec_key):
+    """Datum preseka za „posle 01.": prvenstveno meta['presek'] (1. u mesecu posle
+    poslednjeg meseca podataka), a ako ga nema — 1. u mesecu objave (staro ponašanje)."""
+    _ps = None
+    try:
+        _ps = (meta or {}).get("presek")
+    except Exception:
+        _ps = None
+    try:
+        if _ps:
+            _p = str(_ps).split("-")
+            return datetime.date(int(_p[0]), int(_p[1]), int(_p[2]) if len(_p) > 2 else 1)
+        return datetime.date(int(str(mesec_key).split("-")[0]), int(str(mesec_key).split("-")[1]), 1)
+    except Exception:
+        return None
+
 def _treb_posle_preseka(hist_lst, cutoff_date):
     """Iz učitane istorije porudžbina saberi količine po artiklu za porudžbine
     datirane >= cutoff_date, izuzimajući otkazane/stornirane. Vrati {ida: kom}."""
@@ -2257,8 +2297,11 @@ def prikazi_administraciju():
             st.rerun()
     _rf = st.session_state.get("_refresh_done")
     if _rf and _rf.get("sis") == sistem and _rf.get("mes") == mesec_key:
+        _pcut = _admin_presek(meta, mesec_key)
+        _pcs = _pcut.strftime("%d.%m.%Y") if _pcut else "01."
         st.success("✅ Ažurirano iz admina — prethodne porudžbine i dopuna su spremni u svakom objektu. "
-                   "Objekata sa porudžbinama posle 01.: " + str(_rf.get("n", 0)) + ".")
+                   "Prikazuje se šta su objekti sami poručili od " + _pcs + " (posle preseka). "
+                   "Objekata sa takvim porudžbinama: " + str(_rf.get("n", 0)) + ".")
 
     with st.expander("📦 Porudžbina ubačena za ceo sistem (grupna akcija)"):
         st.caption("Za sisteme gde mi direktno ubacujemo porudžbine (npr. BB TRADE, KNEZ) — jednim klikom se svi objekti označe kao Ubačena porudžbina i postaju pregledani. Ne koristiti za sisteme gde se objekti zovu pojedinačno.")
@@ -2290,10 +2333,7 @@ def prikazi_administraciju():
     tab_lista, tab_detalj = st.tabs(["Lista objekata", "Detalj / obrada"])
 
     with tab_lista:
-        try:
-            _cut_list = datetime.date(int(str(mesec_key).split("-")[0]), int(str(mesec_key).split("-")[1]), 1)
-        except Exception:
-            _cut_list = None
+        _cut_list = _admin_presek(meta, mesec_key)
         _rows = ""
         for o in objekti:
             z = _zona_disp(o["nivo"])
@@ -2387,13 +2427,9 @@ def prikazi_administraciju():
             st.markdown('<div style="margin:-8px 0 12px;color:#6b7280;font-size:13px;">'
                         + "&nbsp;&nbsp;·&nbsp;&nbsp;".join(_kbits) + '</div>', unsafe_allow_html=True)
 
-        # --- Presek (01. u mesecu izveštaja) + učitavanje istorije iz admina ---
+        # --- Presek (1. u mesecu posle poslednjeg meseca podataka) + istorija iz admina ---
         import datetime as _dtp
-        try:
-            _yy, _mm = str(mesec_key).split("-")[:2]
-            _cutoff = _dtp.date(int(_yy), int(_mm), 1)
-        except Exception:
-            _cutoff = None
+        _cutoff = _admin_presek(meta, mesec_key)
         _hk = "hist_" + str(sistem) + "_" + str(sel_id)
         _naziv_kom = _knaziv
 
@@ -3608,11 +3644,12 @@ WMA_WEIGHTS = np.array([0.03, 0.07, 0.12, 0.28, 0.50])
 HIST_WEIGHT = 0.03
 
 class PredictionEngine:
-    def __init__(self, file_bytes, excluded_ids, alpha, beta, min_lager, min_order, mesecni_trosak=0, analitika_meseci=None, min_per_artikal=None, meseci=1.0, max_per_artikal=None):
+    def __init__(self, file_bytes, excluded_ids, alpha, beta, min_lager, min_order, mesecni_trosak=0, analitika_meseci=None, min_per_artikal=None, meseci=1.0, max_per_artikal=None, syx_objekti=None):
         self.file_bytes = file_bytes; self.excluded = excluded_ids
         self.alpha = alpha; self.beta = beta; self.min_lager = min_lager; self.min_order = min_order
         self.min_per_artikal = min_per_artikal
         self.max_per_artikal = max_per_artikal
+        self.syx_objekti = syx_objekti  # set ID-jeva koji smeju SYX; None = bez ograničenja
         self.meseci = meseci if (meseci and meseci > 0) else 1.0
         self.mesecni_trosak = mesecni_trosak
         self.analitika_meseci = analitika_meseci
@@ -3957,6 +3994,17 @@ class PredictionEngine:
             self.df_result.loc[cap1, 'Porudzbina_1'] = mx
             if n_cap2 > 0 or n_cap1 > 0:
                 self.log(f"Max po artiklu ({mx} kom): P1={n_cap1}, P2={n_cap2} stavki ograničeno na maksimum")
+        # SYX vrećice samo u zadatim objektima — u ostalima porudžbina SYX = 0
+        _syx = getattr(self, "syx_objekti", None)
+        if _syx is not None and 'Grupa' in self.df_result.columns:
+            _g = self.df_result['Grupa'].astype(str).str.upper()
+            _nz = self.df_result['Naziv artikla'].astype(str).str.upper() if 'Naziv artikla' in self.df_result.columns else _g
+            _je_syx = _g.str.contains('SYX') | _nz.str.contains('SYX') | _nz.str.contains('VREĆIC') | _nz.str.contains('VRECIC')
+            _van = _je_syx & (~self.df_result['ID KOMITENTA'].isin(_syx))
+            _nsyx = int(((self.df_result['Porudzbina_2'] > 0) & _van).sum())
+            self.df_result.loc[_van, 'Porudzbina_2'] = 0
+            self.df_result.loc[_van, 'Porudzbina_1'] = 0
+            self.log(f"SYX ograničenje: dozvoljeno u {len(_syx)} objekata; nulirano u ostalima ({_nsyx} stavki).")
     def _apply_min_order(self):
         self.adjustments = []
         if self.min_order is None or self.min_order <= 0: return
@@ -4584,6 +4632,7 @@ min_lager = None
 min_order = None
 min_per_artikal = None
 max_per_artikal = None
+syx_objekti = None
 mesecni_trosak = 0
 excluded_str = DEFAULT_EXCLUDED
 excluded = set()
@@ -5028,6 +5077,8 @@ with tab_obj:
                 _o_tr = st.number_input("Ukupan trosak mkt (RSD)", min_value=0, value=0, step=10000, key="obj_tr")
             with _oc3:
                 _o_excl = st.text_area("Isključeni komitenti (ID, zarez)", value=DEFAULT_EXCLUDED, height=110, key="obj_excl")
+                _o_syx = st.text_area("Objekti koji prodaju SYX (ID, zarez)", value="", height=90, key="obj_syx",
+                                      placeholder="prazno = SYX ide svima; ako upišeš ID-jeve, SYX se predlaže samo u tim objektima")
         _o_min_lager = int(_o_ml) if _o_ml.strip().isdigit() else None
         _o_min_order = int(_o_mo) if _o_mo.strip().isdigit() else None
         _o_min_pa = int(_o_mpa) if _o_mpa.strip().isdigit() else None
@@ -5037,6 +5088,12 @@ with tab_obj:
             _p = _part.strip()
             if _p.isdigit():
                 _o_excluded.add(int(_p))
+        _o_syx_set = set()
+        for _part in _o_syx.replace('\n', ',').split(','):
+            _p = _part.strip()
+            if _p.isdigit():
+                _o_syx_set.add(int(_p))
+        _o_syx_obj = _o_syx_set if _o_syx_set else None
 
         with st.container(border=True):
             st.markdown('<div class="obj-title"><span class="obj-badge green">\u2713</span> Objavi za koleginice</div>', unsafe_allow_html=True)
@@ -5071,14 +5128,24 @@ with tab_obj:
                 else:
                     try:
                         _pb = st.progress(0, "Računam porudžbinu...")
-                        _eng = PredictionEngine(_obytes, _o_excluded, alpha, beta, _o_min_lager, _o_min_order, _o_tr, None, _o_min_pa, meseci=float(_o_mes), max_per_artikal=_o_max_pa)
+                        _eng = PredictionEngine(_obytes, _o_excluded, alpha, beta, _o_min_lager, _o_min_order, _o_tr, None, _o_min_pa, meseci=float(_o_mes), max_per_artikal=_o_max_pa, syx_objekti=_o_syx_obj)
                         _res = _eng.run(_pb)
                         _pb.empty()
                         # mesec pod kojim se objavljuje = izabrani mesec (podrazumevano auto)
                         _mk2 = _o_mes_key
                         _mlbl2 = mesec_label(_mk2)
+                        # Presek za „posle 01." = 1. u mesecu POSLE poslednjeg meseca podataka
+                        # (nezavisno od izabranog meseca objave). Npr. podaci do jula -> presek 01.08.
+                        try:
+                            _lg3, _lm3 = _eng.meseci_order[-1]
+                            _pm3 = int(_lm3) + 1; _py3 = int(_lg3)
+                            if _pm3 > 12:
+                                _pm3 = 1; _py3 += 1
+                            _presek_iso = str(_py3) + "-" + ("0" + str(_pm3))[-2:] + "-01"
+                        except Exception:
+                            _presek_iso = None
                         _stavke = stavke_iz_rezultata(_res, _eng)
-                        _payload = {"mesec_label": _mlbl2, "meta": {"pred_label": _eng.pred_label, "order_label": _eng.order_label, "min_lager": _eng.min_lager, "meseci": round(float(_o_mes), 1), "generisano": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"), "n_objekata": int(len({_s2['idk'] for _s2 in _stavke})), "ukupno_kom": int(sum(_s2['kol'] for _s2 in _stavke))}, "stavke": _stavke}
+                        _payload = {"mesec_label": _mlbl2, "meta": {"pred_label": _eng.pred_label, "order_label": _eng.order_label, "min_lager": _eng.min_lager, "meseci": round(float(_o_mes), 1), "presek": _presek_iso, "generisano": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"), "n_objekata": int(len({_s2['idk'] for _s2 in _stavke})), "ukupno_kom": int(sum(_s2['kol'] for _s2 in _stavke))}, "stavke": _stavke}
                         try:
                             _payload["direktor"] = direktor_blok(_eng, _res)
                         except Exception:
@@ -5124,10 +5191,18 @@ with tab_ana:
         with pc3:
             st.markdown("**⛔ Isključeni komitenti**")
             excluded_str = st.text_area("ID-evi razdvojeni zarezom", value=DEFAULT_EXCLUDED, height=80)
+            st.markdown("**🧊 Objekti koji prodaju SYX**")
+            syx_str = st.text_area("ID-evi (prazno = SYX ide svima)", value="", height=70, key="ana_syx",
+                                   help="Ako upišeš ID-jeve, SYX vrećice se predlažu u porudžbini samo u tim objektima; u ostalima se stave na 0.")
     excluded = set()
     for part in excluded_str.replace('\n', ',').split(','):
         p = part.strip()
         if p.isdigit(): excluded.add(int(p))
+    syx_set = set()
+    for part in syx_str.replace('\n', ',').split(','):
+        p = part.strip()
+        if p.isdigit(): syx_set.add(int(p))
+    syx_objekti = syx_set if syx_set else None
     uploaded = st.file_uploader("Učitaj Excel fajl sa podacima", type=['xlsx','xls'])
     if uploaded:
         file_bytes = uploaded.read()
@@ -5158,7 +5233,7 @@ with tab_ana:
         if st.button("🚀 POKRENI ANALIZU", use_container_width=True):
             progress_bar = st.progress(0)
             try:
-                engine = PredictionEngine(file_bytes, excluded, alpha, beta, min_lager, min_order, mesecni_trosak, selected_meseci, min_per_artikal, meseci=float(meseci_ana), max_per_artikal=max_per_artikal)
+                engine = PredictionEngine(file_bytes, excluded, alpha, beta, min_lager, min_order, mesecni_trosak, selected_meseci, min_per_artikal, meseci=float(meseci_ana), max_per_artikal=max_per_artikal, syx_objekti=syx_objekti)
                 result = engine.run(progress_bar)
                 st.session_state["last_engine"] = engine
                 st.session_state["last_result"] = result
