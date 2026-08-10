@@ -324,6 +324,54 @@ def _rok_je_prosao(s):
     except Exception:
         return False
 
+# ---- Izveštaj SYX (Word dokument po mesecu; analitičar ubacuje, direktori preuzimaju) ----
+@st.cache_data(ttl=30)
+def sb_syx_list():
+    cli = _sb()
+    if cli is None:
+        return []
+    try:
+        res = cli.table("izvestaj_syx").select("mesec,filename,azurirano").execute()
+        return sorted(res.data or [], key=lambda r: r.get("mesec", ""), reverse=True)
+    except Exception:
+        return []
+
+@st.cache_data(ttl=300)
+def sb_syx_get(mesec_key):
+    cli = _sb()
+    if cli is None:
+        return None
+    try:
+        res = cli.table("izvestaj_syx").select("filename,docx_b64").eq("mesec", mesec_key).limit(1).execute()
+        if res.data:
+            return res.data[0]
+    except Exception:
+        pass
+    return None
+
+def sb_syx_set(mesec_key, filename, b64):
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    cli.table("izvestaj_syx").upsert({"mesec": mesec_key, "filename": filename, "docx_b64": b64,
+        "azurirano": datetime.datetime.now().isoformat()}, on_conflict="mesec").execute()
+    for fn in (sb_syx_list, sb_syx_get):
+        try:
+            fn.clear()
+        except Exception:
+            pass
+
+def sb_syx_obrisi(mesec_key):
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    cli.table("izvestaj_syx").delete().eq("mesec", mesec_key).execute()
+    for fn in (sb_syx_list, sb_syx_get):
+        try:
+            fn.clear()
+        except Exception:
+            pass
+
 # ---- HITNOST po objektu (na osnovu niskog lagera) ----
 # Pragovi su namerno apsolutni i lako se menjaju (dole dve brojke).
 HIT_CRVENO_KOM   = 15   # >= ovoliko kom/mesec na artiklima bez lagera -> HITNO
@@ -492,6 +540,68 @@ def direktor_blok(engine, res):
             except Exception:
                 _ok["objekata_na_0"] = int((_dfoos.get("Lager_danas", 0) == 0).sum())
             out["oos_kom"] = _ok
+    except Exception:
+        pass
+
+    # ---- Predlog porudžbine za sistem + pokrivenost lagera ----
+    try:
+        if "Porudzbina_2" in res.columns:
+            _exc = getattr(engine, "excluded", None) or set()
+            _rv = res[~res["ID KOMITENTA"].isin(_exc)] if _exc else res
+            _pr = {"ukupno": int(_rv["Porudzbina_2"].sum()),
+                   "objekata": int(_rv[_rv["Porudzbina_2"] > 0]["ID KOMITENTA"].nunique()),
+                   "po_grupi": []}
+            if "Grupa" in _rv.columns:
+                _gp = _rv.groupby("Grupa")["Porudzbina_2"].sum().sort_values(ascending=False)
+                _pr["po_grupi"] = [{"grupa": str(g), "kom": int(v)} for g, v in _gp.items() if int(v) > 0]
+            # prosečna pokrivenost (dani) — ponderisano prodajom, iz df_promo
+            _dp = getattr(engine, "df_promo", None)
+            if _dp is not None and len(_dp) > 0 and "Dani_pokrivanja" in _dp.columns:
+                _dd = _dp[(_dp["Dani_pokrivanja"] < 900) & (_dp["Prodato_kom"] > 0)]
+                if len(_dd) > 0:
+                    _wsum = float((_dd["Dani_pokrivanja"] * _dd["Prodato_kom"]).sum())
+                    _psum = float(_dd["Prodato_kom"].sum())
+                    _pr["dani_avg"] = int(round(_wsum / _psum)) if _psum else 0
+            out["porudzbina"] = _pr
+    except Exception:
+        pass
+
+    # ---- Bestseleri i najslabiji artikli (iz res, po ukupnoj prodaji perioda) ----
+    try:
+        _art = {}
+        _grp_of = {}
+        for lb in ml:
+            cp = _col(lb, "_Prodaja")
+            if cp and "Naziv artikla" in res.columns:
+                _gsum = res.groupby("Naziv artikla")[cp].sum()
+                for _nz, _vv in _gsum.items():
+                    _art[str(_nz)] = _art.get(str(_nz), 0) + int(_vv)
+        if "Grupa" in res.columns and "Naziv artikla" in res.columns:
+            for _nz, _gg in res.groupby("Naziv artikla")["Grupa"].first().items():
+                _grp_of[str(_nz)] = str(_gg)
+        if _art:
+            _srt = sorted(_art.items(), key=lambda kv: kv[1], reverse=True)
+            _best = [{"artikal": k, "grupa": _grp_of.get(k, ""), "prodato": v} for k, v in _srt[:8]]
+            _slab = [{"artikal": k, "grupa": _grp_of.get(k, ""), "prodato": v}
+                     for k, v in sorted(_srt, key=lambda kv: kv[1])[:8]]
+            out["artikli_rang"] = {"best": _best, "slab": _slab}
+    except Exception:
+        pass
+
+    # ---- Uspešnost akcije (iz df_promo; samo ako ima cena) ----
+    try:
+        _dp = getattr(engine, "df_promo", None)
+        if _dp is not None and len(_dp) > 0:
+            _ak = {"ukupno_akcija": int(_dp["Profit_akcija"].sum()),
+                   "ukupno_redovna": int(_dp["Profit_da_je_redovna"].sum())}
+            _ak["razlika"] = _ak["ukupno_redovna"] - _ak["ukupno_akcija"]
+            _tp = _dp.sort_values("Prodato_kom", ascending=False).head(12)
+            _ak["artikli"] = [{"naziv": str(r["Naziv"]), "grupa": str(r["Grupa"]),
+                               "prodato": int(r["Prodato_kom"]), "obrt": float(r["Obrt_x"]),
+                               "popust": float(r["Popust_%"]), "profit_akcija": int(r["Profit_akcija"]),
+                               "cena_akcije": int(r["Cena_akcije"]), "dani": int(r["Dani_pokrivanja"]) if r["Dani_pokrivanja"] < 900 else 0}
+                              for _, r in _tp.iterrows()]
+            out["akcija"] = _ak
     except Exception:
         pass
 
@@ -2006,7 +2116,17 @@ def prikazi_direktore():
         return
 
     _pub = sb_meseci()
-    _mes_keys = sorted({m["key"] for m in _pub}, reverse=True)
+    _mk = {m["key"] for m in _pub}
+    # Uključi i tekući mesec (ako je počeo) + mesece za koje su postavljeni rokovi,
+    # da direktor može da izabere i pre objave (i vidi poruku o roku).
+    _tdy0 = datetime.date.today()
+    _mk.add(str(_tdy0.year) + "-" + ("0" + str(_tdy0.month))[-2:])
+    try:
+        for _rmk in sb_rokovi_all().keys():
+            _mk.add(_rmk)
+    except Exception:
+        pass
+    _mes_keys = sorted(_mk, reverse=True)
     if not _mes_keys:
         st.info("Još nema objavljenih izveštaja.")
         return
@@ -2091,6 +2211,21 @@ def prikazi_direktore():
         _ppo = dd.get("prosek_po_objektu") or []
         if _ppo:
             _render_prosek_line(_ppo)
+
+        # 3b. Predlog porudžbine za sistem + pokrivenost
+        _por = dd.get("porudzbina") or {}
+        if _por and (_por.get("ukupno") or _por.get("po_grupi")):
+            _render_porudzbina(_por)
+
+        # 3c. Bestseleri i najslabiji artikli
+        _arg = dd.get("artikli_rang") or {}
+        if _arg and (_arg.get("best") or _arg.get("slab")):
+            _render_artikli_rang(_arg)
+
+        # 3d. Uspešnost akcije
+        _ak = dd.get("akcija") or {}
+        if _ak and _ak.get("artikli"):
+            _render_akcija(_ak)
 
         # 4. Out of stock — po količinama (poslednji mesec)
         _okd = dd.get("oos_kom") or {}
@@ -2213,6 +2348,91 @@ def prikazi_direktore():
             _df = pd.DataFrame([{"Artikal": r["artikal"], "U koliko objekata na 0": r["objekata"],
                                  "Izgubljeno (kom) · " + _mes: r["izgubljeno"]} for r in _pa])
             st.dataframe(_df, hide_index=True, use_container_width=True, height=min(60 + 35 * len(_pa), 520))
+
+    def _render_porudzbina(pr):
+        _uk = int(pr.get("ukupno", 0)); _ob = int(pr.get("objekata", 0)); _dani = pr.get("dani_avg")
+        _h = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px;margin-bottom:20px;'
+              'box-shadow:0 2px 12px rgba(80,40,140,.05);">'
+              '<div style="font-size:15px;font-weight:800;margin-bottom:4px;">Predlog porudžbine za sistem</div>'
+              '<div style="font-size:12.5px;color:#9aa0ad;margin-bottom:16px;">Koliko sistem treba da poruči (preporuka analitike) i za koliko dana lager traje.</div>'
+              '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:' + ('16px' if pr.get("po_grupi") else '0') + ';">')
+        _cards = [("#7c3aed", _fmt(_uk) + " <span style='font-size:13px;color:#9aa0ad;'>kom</span>", "Ukupno za poručivanje"),
+                  ("#0ea5e9", _fmt(_ob), "Objekata poručuje")]
+        if _dani is not None:
+            _cards.append(("#f59e0b", _fmt(_dani) + " <span style='font-size:13px;color:#9aa0ad;'>dana</span>", "Prosečna pokrivenost lagera"))
+        for (col, v, lab) in _cards:
+            _h += ('<div style="background:#faf9fd;border:1px solid #efeaf7;border-left:4px solid ' + col + ';border-radius:14px;padding:15px 17px;">'
+                   '<div style="font-size:20px;font-weight:800;color:' + col + ';">' + v + '</div>'
+                   '<div style="font-size:11px;color:#9aa0ad;margin-top:4px;font-weight:600;">' + lab + '</div></div>')
+        _h += '</div>'
+        _pg = pr.get("po_grupi", [])
+        if _pg:
+            _gmax = max([int(g["kom"]) for g in _pg] or [1]) or 1
+            _h += '<div style="font-size:12.5px;font-weight:700;color:#374151;margin:4px 0 10px;">Po grupama:</div>'
+            for g in _pg:
+                _k = int(g["kom"]); _w = int(_k / _gmax * 100)
+                _h += ('<div style="display:grid;grid-template-columns:150px 1fr 90px;align-items:center;gap:12px;margin-bottom:9px;">'
+                       '<span style="font-size:13px;font-weight:600;color:#374151;">' + _h_escape(str(g["grupa"])) + '</span>'
+                       '<div style="height:11px;background:#f0ebf9;border-radius:20px;overflow:hidden;">'
+                       '<div style="height:100%;width:' + str(_w) + '%;background:linear-gradient(90deg,#7c3aed,#c084fc);border-radius:20px;"></div></div>'
+                       '<span style="font-size:12.5px;text-align:right;font-weight:700;color:#4b5563;">' + _fmt(_k) + ' kom</span></div>')
+        _h += '</div>'
+        st.markdown(_h, unsafe_allow_html=True)
+
+    def _render_artikli_rang(ar):
+        _best = ar.get("best", []); _slab = ar.get("slab", [])
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            _h = _card_open("🔝 Bestseleri", "Najprodavaniji artikli u sistemu (ceo period).")
+            _mx = max([int(x["prodato"]) for x in _best] or [1]) or 1
+            for x in _best:
+                _p = int(x["prodato"]); _w = int(_p / _mx * 100)
+                _h += ('<div style="margin-bottom:10px;">'
+                       '<div style="display:flex;justify-content:space-between;font-size:12.5px;color:#374151;margin-bottom:3px;">'
+                       '<span style="font-weight:600;">' + _h_escape(str(x["artikal"])[:38]) + '</span>'
+                       '<span style="font-weight:700;color:#16a34a;">' + _fmt(_p) + ' kom</span></div>'
+                       '<div style="height:9px;background:#f0fdf4;border-radius:20px;overflow:hidden;">'
+                       '<div style="height:100%;width:' + str(_w) + '%;background:linear-gradient(90deg,#16a34a,#4ade80);border-radius:20px;"></div></div></div>')
+            st.markdown(_h + "</div>", unsafe_allow_html=True)
+        with _c2:
+            _h = _card_open("🐌 Najslabiji artikli", "Najmanje prodaju — kandidati za smanjenje zaliha.")
+            _mx = max([int(x["prodato"]) for x in _best] or [1]) or 1
+            for x in _slab:
+                _p = int(x["prodato"]); _w = int(_p / _mx * 100)
+                _h += ('<div style="margin-bottom:10px;">'
+                       '<div style="display:flex;justify-content:space-between;font-size:12.5px;color:#374151;margin-bottom:3px;">'
+                       '<span style="font-weight:600;">' + _h_escape(str(x["artikal"])[:38]) + '</span>'
+                       '<span style="font-weight:700;color:#dc2626;">' + _fmt(_p) + ' kom</span></div>'
+                       '<div style="height:9px;background:#fef2f2;border-radius:20px;overflow:hidden;">'
+                       '<div style="height:100%;width:' + str(max(_w, 2)) + '%;background:linear-gradient(90deg,#f59e0b,#fca5a5);border-radius:20px;"></div></div></div>')
+            st.markdown(_h + "</div>", unsafe_allow_html=True)
+
+    def _render_akcija(ak):
+        _ua = int(ak.get("ukupno_akcija", 0)); _ur = int(ak.get("ukupno_redovna", 0)); _rz = int(ak.get("razlika", 0))
+        _h = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px;margin-bottom:14px;'
+              'box-shadow:0 2px 12px rgba(80,40,140,.05);">'
+              '<div style="font-size:15px;font-weight:800;margin-bottom:4px;">Uspešnost akcije</div>'
+              '<div style="font-size:12.5px;color:#9aa0ad;margin-bottom:16px;">Koliko je akcija donela naspram da se prodavalo po redovnoj ceni, i obrt po artiklu.</div>'
+              '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;">')
+        for (col, v, lab) in [("#10b981", _fmt(_ua) + " RSD", "Profit ostvaren na akciji"),
+                              ("#7c3aed", _fmt(_ur) + " RSD", "Da je bila redovna cena"),
+                              ("#ec4899", ("-" if _rz > 0 else "+") + _fmt(abs(_rz)) + " RSD", "Razlika (koliko je akcija „koštala“)")]:
+            _h += ('<div style="background:#faf9fd;border:1px solid #efeaf7;border-left:4px solid ' + col + ';border-radius:14px;padding:15px 17px;">'
+                   '<div style="font-size:18px;font-weight:800;color:' + col + ';">' + v + '</div>'
+                   '<div style="font-size:11px;color:#9aa0ad;margin-top:4px;font-weight:600;">' + lab + '</div></div>')
+        _h += '</div></div>'
+        st.markdown(_h, unsafe_allow_html=True)
+        _rows = []
+        for a in ak.get("artikli", []):
+            _rows.append({"Artikal": str(a["naziv"]), "Grupa": str(a.get("grupa", "")),
+                          "Prodato (kom)": int(a["prodato"]), "Obrt (x)": round(float(a["obrt"]), 1),
+                          "Popust %": round(float(a["popust"]), 1),
+                          "Profit akcija (RSD)": int(a["profit_akcija"]),
+                          "Cena akcije (RSD)": int(a["cena_akcije"]),
+                          "Dani pokrivanja": int(a["dani"])})
+        if _rows:
+            st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True,
+                         height=min(60 + 35 * len(_rows), 480))
 
     def _card_open(naslov, podnaslov=""):
         _h = ('<div style="background:#fff;border:1px solid #efeaf7;border-radius:16px;padding:20px 22px;margin-bottom:20px;'
@@ -2383,7 +2603,7 @@ def prikazi_direktore():
                     'Pregled izveštaja i efikasnosti administracije.</div>', unsafe_allow_html=True)
         st.markdown('<div style="font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:#9aa0ad;'
                     'font-weight:700;margin-bottom:12px;">Kartice</div>', unsafe_allow_html=True)
-        _cc1, _cc2, _cc3, _cc4 = st.columns(4)
+        _cc1, _cc2, _cc3 = st.columns(3)
         with _cc1:
             with st.container(border=True):
                 st.markdown('<div style="font-size:32px;">📊</div>'
@@ -2408,7 +2628,16 @@ def prikazi_direktore():
                             unsafe_allow_html=True)
                 if st.button("Otvori →", key="dir_open_prod", use_container_width=True):
                     st.session_state["dir_view"] = "prodaja"; st.rerun()
-        with _cc4:
+        _cd1, _cd2, _cd3 = st.columns(3)
+        with _cd1:
+            with st.container(border=True):
+                st.markdown('<div style="font-size:32px;">🧊</div>'
+                            '<div style="font-size:16px;font-weight:800;margin:6px 0 4px;">Izveštaj SYX</div>'
+                            '<div style="font-size:13px;color:#8b8fa0;line-height:1.5;margin-bottom:12px;">Word izveštaji za SYX nikotinske vrećice, izlistani po mesecima za preuzimanje.</div>',
+                            unsafe_allow_html=True)
+                if st.button("Otvori →", key="dir_open_syx", use_container_width=True):
+                    st.session_state["dir_view"] = "syx"; st.rerun()
+        with _cd2:
             with st.container(border=True):
                 st.markdown('<div style="font-size:32px;">📅</div>'
                             '<div style="font-size:16px;font-weight:800;margin:6px 0 4px;">Rokovi</div>'
@@ -2482,6 +2711,36 @@ def prikazi_direktore():
                               "Izveštaj prodaje": _rok_fmt(_v.get("rok_prodaja")),
                               "Napomena": (_v.get("napomena") or "")[:60]})
             st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
+        return
+
+    # ---------- KARTICA: IZVEŠTAJ SYX ----------
+    if _view == "syx":
+        st.markdown('<div style="font-size:20px;font-weight:800;margin:6px 0 6px;">🧊 Izveštaj SYX (nikotinske vrećice)</div>', unsafe_allow_html=True)
+        st.caption("Word izveštaji za SYX, po mesecima. Analitičar ih ubacuje u delu Objava izveštaja.")
+        _syl = sb_syx_list()
+        if not _syl:
+            st.info("Još nema objavljenih SYX izveštaja.")
+            return
+        import base64 as _b64y
+        for _r in _syl:
+            _mk = _r.get("mesec", "")
+            with st.container(border=True):
+                _sc1, _sc2 = st.columns([3, 1])
+                with _sc1:
+                    st.markdown("<div style='font-size:15px;font-weight:800;'>" + _h_escape(mesec_label(_mk)) + "</div>"
+                                "<div style='font-size:12.5px;color:#9aa0ad;margin-top:2px;'>" + _h_escape(str(_r.get("filename", ""))) + "</div>",
+                                unsafe_allow_html=True)
+                with _sc2:
+                    _doc = sb_syx_get(_mk)
+                    if _doc and _doc.get("docx_b64"):
+                        try:
+                            _fn = str(_r.get("filename") or ("Izvestaj_SYX_" + _mk + ".docx"))
+                            st.download_button("⬇️ Preuzmi", _b64y.b64decode(_doc["docx_b64"]),
+                                file_name=_fn,
+                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                key="syx_dl_" + _mk, use_container_width=True)
+                        except Exception:
+                            st.caption("Greška pri učitavanju dokumenta.")
         return
 
     # ---------- KARTICA 1: EFIKASNOST ADMINISTRACIJE ----------
@@ -2585,10 +2844,18 @@ def prikazi_direktore():
             _sel_lbl = st.selectbox("Mesec", _mlbls, index=0, key="dir_sis_mes")
         mesec_key = _mes_keys[_mlbls.index(_sel_lbl)]
         _sisteme = sb_sisteme(mesec_key)
+        if not _sisteme:
+            _rs = sb_rokovi_get(mesec_key).get("rok_sistemi")
+            if _rs and not _rok_je_prosao(_rs):
+                st.info("Izveštaj po sistemu za " + _sel_lbl + " još nije objavljen — biće objavljen najkasnije do "
+                        + _rok_fmt(_rs) + " (rok za popunjavanje još nije istekao).")
+            elif _rs:
+                st.warning("Izveštaj po sistemu za " + _sel_lbl + " nije objavljen, a rok ("
+                           + _rok_fmt(_rs) + ") je istekao.")
+            else:
+                st.info("Za " + _sel_lbl + " još nema objavljenih sistema (rok nije postavljen).")
+            return
         with _c2:
-            if not _sisteme:
-                st.info("Nema objavljenih sistema za ovaj mesec.")
-                return
             sistem = st.selectbox("Sistem", _sisteme, index=0, key="dir_sis_sis")
 
         st.markdown("<div style='margin:8px 0 14px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;"
@@ -2645,42 +2912,37 @@ def prikazi_direktore():
             _sales = {}
         _dsales = _direktor_blok_iz_prodaje(sistem, _sales)
 
-        # Iz analitike (objava sistema): prosek po objektu, OOS po količinama, profit
-        _ppo = d.get("prosek_po_objektu")
-        _okd = d.get("oos_kom")
+        # Iz analitike (objava sistema): prosek po objektu, OOS, porudžbina, artikli, akcija, profit
+        _extra_keys = ["profit", "prosek_po_objektu", "oos_kom", "porudzbina", "artikli_rang", "akcija"]
+        _has_analitika = any(d.get(k) for k in _extra_keys)
+
+        def _pripoji(base):
+            for _k in _extra_keys:
+                if d.get(_k):
+                    base[_k] = d.get(_k)
+            return base
 
         if _dsales:
             _part = _partial_iz_stavki(podaci.get("stavke") or [])
             _dsales["oos"] = _part.get("oos")
             _dsales["oos_po_artiklu"] = _part.get("oos_po_artiklu")
-            if _pf:
-                _dsales["profit"] = _pf
-            if _ppo:
-                _dsales["prosek_po_objektu"] = _ppo
-            if _okd:
-                _dsales["oos_kom"] = _okd
-            st.caption("Prodaja i grupe su iz tabele prodaje; prosek po objektu, OOS i profitabilnost su iz analitike sistema.")
+            _pripoji(_dsales)
+            st.caption("Prodaja i grupe su iz tabele prodaje; ostalo (porudžbina, artikli, akcija, OOS, profit) je iz analitike sistema.")
             _render_sistem_report(_dsales, True)
         elif d.get("prodaja_trend"):
-            _render_sistem_report(d, True)
+            _render_sistem_report(_pripoji(d), True)
         else:
-            _base = _partial_iz_stavki(podaci.get("stavke") or [])
-            if _pf:
-                _base["profit"] = _pf
-            if _ppo:
-                _base["prosek_po_objektu"] = _ppo
-            if _okd:
-                _base["oos_kom"] = _okd
-            if not (_pf or _ppo or _okd):
+            _base = _pripoji(_partial_iz_stavki(podaci.get("stavke") or []))
+            if not _has_analitika:
                 st.info("Prodaja i trend se pojave kad objaviš Izveštaj prodaje (ako tabela prodaje sadrži ovaj sistem), "
                         "ili kad ponovo objaviš ovaj sistem. Ispod je što je već dostupno.")
             _render_sistem_report(_base, False)
 
-        if not (_pf or _ppo or _okd):
+        if not _has_analitika:
             st.markdown("<div style='margin-top:10px;padding:11px 14px;background:#fff7ed;border:1px solid #fed7aa;"
-                        "border-radius:10px;font-size:12.5px;color:#9a5b1e;'>Delovi <b>Prosečna prodaja po objektu</b>, "
-                        "<b>OOS po količinama</b> i <b>Profitabilnost</b> se pojave čim ponovo objaviš ovaj sistem "
-                        "(novom verzijom aplikacije). Fajl je isti kao i do sad.</div>", unsafe_allow_html=True)
+                        "border-radius:10px;font-size:12.5px;color:#9a5b1e;'>Detaljni delovi (prosek po objektu, predlog "
+                        "porudžbine, bestseleri, uspešnost akcije, OOS po količinama, profitabilnost) se pojave čim ponovo "
+                        "objaviš ovaj sistem novom verzijom aplikacije. Fajl je isti kao i do sad.</div>", unsafe_allow_html=True)
         return
 
     # ---------- KARTICA 3: IZVEŠTAJ PRODAJE (dashboard, pun ekran) ----------
@@ -3862,6 +4124,59 @@ with tab_obj:
             _curplan = sb_load_plan(_pmes)
             if _curplan:
                 st.caption("Trenutni plan za " + mesec_label(_pmes) + ": do " + str(_curplan))
+
+    with st.container(border=True):
+        st.markdown('<div class="obj-title">📄 Izveštaj SYX (nikotinske vrećice)</div>', unsafe_allow_html=True)
+        st.caption("Ubaci Word (.docx) izveštaj za SYX po mesecu. Kod direktora se pojavljuje u kartici Izveštaj SYX, izlistan po mesecima.")
+        if not sb_dostupan():
+            st.caption("Nedostupno dok Supabase nije podešen.")
+        else:
+            _sy_today = datetime.date.today()
+            _sy_opts = set(m["key"] for m in sb_meseci())
+            for _r in sb_syx_list():
+                _sy_opts.add(_r.get("mesec"))
+            _yy, _mm = _sy_today.year, _sy_today.month - 2
+            while _mm <= 0:
+                _mm += 12; _yy -= 1
+            for _ in range(9):
+                _sy_opts.add(str(_yy) + "-" + ("0" + str(_mm))[-2:])
+                _mm += 1
+                if _mm > 12:
+                    _mm = 1; _yy += 1
+            _sy_opts = sorted([o for o in _sy_opts if o], reverse=True)
+            _syc1, _syc2 = st.columns([1, 2])
+            with _syc1:
+                _sy_mes = st.selectbox("Mesec", _sy_opts, format_func=mesec_label, key="syx_mes")
+            with _syc2:
+                _sy_file = st.file_uploader("Word dokument (.docx)", type=["docx"], key="syx_up")
+            if st.button("📤 Sačuvaj SYX izveštaj", key="syx_save", use_container_width=True,
+                         disabled=(_sy_file is None)):
+                try:
+                    import base64 as _b64s
+                    _bytes = _sy_file.getvalue()
+                    _b64 = _b64s.b64encode(_bytes).decode("ascii")
+                    sb_syx_set(_sy_mes, _sy_file.name, _b64)
+                    st.success("SYX izveštaj za " + mesec_label(_sy_mes) + " sačuvan (" + _sy_file.name + ").")
+                    st.rerun()
+                except Exception as _e:
+                    st.error("Greška pri čuvanju: " + str(_e))
+            _sy_all = sb_syx_list()
+            if _sy_all:
+                st.markdown("<div style='margin-top:6px;font-size:12px;text-transform:uppercase;letter-spacing:.5px;"
+                            "color:#9aa0ad;font-weight:700;'>Postavljeni SYX izveštaji</div>", unsafe_allow_html=True)
+                for _r in _sy_all:
+                    _rc1, _rc2, _rc3 = st.columns([2, 3, 1])
+                    with _rc1:
+                        st.markdown("**" + mesec_label(_r.get("mesec", "")) + "**")
+                    with _rc2:
+                        st.caption(str(_r.get("filename", "")))
+                    with _rc3:
+                        if st.button("Obriši", key="syx_del_" + str(_r.get("mesec")), use_container_width=True):
+                            try:
+                                sb_syx_obrisi(_r.get("mesec"))
+                                st.rerun()
+                            except Exception as _e:
+                                st.error("Greška: " + str(_e))
 
     with st.container(border=True):
         st.markdown('<div class="obj-title">👥 Šifarnik komitenata (nazivi + kontakt)</div>', unsafe_allow_html=True)
