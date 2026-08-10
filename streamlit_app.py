@@ -281,10 +281,15 @@ def sb_rokovi_all():
     if cli is None:
         return {}
     try:
-        res = cli.table("rokovi").select("mesec,rok_admin,rok_sistemi,rok_prodaja,napomena").execute()
+        res = cli.table("rokovi").select("mesec,rok_admin,rok_sistemi,rok_prodaja,rok_syx,rok_potraz,napomena").execute()
         return {r["mesec"]: r for r in (res.data or [])}
     except Exception:
-        return {}
+        # kolone rok_syx/rok_potraz možda još ne postoje -> učitaj bez njih
+        try:
+            res = cli.table("rokovi").select("mesec,rok_admin,rok_sistemi,rok_prodaja,napomena").execute()
+            return {r["mesec"]: r for r in (res.data or [])}
+        except Exception:
+            return {}
 
 def sb_rokovi_get(mesec_key):
     try:
@@ -292,15 +297,22 @@ def sb_rokovi_get(mesec_key):
     except Exception:
         return {}
 
-def sb_rokovi_set(mesec_key, rok_admin, rok_sistemi, rok_prodaja, napomena):
+def sb_rokovi_set(mesec_key, rok_admin, rok_sistemi, rok_prodaja, napomena, rok_syx=None, rok_potraz=None):
     cli = _sb()
     if cli is None:
         raise RuntimeError("Supabase nije podešen.")
     payload = {"mesec": mesec_key,
                "rok_admin": rok_admin or None, "rok_sistemi": rok_sistemi or None,
-               "rok_prodaja": rok_prodaja or None, "napomena": napomena or "",
+               "rok_prodaja": rok_prodaja or None, "rok_syx": rok_syx or None,
+               "rok_potraz": rok_potraz or None, "napomena": napomena or "",
                "azurirano": datetime.datetime.now().isoformat()}
-    cli.table("rokovi").upsert(payload, on_conflict="mesec").execute()
+    try:
+        cli.table("rokovi").upsert(payload, on_conflict="mesec").execute()
+    except Exception:
+        # fallback ako rok_syx/rok_potraz kolone ne postoje
+        payload.pop("rok_syx", None)
+        payload.pop("rok_potraz", None)
+        cli.table("rokovi").upsert(payload, on_conflict="mesec").execute()
     try:
         sb_rokovi_all.clear()
     except Exception:
@@ -371,6 +383,382 @@ def sb_syx_obrisi(mesec_key):
             fn.clear()
         except Exception:
             pass
+
+# ---- Izveštaj potraživanja (analitičar uploaduje Excel, administracija dopunjava u aplikaciji, direktor vidi + izvozi) ----
+def _potraz_txt(v):
+    if v is None:
+        return ""
+    if isinstance(v, (datetime.datetime, datetime.date)):
+        return v.strftime("%d.%m.%Y")
+    return str(v)
+
+def _potraz_tip(naziv):
+    n = " ".join(str(naziv).lower().split())
+    if "status" in n and "komunik" in n:
+        return "dd_a"
+    if "status" in n and ("tužb" in n or "tuzb" in n):
+        return "dd_b"
+    if any(k in n for k in ["vrednost", "ukupni dug", "za uplatu", "dana", "iznos"]):
+        return "num"
+    return "text"
+
+def _potraz_num(v):
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        s = str(v).strip().replace(" ", "")
+        return float(s) if s else None
+    except Exception:
+        return None
+
+def potraz_parse(xlsx_bytes):
+    """Rasčlani Excel potraživanja u strukturu (listovi -> sekcije -> kolone/redovi) sa
+    koordinatama ćelija, da bi administracija mogla da dopunjava u aplikaciji, a izvoz
+    upisuje nazad u originalni fajl (identično formatiranje)."""
+    import openpyxl as _ox
+    wb = _ox.load_workbook(io.BytesIO(xlsx_bytes), data_only=True)
+    dd_a, dd_b = [], []
+    if "_LISTE" in wb.sheetnames:
+        for r in wb["_LISTE"].iter_rows(values_only=True):
+            if r and len(r) >= 1 and r[0]:
+                dd_a.append(_potraz_txt(r[0]))
+            if r and len(r) >= 2 and r[1]:
+                dd_b.append(_potraz_txt(r[1]))
+    out = {"stanje_na_dan": "", "dd_a": dd_a, "dd_b": dd_b, "listovi": []}
+    stanje = ""
+    for ws in wb.worksheets:
+        if ws.title == "_LISTE":
+            continue
+        rows = list(ws.iter_rows(values_only=False))
+        n = len(rows)
+        for r in rows[:6]:
+            for c in r:
+                if c.value and "Stanje na dan" in str(c.value):
+                    stanje = str(c.value).replace("Stanje na dan:", "").strip()
+        sekcije = []
+        i = 0
+        last = ""
+        while i < n:
+            rc = rows[i]
+            vals = [_potraz_txt(c.value).strip() for c in rc]
+            for m in ("PO FAKTURI", "PO ODJAVI"):
+                if any(v == m for v in vals):
+                    last = m
+            is_hdr = any(v == "Komitent" for v in vals) or any("Naziv komitenta" in v for v in vals)
+            if is_hdr:
+                kolone = []
+                for c in rc:
+                    nz = _potraz_txt(c.value).strip()
+                    if nz:
+                        kolone.append({"col": c.column, "naziv": " ".join(nz.split()), "tip": _potraz_tip(nz)})
+                redovi = []
+                ukupno_row = None
+                sum_cols = []
+                j = i + 1
+                while j < n:
+                    r2 = rows[j]
+                    a = _potraz_txt(r2[0].value).strip()
+                    if a.upper().startswith("UKUPNO"):
+                        ukupno_row = r2[0].row
+                        for c in r2:
+                            if isinstance(c.value, (int, float)):
+                                sum_cols.append(c.column)
+                        break
+                    if all(_potraz_txt(c.value).strip() == "" for c in r2):
+                        break
+                    cells = {}
+                    for k in kolone:
+                        cells[str(k["col"])] = _potraz_txt(r2[k["col"] - 1].value)
+                    redovi.append({"r": r2[0].row, "cells": cells})
+                    j += 1
+                sekcije.append({"naslov": last or ws.title, "kolone": kolone, "redovi": redovi,
+                                "ukupno_row": ukupno_row, "sum_cols": sum_cols})
+                i = j
+                last = ""
+                continue
+            i += 1
+        out["listovi"].append({"sheet": ws.title, "sekcije": sekcije})
+    out["stanje_na_dan"] = stanje
+    return out
+
+def potraz_init_popuna(struktura):
+    """Početna popuna = vrednosti iz uploadovanog fajla (administracija ih dalje menja)."""
+    pop = {}
+    for L in struktura.get("listovi", []):
+        sh = L["sheet"]
+        pop[sh] = {}
+        for s in L["sekcije"]:
+            for rr in s["redovi"]:
+                pop[sh].setdefault(str(rr["r"]), {})
+                for col, val in rr["cells"].items():
+                    pop[sh][str(rr["r"])][str(col)] = val
+    return pop
+
+def potraz_export(original_b64, struktura, popuna):
+    """Upiši trenutne vrednosti (popuna) u originalni Excel i vrati bytes (identično formatiranje).
+    Tip kolone se određuje PO SEKCIJI (ista kolona može biti različita u „po fakturi" i „po odjavi")."""
+    import openpyxl as _ox, base64 as _b64
+    wb = _ox.load_workbook(io.BytesIO(_b64.b64decode(original_b64)))
+    popuna = popuna or {}
+    for L in struktura.get("listovi", []):
+        sh = L["sheet"]
+        if sh not in wb.sheetnames:
+            continue
+        ws = wb[sh]
+        for s in L["sekcije"]:
+            coltip = {str(k["col"]): k["tip"] for k in s["kolone"]}
+            for rr in s["redovi"]:
+                rv = popuna.get(sh, {}).get(str(rr["r"]), {})
+                for col, tip in coltip.items():
+                    if col not in rv:
+                        continue
+                    val = rv.get(col)
+                    c = ws.cell(row=int(rr["r"]), column=int(col))
+                    if tip == "num":
+                        nv = _potraz_num(val)
+                        c.value = nv if nv is not None else None
+                    else:
+                        c.value = val if (val is not None and str(val) != "") else None
+            if s.get("ukupno_row") and s.get("sum_cols"):
+                for scol in s["sum_cols"]:
+                    tot = 0.0
+                    for rr in s["redovi"]:
+                        nv = _potraz_num(popuna.get(sh, {}).get(str(rr["r"]), {}).get(str(scol)))
+                        if nv is not None:
+                            tot += nv
+                    ws.cell(row=int(s["ukupno_row"]), column=int(scol)).value = tot
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+def potraz_section_df(sekcija, sheet, popuna):
+    """Napravi DataFrame za jednu sekciju + jedinstvene labele + redosled kolona (col indeksi)."""
+    labels = []
+    counts = {}
+    col_order = []
+    for k in sekcija["kolone"]:
+        base = k["naziv"]
+        c = counts.get(base, 0) + 1
+        counts[base] = c
+        labels.append(base if c == 1 else base + " (" + str(c) + ")")
+        col_order.append(str(k["col"]))
+    data = {lab: [] for lab in labels}
+    for rr in sekcija["redovi"]:
+        rv = popuna.get(sheet, {}).get(str(rr["r"]), {})
+        for idx, k in enumerate(sekcija["kolone"]):
+            col = str(k["col"])
+            val = rv.get(col, rr["cells"].get(col, ""))
+            if k["tip"] == "num":
+                data[labels[idx]].append(_potraz_num(val))
+            else:
+                data[labels[idx]].append("" if val is None else str(val))
+    return pd.DataFrame(data, columns=labels), labels, col_order
+
+def potraz_col_config(sekcija, labels, df, dd_a, dd_b):
+    cfg = {}
+    for idx, k in enumerate(sekcija["kolone"]):
+        lab = labels[idx]
+        tip = k["tip"]
+        if tip in ("dd_a", "dd_b"):
+            base = list(dd_a if tip == "dd_a" else dd_b)
+            try:
+                existing = [str(x) for x in df[lab].dropna().unique() if str(x).strip() != ""]
+            except Exception:
+                existing = []
+            opts = [""] + base + [e for e in existing if e not in base]
+            cfg[lab] = st.column_config.SelectboxColumn(lab, options=opts, required=False, width="medium")
+        elif tip == "num":
+            cfg[lab] = st.column_config.NumberColumn(lab, format="%.2f")
+        else:
+            cfg[lab] = st.column_config.TextColumn(lab)
+    return cfg
+
+@st.cache_data(ttl=30)
+def sb_potraz_list():
+    cli = _sb()
+    if cli is None:
+        return []
+    try:
+        res = cli.table("izvestaj_potrazivanja").select("mesec,naziv,predato,azurirano").execute()
+        return sorted(res.data or [], key=lambda r: r.get("mesec", ""), reverse=True)
+    except Exception:
+        return []
+
+@st.cache_data(ttl=120)
+def sb_potraz_get(mesec_key):
+    cli = _sb()
+    if cli is None:
+        return None
+    try:
+        res = cli.table("izvestaj_potrazivanja").select("mesec,naziv,original_b64,struktura,popuna,predato,predato_at").eq("mesec", mesec_key).limit(1).execute()
+        if res.data:
+            return res.data[0]
+    except Exception:
+        pass
+    return None
+
+def sb_potraz_set(mesec_key, naziv, original_b64, struktura_json, popuna_json):
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    cli.table("izvestaj_potrazivanja").upsert({"mesec": mesec_key, "naziv": naziv,
+        "original_b64": original_b64, "struktura": struktura_json, "popuna": popuna_json,
+        "predato": False, "predato_at": None,
+        "azurirano": datetime.datetime.now().isoformat()}, on_conflict="mesec").execute()
+    for fn in (sb_potraz_list, sb_potraz_get):
+        try:
+            fn.clear()
+        except Exception:
+            pass
+
+def sb_potraz_popuni(mesec_key, popuna_json, predato=False):
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    _upd = {"popuna": popuna_json, "azurirano": datetime.datetime.now().isoformat()}
+    if predato:
+        _upd["predato"] = True
+        _upd["predato_at"] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+    cli.table("izvestaj_potrazivanja").update(_upd).eq("mesec", mesec_key).execute()
+    for fn in (sb_potraz_list, sb_potraz_get):
+        try:
+            fn.clear()
+        except Exception:
+            pass
+
+def sb_potraz_obrisi(mesec_key):
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    cli.table("izvestaj_potrazivanja").delete().eq("mesec", mesec_key).execute()
+    for fn in (sb_potraz_list, sb_potraz_get):
+        try:
+            fn.clear()
+        except Exception:
+            pass
+
+def _potraz_collect(edited):
+    """Iz izmenjenih data_editor tabela sklopi popunu {sheet: {r: {col: val}}}."""
+    newpop = {}
+    for (sh, sidx), (ed, col_order, sek) in edited.items():
+        newpop.setdefault(sh, {})
+        for ri, rr in enumerate(sek["redovi"]):
+            newpop[sh].setdefault(str(rr["r"]), {})
+            for ci, col in enumerate(col_order):
+                try:
+                    val = ed.iloc[ri, ci]
+                except Exception:
+                    val = ""
+                if val is None or (isinstance(val, float) and pd.isna(val)):
+                    val = ""
+                newpop[sh][str(rr["r"])][col] = val
+    return newpop
+
+def potraz_admin_ui():
+    st.markdown("<div style='font-size:18px;font-weight:800;margin:4px 0 10px;'>💳 Izveštaj potraživanja</div>", unsafe_allow_html=True)
+    _lst = sb_potraz_list()
+    if not _lst:
+        st.info("Analitičar još nije objavio nijedan izveštaj potraživanja.")
+        return
+    _labels = [mesec_label(r["mesec"]) for r in _lst]
+    _keys = [r["mesec"] for r in _lst]
+    _sel = st.selectbox("Mesec", _labels, index=0, key="pz_adm_mes")
+    _mk = _keys[_labels.index(_sel)]
+    rec = sb_potraz_get(_mk)
+    if not rec:
+        st.info("Nema podataka za ovaj mesec.")
+        return
+    try:
+        struct = json.loads(rec.get("struktura") or "{}")
+        pop = json.loads(rec.get("popuna") or "{}")
+    except Exception:
+        st.error("Greška u podacima izveštaja.")
+        return
+    _predato = bool(rec.get("predato"))
+    _rok_pz = sb_rokovi_get(_mk).get("rok_potraz")
+    if _rok_pz and not _predato:
+        if _rok_je_prosao(_rok_pz):
+            st.warning("⏰ Rok za predaju potraživanja (" + _rok_fmt(_rok_pz) + ") je istekao.")
+        else:
+            st.info("⏰ Rok za predaju potraživanja: " + _rok_fmt(_rok_pz) + ".")
+    if _predato:
+        st.success("Ovaj izveštaj je predat direktoru (" + str(rec.get("predato_at") or "") + "). Prikaz je samo za pregled.")
+    else:
+        st.caption("Stanje na dan: " + str(struct.get("stanje_na_dan", "")) + ". Dopuni iznose, statuse i komentare, pa klikni Prosledi direktoru.")
+    dd_a = struct.get("dd_a", [])
+    dd_b = struct.get("dd_b", [])
+    edited = {}
+    for L in struct.get("listovi", []):
+        sh = L["sheet"]
+        st.markdown("<div style='margin:16px 0 2px;font-size:15px;font-weight:800;color:#7c3aed;'>" + _h_escape(sh) + "</div>", unsafe_allow_html=True)
+        for sidx, s in enumerate(L["sekcije"]):
+            st.markdown("<div style='font-size:12.5px;font-weight:700;color:#6b7280;margin:8px 0 2px;'>" + _h_escape(str(s["naslov"])) + "</div>", unsafe_allow_html=True)
+            df, labels, col_order = potraz_section_df(s, sh, pop)
+            cfg = potraz_col_config(s, labels, df, dd_a, dd_b)
+            _ed = st.data_editor(df, column_config=cfg, hide_index=True, use_container_width=True,
+                                 num_rows="fixed", key="pz_ed_" + _mk + "_" + sh + "_" + str(sidx),
+                                 disabled=_predato)
+            edited[(sh, sidx)] = (_ed, col_order, s)
+    if not _predato:
+        _b1, _b2 = st.columns(2)
+        with _b1:
+            if st.button("💾 Sačuvaj (bez prosleđivanja)", key="pz_adm_save", use_container_width=True):
+                try:
+                    sb_potraz_popuni(_mk, json.dumps(_potraz_collect(edited), default=str))
+                    st.success("Sačuvano.")
+                    st.rerun()
+                except Exception as _e:
+                    st.error("Greška pri čuvanju: " + str(_e))
+        with _b2:
+            if st.button("📨 Prosledi direktoru", key="pz_adm_send", use_container_width=True, type="primary"):
+                try:
+                    sb_potraz_popuni(_mk, json.dumps(_potraz_collect(edited), default=str), predato=True)
+                    st.success("Prosleđeno direktoru.")
+                    st.rerun()
+                except Exception as _e:
+                    st.error("Greška pri prosleđivanju: " + str(_e))
+
+def potraz_director_ui():
+    st.markdown('<div style="font-size:20px;font-weight:800;margin:6px 0 6px;">💳 Izveštaj potraživanja</div>', unsafe_allow_html=True)
+    _lst = [r for r in sb_potraz_list() if r.get("predato")]
+    if not _lst:
+        st.info("Još nema prosleđenih izveštaja potraživanja. Administracija ih popunjava i prosleđuje.")
+        return
+    _labels = [mesec_label(r["mesec"]) for r in _lst]
+    _keys = [r["mesec"] for r in _lst]
+    _sel = st.selectbox("Mesec", _labels, index=0, key="pz_dir_mes")
+    _mk = _keys[_labels.index(_sel)]
+    rec = sb_potraz_get(_mk)
+    if not rec:
+        st.info("Nema podataka.")
+        return
+    try:
+        struct = json.loads(rec.get("struktura") or "{}")
+        pop = json.loads(rec.get("popuna") or "{}")
+    except Exception:
+        st.error("Greška u podacima.")
+        return
+    _tc1, _tc2 = st.columns([3, 1])
+    with _tc1:
+        st.caption("Stanje na dan: " + str(struct.get("stanje_na_dan", ""))
+                   + "  ·  predato " + str(rec.get("predato_at") or ""))
+    with _tc2:
+        try:
+            _xb = potraz_export(rec.get("original_b64"), struct, pop)
+            st.download_button("⬇️ Izvezi u Excel", _xb,
+                file_name="Izvestaj_potrazivanja_" + _mk + ".xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="pz_dir_dl", use_container_width=True)
+        except Exception as _e:
+            st.caption("Izvoz trenutno nije moguć.")
+    for L in struct.get("listovi", []):
+        sh = L["sheet"]
+        st.markdown("<div style='margin:16px 0 2px;font-size:15px;font-weight:800;color:#7c3aed;'>" + _h_escape(sh) + "</div>", unsafe_allow_html=True)
+        for s in L["sekcije"]:
+            st.markdown("<div style='font-size:12.5px;font-weight:700;color:#6b7280;margin:8px 0 2px;'>" + _h_escape(str(s["naslov"])) + "</div>", unsafe_allow_html=True)
+            df, labels, col_order = potraz_section_df(s, sh, pop)
+            st.dataframe(df, hide_index=True, use_container_width=True)
 
 # ---- HITNOST po objektu (na osnovu niskog lagera) ----
 # Pragovi su namerno apsolutni i lako se menjaju (dole dve brojke).
@@ -1516,6 +1904,12 @@ def prikazi_administraciju():
         st.error("Veza sa bazom trenutno nije podešena. Javi se analitičaru.")
         return
 
+    _adm_mode = st.radio("Prikaz", ["📦 Porudžbine", "💳 Potraživanja"], horizontal=True,
+                         key="adm_mode", label_visibility="collapsed")
+    if "Potra" in _adm_mode:
+        potraz_admin_ui()
+        return
+
     _pub = sb_meseci()
     _mes_keys = [m["key"] for m in _pub]
     for _k in sb_plan_meseci():
@@ -2645,6 +3039,14 @@ def prikazi_direktore():
                     st.session_state["dir_view"] = "syx"; st.rerun()
         with _cd2:
             with st.container(border=True):
+                st.markdown('<div style="font-size:32px;">💳</div>'
+                            '<div style="font-size:16px;font-weight:800;margin:6px 0 4px;">Izveštaj potraživanja</div>'
+                            '<div style="font-size:13px;color:#8b8fa0;line-height:1.5;margin-bottom:12px;">Potraživanja po mesecu koja je administracija dopunila — pregled i izvoz u Excel.</div>',
+                            unsafe_allow_html=True)
+                if st.button("Otvori →", key="dir_open_potraz", use_container_width=True):
+                    st.session_state["dir_view"] = "potraz"; st.rerun()
+        with _cd3:
+            with st.container(border=True):
                 st.markdown('<div style="font-size:32px;">📅</div>'
                             '<div style="font-size:16px;font-weight:800;margin:6px 0 4px;">Rokovi</div>'
                             '<div style="font-size:13px;color:#8b8fa0;line-height:1.5;margin-bottom:12px;">Postavi rokove po mesecu: administracija, izveštaj po sistemu i osvežavanje izveštaja prodaje.</div>',
@@ -2655,6 +3057,11 @@ def prikazi_direktore():
 
     if st.button("← Nazad na kartice", key="dir_back"):
         st.session_state["dir_view"] = "dash"; st.rerun()
+
+    # ---------- KARTICA: IZVEŠTAJ POTRAŽIVANJA ----------
+    if _view == "potraz":
+        potraz_director_ui()
+        return
 
     # ---------- KARTICA 4: ROKOVI ----------
     if _view == "rokovi":
@@ -2694,11 +3101,21 @@ def prikazi_direktore():
         with _r3:
             _dp = st.date_input("Rok — Osvežavanje izveštaja prodaje", value=_dflt(_post.get("rok_prodaja")),
                                 key="rok_prod_in", format="DD.MM.YYYY")
+        _r4, _r5, _r6 = st.columns(3)
+        with _r4:
+            _dsx = st.date_input("Rok — Izveštaj SYX", value=_dflt(_post.get("rok_syx")),
+                                 key="rok_syx_in", format="DD.MM.YYYY")
+        with _r5:
+            _dpz = st.date_input("Rok — Izveštaj potraživanja", value=_dflt(_post.get("rok_potraz")),
+                                 key="rok_potraz_in", format="DD.MM.YYYY")
+        with _r6:
+            st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
         _nap = st.text_area("Napomena (za izveštaj prodaje — šta osvežiti, na šta obratiti pažnju)",
                             value=_post.get("napomena") or "", key="rok_nap_in", height=80)
         if st.button("💾 Sačuvaj rokove", key="rok_save", type="primary"):
             try:
-                sb_rokovi_set(_rsel, _da.isoformat(), _ds.isoformat(), _dp.isoformat(), _nap)
+                sb_rokovi_set(_rsel, _da.isoformat(), _ds.isoformat(), _dp.isoformat(), _nap,
+                              rok_syx=_dsx.isoformat(), rok_potraz=_dpz.isoformat())
                 st.success("Rokovi za " + mesec_label(_rsel) + " sačuvani.")
                 st.rerun()
             except Exception as _e:
@@ -2715,7 +3132,9 @@ def prikazi_direktore():
                               "Administracija": _rok_fmt(_v.get("rok_admin")),
                               "Po sistemu": _rok_fmt(_v.get("rok_sistemi")),
                               "Izveštaj prodaje": _rok_fmt(_v.get("rok_prodaja")),
-                              "Napomena": (_v.get("napomena") or "")[:60]})
+                              "SYX": _rok_fmt(_v.get("rok_syx")),
+                              "Potraživanja": _rok_fmt(_v.get("rok_potraz")),
+                              "Napomena": (_v.get("napomena") or "")[:50]})
             st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
         return
 
@@ -3019,10 +3438,11 @@ WMA_WEIGHTS = np.array([0.03, 0.07, 0.12, 0.28, 0.50])
 HIST_WEIGHT = 0.03
 
 class PredictionEngine:
-    def __init__(self, file_bytes, excluded_ids, alpha, beta, min_lager, min_order, mesecni_trosak=0, analitika_meseci=None, min_per_artikal=None, meseci=1.0):
+    def __init__(self, file_bytes, excluded_ids, alpha, beta, min_lager, min_order, mesecni_trosak=0, analitika_meseci=None, min_per_artikal=None, meseci=1.0, max_per_artikal=None):
         self.file_bytes = file_bytes; self.excluded = excluded_ids
         self.alpha = alpha; self.beta = beta; self.min_lager = min_lager; self.min_order = min_order
         self.min_per_artikal = min_per_artikal
+        self.max_per_artikal = max_per_artikal
         self.meseci = meseci if (meseci and meseci > 0) else 1.0
         self.mesecni_trosak = mesecni_trosak
         self.analitika_meseci = analitika_meseci
@@ -3357,6 +3777,16 @@ class PredictionEngine:
             self.df_result.loc[mask_p1, 'Porudzbina_1'] = self.min_per_artikal
             if n_podignuto_p2 > 0 or n_podignuto_p1 > 0:
                 self.log(f"Min po artiklu ({self.min_per_artikal} kom): P1={n_podignuto_p1}, P2={n_podignuto_p2} stavki podignuto na minimum")
+        # Maksimum po komadu (po stavci): ograniči porudžbinu po artiklu na zadati maksimum
+        if getattr(self, "max_per_artikal", None) is not None and self.max_per_artikal > 0:
+            mx = int(self.max_per_artikal)
+            cap2 = self.df_result['Porudzbina_2'] > mx
+            cap1 = self.df_result['Porudzbina_1'] > mx
+            n_cap2 = int(cap2.sum()); n_cap1 = int(cap1.sum())
+            self.df_result.loc[cap2, 'Porudzbina_2'] = mx
+            self.df_result.loc[cap1, 'Porudzbina_1'] = mx
+            if n_cap2 > 0 or n_cap1 > 0:
+                self.log(f"Max po artiklu ({mx} kom): P1={n_cap1}, P2={n_cap2} stavki ograničeno na maksimum")
     def _apply_min_order(self):
         self.adjustments = []
         if self.min_order is None or self.min_order <= 0: return
@@ -3983,6 +4413,7 @@ beta = 0.2
 min_lager = None
 min_order = None
 min_per_artikal = None
+max_per_artikal = None
 mesecni_trosak = 0
 excluded_str = DEFAULT_EXCLUDED
 excluded = set()
@@ -4168,6 +4599,10 @@ with tab_obj:
                 _sy_mes = st.selectbox("Mesec", _sy_opts, index=_sy_idx, format_func=mesec_label, key="syx_mes")
             with _syc2:
                 _sy_file = st.file_uploader("Word dokument (.docx)", type=["docx"], key="syx_up")
+            _rok_sy = sb_rokovi_get(_sy_mes).get("rok_syx")
+            if _rok_sy:
+                st.caption(("⏰ Rok za SYX (" + mesec_label(_sy_mes) + "): " + _rok_fmt(_rok_sy))
+                           + ("  ·  rok istekao" if _rok_je_prosao(_rok_sy) else ""))
             if st.button("📤 Sačuvaj SYX izveštaj", key="syx_save", use_container_width=True,
                          disabled=(_sy_file is None)):
                 try:
@@ -4193,6 +4628,74 @@ with tab_obj:
                         if st.button("Obriši", key="syx_del_" + str(_r.get("mesec")), use_container_width=True):
                             try:
                                 sb_syx_obrisi(_r.get("mesec"))
+                                st.rerun()
+                            except Exception as _e:
+                                st.error("Greška: " + str(_e))
+
+    with st.container(border=True):
+        st.markdown('<div class="obj-title">💳 Izveštaj potraživanja</div>', unsafe_allow_html=True)
+        st.caption("Ubaci Excel izveštaja potraživanja po mesecu. Administracija ga dopunjava direktno u aplikaciji "
+                   "(iznosi, statusi, komentari) i prosleđuje; direktor ga vidi i izvozi u identičan Excel.")
+        if not sb_dostupan():
+            st.caption("Nedostupno dok Supabase nije podešen.")
+        else:
+            _pz_today = datetime.date.today()
+            _pz_opts = set(m["key"] for m in sb_meseci())
+            for _r in sb_potraz_list():
+                _pz_opts.add(_r.get("mesec"))
+            _yy, _mm = _pz_today.year, _pz_today.month - 3
+            while _mm <= 0:
+                _mm += 12; _yy -= 1
+            for _ in range(9):
+                _pz_opts.add(str(_yy) + "-" + ("0" + str(_mm))[-2:])
+                _mm += 1
+                if _mm > 12:
+                    _mm = 1; _yy += 1
+            _pz_opts = sorted([o for o in _pz_opts if o], reverse=True)
+            _pz_pvy = _pz_today.year; _pz_pvm = _pz_today.month - 1
+            if _pz_pvm <= 0:
+                _pz_pvm += 12; _pz_pvy -= 1
+            _pz_prev = str(_pz_pvy) + "-" + ("0" + str(_pz_pvm))[-2:]
+            _pz_idx = _pz_opts.index(_pz_prev) if _pz_prev in _pz_opts else 0
+            _pzc1, _pzc2 = st.columns([1, 2])
+            with _pzc1:
+                _pz_mes = st.selectbox("Mesec", _pz_opts, index=_pz_idx, format_func=mesec_label, key="pz_mes")
+            with _pzc2:
+                _pz_file = st.file_uploader("Excel potraživanja (.xlsx)", type=["xlsx"], key="pz_up")
+            _rok_pzc = sb_rokovi_get(_pz_mes).get("rok_potraz")
+            if _rok_pzc:
+                st.caption(("⏰ Rok za potraživanja (" + mesec_label(_pz_mes) + "): " + _rok_fmt(_rok_pzc))
+                           + ("  ·  rok istekao" if _rok_je_prosao(_rok_pzc) else ""))
+            if st.button("📤 Objavi za administraciju", key="pz_save", use_container_width=True,
+                         disabled=(_pz_file is None)):
+                try:
+                    import base64 as _b64p
+                    _pb = _pz_file.getvalue()
+                    _struct = potraz_parse(_pb)
+                    _pop = potraz_init_popuna(_struct)
+                    sb_potraz_set(_pz_mes, _pz_file.name, _b64p.b64encode(_pb).decode("ascii"),
+                                  json.dumps(_struct), json.dumps(_pop))
+                    _nred = sum(len(s["redovi"]) for L in _struct["listovi"] for s in L["sekcije"])
+                    st.success("Objavljeno za administraciju: " + mesec_label(_pz_mes) + " · "
+                               + str(len(_struct["listovi"])) + " listova, " + str(_nred) + " stavki.")
+                    st.rerun()
+                except Exception as _e:
+                    st.error("Greška pri obradi Excela: " + str(_e))
+            _pz_all = sb_potraz_list()
+            if _pz_all:
+                st.markdown("<div style='margin-top:6px;font-size:12px;text-transform:uppercase;letter-spacing:.5px;"
+                            "color:#9aa0ad;font-weight:700;'>Objavljeni izveštaji potraživanja</div>", unsafe_allow_html=True)
+                for _r in _pz_all:
+                    _rc1, _rc2, _rc3 = st.columns([2, 3, 1])
+                    with _rc1:
+                        st.markdown("**" + mesec_label(_r.get("mesec", "")) + "**"
+                                    + ("  ✅ predato" if _r.get("predato") else "  ⏳ u obradi"))
+                    with _rc2:
+                        st.caption(str(_r.get("naziv", "")))
+                    with _rc3:
+                        if st.button("Obriši", key="pz_del_" + str(_r.get("mesec")), use_container_width=True):
+                            try:
+                                sb_potraz_obrisi(_r.get("mesec"))
                                 st.rerun()
                             except Exception as _e:
                                 st.error("Greška: " + str(_e))
@@ -4350,12 +4853,14 @@ with tab_obj:
                 _o_mo = st.text_input("Min. ukupna porudžbina po objektu", value="", placeholder="prazno = bez ograničenja", key="obj_mo")
             with _oc2:
                 _o_mpa = st.text_input("Min. kom po artiklu (po stavci)", value="", placeholder="prazno = bez ograničenja", key="obj_mpa")
+                _o_maxpa = st.text_input("Maksimum po komadu (po stavci)", value="", placeholder="prazno = bez ograničenja", key="obj_maxpa")
                 _o_tr = st.number_input("Ukupan trosak mkt (RSD)", min_value=0, value=0, step=10000, key="obj_tr")
             with _oc3:
                 _o_excl = st.text_area("Isključeni komitenti (ID, zarez)", value=DEFAULT_EXCLUDED, height=110, key="obj_excl")
         _o_min_lager = int(_o_ml) if _o_ml.strip().isdigit() else None
         _o_min_order = int(_o_mo) if _o_mo.strip().isdigit() else None
         _o_min_pa = int(_o_mpa) if _o_mpa.strip().isdigit() else None
+        _o_max_pa = int(_o_maxpa) if _o_maxpa.strip().isdigit() else None
         _o_excluded = set()
         for _part in _o_excl.replace('\n', ',').split(','):
             _p = _part.strip()
@@ -4377,7 +4882,7 @@ with tab_obj:
                 else:
                     try:
                         _pb = st.progress(0, "Računam porudžbinu...")
-                        _eng = PredictionEngine(_obytes, _o_excluded, alpha, beta, _o_min_lager, _o_min_order, _o_tr, None, _o_min_pa, meseci=float(_o_mes))
+                        _eng = PredictionEngine(_obytes, _o_excluded, alpha, beta, _o_min_lager, _o_min_order, _o_tr, None, _o_min_pa, meseci=float(_o_mes), max_per_artikal=_o_max_pa)
                         _res = _eng.run(_pb)
                         _pb.empty()
                         _lg2, _lm2 = _eng.meseci_order[-1]
@@ -4422,6 +4927,9 @@ with tab_ana:
             _mpa_str = st.text_input("Min. kom po artiklu (po stavci)", value="", placeholder="prazno = bez ograničenja",
                                       help="Ako je porudžbina za jedan artikal manja od ovog broja (ali > 0), podiže se na minimum. Nule ostaju nule.")
             min_per_artikal = int(_mpa_str) if _mpa_str.strip().isdigit() else None
+            _maxpa_str = st.text_input("Maksimum po komadu (po stavci)", value="", placeholder="prazno = bez ograničenja",
+                                       help="Gornja granica porudžbine po jednom artiklu (po stavci). Ako je predlog veći, spušta se na ovaj maksimum.")
+            max_per_artikal = int(_maxpa_str) if _maxpa_str.strip().isdigit() else None
         with pc2:
             st.markdown("**💰 Troškovi**")
             mesecni_trosak = st.number_input(
@@ -4464,7 +4972,7 @@ with tab_ana:
         if st.button("🚀 POKRENI ANALIZU", use_container_width=True):
             progress_bar = st.progress(0)
             try:
-                engine = PredictionEngine(file_bytes, excluded, alpha, beta, min_lager, min_order, mesecni_trosak, selected_meseci, min_per_artikal, meseci=float(meseci_ana))
+                engine = PredictionEngine(file_bytes, excluded, alpha, beta, min_lager, min_order, mesecni_trosak, selected_meseci, min_per_artikal, meseci=float(meseci_ana), max_per_artikal=max_per_artikal)
                 result = engine.run(progress_bar)
                 st.session_state["last_engine"] = engine
                 st.session_state["last_result"] = result
