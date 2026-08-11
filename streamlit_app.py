@@ -186,6 +186,26 @@ def sb_predaj(mesec_key, sistem):
         pass
 
 
+def sb_napomena_sistem(mesec_key, sistem, tekst):
+    """Sačuvaj sistemsku napomenu (za nedeljne/sistemske sisteme) u meta.napomena_sistem."""
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    res = cli.table("porudzbine").select("podaci").eq("mesec", mesec_key).eq("sistem", sistem.strip()).limit(1).execute()
+    if not res.data:
+        raise RuntimeError("Nema objavljenog izveštaja za taj mesec/sistem.")
+    podaci = res.data[0].get("podaci") or {}
+    meta = podaci.get("meta") or {}
+    meta["napomena_sistem"] = tekst or ""
+    meta["napomena_sistem_at"] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+    podaci["meta"] = meta
+    cli.table("porudzbine").update({"podaci": podaci}).eq("mesec", mesec_key).eq("sistem", sistem.strip()).execute()
+    try:
+        sb_ucitaj.clear()
+    except Exception:
+        pass
+
+
 def sb_start_snapshot(mesec_key, sistem, snap):
     """Zabeleži „startni rezultat" (zone u trenutku prvog povlačenja porudžbina od 01.)
     u meta.start_zone. Jednom snimljeno — koristi se u PDF izveštaju kao START."""
@@ -1498,6 +1518,28 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
         po = {}
         for s in stavke:
             po.setdefault(int(s["idk"]), []).append(s)
+        _meta_s = podaci.get("meta") or {}
+        # Sistemski/nedeljni sistem — u izveštaju samo problem + napomena (bez zona/trebovanja)
+        if _meta_s.get("nedeljni"):
+            _npb = 0
+            for idk, lst in po.items():
+                for s in lst:
+                    _lg = int(s.get('lager', 0) or 0); _pr = int(s.get('pred', 0) or 0)
+                    if _pr > 0 and _lg < _pr * 7.0 / 30.0:
+                        _npb += 1
+                        break
+            _napt = _meta_s.get("napomena_sistem", "") or "—"
+            _naph = (_napt.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br/>"))
+            el.append(KeepTogether([
+                Paragraph(str(_sis) + "  (sistemski / nedeljni)", Hsys),
+                Paragraph("Objekata sa problemom (artikal na 0 ili zaliha ispod 7-dnevne prodaje): <b>"
+                          + str(_npb) + "</b> od " + str(len(po)) + ".", Nar),
+                Spacer(1, 3),
+                Paragraph("<b>Napomena administracije:</b><br/>" + _naph, Nar),
+                Spacer(1, 4),
+                HRFlowable(width="100%", thickness=0.6, color=colors.HexColor('#eae4f7'), spaceAfter=6),
+            ]))
+            continue
         objekti = []
         for idk, lst in po.items():
             nivo, n0, izg = hitnost_objekta(lst)
@@ -2274,6 +2316,70 @@ def prikazi_administraciju():
     if st.session_state.get("_komfull") is None:
         st.session_state["_komfull"] = sb_komitenti_full()
     komfull = st.session_state.get("_komfull") or {}
+
+    # ===== Nedeljni/sistemski sistem: pojednostavljen prikaz =====
+    if isinstance(meta, dict) and meta.get("nedeljni"):
+        st.markdown('<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:9px 14px;'
+                    'font-size:12.5px;color:#1e40af;margin:2px 0 14px;">📅 Sistemski (nedeljni) sistem — prikazani su samo '
+                    'objekti sa problemom: neki artikal na lageru 0 ili zaliha ispod 7-dnevne prodaje.</div>',
+                    unsafe_allow_html=True)
+
+        def _prob_arts(lst):
+            out = []
+            for s in lst:
+                _lg = int(s.get('lager', 0) or 0); _pr = int(s.get('pred', 0) or 0)
+                _prag = _pr * 7.0 / 30.0
+                if _pr > 0 and _lg < _prag:   # artikal koji se prodaje, a zaliha ispod 7 dana (uklj. lager 0)
+                    out.append({"naziv": str(s.get('naziv', '')), "lager": _lg, "pred": _pr,
+                                "prag": int(round(_prag))})
+            return out
+        _prob = []
+        for o in objekti:
+            _pa = _prob_arts(o["lst"])
+            if _pa:
+                _prob.append({"idk": o["idk"], "arts": _pa})
+
+        st.markdown('<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:14px;">'
+                    '<div style="background:#fff7f7;border:1px solid #fecaca;border-radius:12px;padding:15px 18px;">'
+                    '<div style="font-size:22px;font-weight:800;color:#dc2626;">' + str(len(_prob)) + '</div>'
+                    '<div style="font-size:12px;color:#9b6b6b;margin-top:3px;">Objekata sa problemom (0 lagera ili < 7 dana)</div></div>'
+                    '<div style="background:#faf7ff;border:1px solid #e9d5ff;border-radius:12px;padding:15px 18px;">'
+                    '<div style="font-size:22px;font-weight:800;color:#7c3aed;">' + str(len(objekti)) + '</div>'
+                    '<div style="font-size:12px;color:#8b7fa8;margin-top:3px;">Ukupno objekata u sistemu</div></div></div>',
+                    unsafe_allow_html=True)
+
+        if _prob:
+            _rows = []
+            for p in _prob:
+                _nz = (komfull.get(int(p["idk"]), {}) or {}).get("naziv", "") or ("ID " + str(p["idk"]))
+                for a in p["arts"]:
+                    _rows.append({"Objekat": _nz, "Artikal": a["naziv"], "Lager": a["lager"],
+                                  "Predikcija (mes.)": a["pred"], "Za 7 dana (~)": a["prag"]})
+            st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True,
+                         height=min(60 + 34 * len(_rows), 560))
+        else:
+            st.success("Nema objekata sa problemom — svi imaju dovoljno zaliha za 7 dana.")
+
+        st.markdown("<div style='margin:16px 0 4px;font-weight:700;font-size:14px;'>Napomena "
+                    "(šta je preduzeto, kakvi su problemi — ide u izveštaj direktoru)</div>", unsafe_allow_html=True)
+        _nap_val = meta.get("napomena_sistem", "") or ""
+        _nap_new = st.text_area("Napomena", value=_nap_val, height=200,
+                                key="nedeljni_nap_" + str(sistem) + "_" + str(mesec_key),
+                                label_visibility="collapsed", disabled=_zakljucan,
+                                placeholder="Upiši šta je urađeno i koji su problemi…")
+        if not _zakljucan:
+            if st.button("💾 Sačuvaj napomenu", key="nedeljni_nap_save", type="primary"):
+                try:
+                    sb_napomena_sistem(mesec_key, sistem, _nap_new)
+                    st.success("Napomena sačuvana.")
+                    st.rerun()
+                except Exception as _e:
+                    st.error("Greška pri čuvanju: " + str(_e))
+        else:
+            st.caption("Izveštaj je predat/zaključan — napomena je zabeležena.")
+        if meta.get("napomena_sistem_at"):
+            st.caption("Poslednja izmena napomene: " + str(meta.get("napomena_sistem_at")))
+        return
 
     n_obj = len(objekti)
     n_red = sum(1 for o in objekti if o["nivo"] == "crveno")
@@ -5225,6 +5331,8 @@ with tab_obj:
                 _o_mes_key = st.selectbox("Mesec porudžbine", _mo_keys, index=_def_i,
                                           format_func=mesec_label, key="obj_mes_sel",
                                           help="Automatski je poslednji mesec iz fajla + 1, ali možeš da objaviš pod drugim mesecom (npr. Jul).")
+            _o_nedeljni = st.checkbox("Sistem trebuje nedeljno (sistemski) — pojednostavljen prikaz", value=False, key="obj_nedeljni",
+                                      help="Za sisteme koji trebuju npr. svakog ponedeljka i ne možemo da utičemo. Administracija vidi samo objekte sa problemom (artikal na 0 ili zaliha ispod 7-dnevne prodaje) i jedno polje Napomena.")
             if not sb_dostupan():
                 st.info("Objava nije moguća dok Supabase nije podešen.")
             elif st.button("📤 Objavi za koleginice", use_container_width=True, key="obj_btn"):
@@ -5250,7 +5358,7 @@ with tab_obj:
                         except Exception:
                             _presek_iso = None
                         _stavke = stavke_iz_rezultata(_res, _eng)
-                        _payload = {"mesec_label": _mlbl2, "meta": {"pred_label": _eng.pred_label, "order_label": _eng.order_label, "min_lager": _eng.min_lager, "meseci": round(float(_o_mes), 1), "presek": _presek_iso, "generisano": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"), "n_objekata": int(len({_s2['idk'] for _s2 in _stavke})), "ukupno_kom": int(sum(_s2['kol'] for _s2 in _stavke))}, "stavke": _stavke}
+                        _payload = {"mesec_label": _mlbl2, "meta": {"pred_label": _eng.pred_label, "order_label": _eng.order_label, "min_lager": _eng.min_lager, "meseci": round(float(_o_mes), 1), "presek": _presek_iso, "nedeljni": bool(_o_nedeljni), "generisano": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"), "n_objekata": int(len({_s2['idk'] for _s2 in _stavke})), "ukupno_kom": int(sum(_s2['kol'] for _s2 in _stavke))}, "stavke": _stavke}
                         try:
                             _payload["direktor"] = direktor_blok(_eng, _res)
                         except Exception:
