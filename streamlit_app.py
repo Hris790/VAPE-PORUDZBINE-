@@ -206,6 +206,33 @@ def sb_napomena_sistem(mesec_key, sistem, tekst):
         pass
 
 
+def sb_nedeljni_prijava_set(mesec_key, sistem, idk, prijavljen, napomena=""):
+    """Za sistemske/nedeljne sisteme: označi (ili skini oznaku) da je za konkretan
+    komitent PRIJAVLJEN problem direktoru. Čuva se u meta.nedeljni_prijave =
+    {idk: {napomena, at}}. Prisustvo ključa = prijavljeno."""
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    res = cli.table("porudzbine").select("podaci").eq("mesec", mesec_key).eq("sistem", sistem.strip()).limit(1).execute()
+    if not res.data:
+        raise RuntimeError("Nema objavljenog izveštaja za taj mesec/sistem.")
+    podaci = res.data[0].get("podaci") or {}
+    meta = podaci.get("meta") or {}
+    prij = dict(meta.get("nedeljni_prijave") or {})
+    _k = str(int(idk))
+    if prijavljen:
+        prij[_k] = {"napomena": napomena or "", "at": datetime.datetime.now().strftime("%d.%m.%Y %H:%M")}
+    else:
+        prij.pop(_k, None)
+    meta["nedeljni_prijave"] = prij
+    podaci["meta"] = meta
+    cli.table("porudzbine").update({"podaci": podaci}).eq("mesec", mesec_key).eq("sistem", sistem.strip()).execute()
+    try:
+        sb_ucitaj.clear()
+    except Exception:
+        pass
+
+
 def sb_start_snapshot(mesec_key, sistem, snap):
     """Zabeleži „startni rezultat" (zone u trenutku prvog povlačenja porudžbina od 01.)
     u meta.start_zone. Jednom snimljeno — koristi se u PDF izveštaju kao START."""
@@ -1544,24 +1571,61 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
         _meta_s = podaci.get("meta") or {}
         # Sistemski/nedeljni sistem — u izveštaju samo problem + napomena (bez zona/trebovanja)
         if _meta_s.get("nedeljni"):
-            _npb = 0
-            for idk, lst in po.items():
+            def _pa_pdf(lst):
+                _o = []
                 for s in lst:
                     _lg = int(s.get('lager', 0) or 0); _pr = int(s.get('pred', 0) or 0)
-                    if _pr > 0 and _lg < _pr * 7.0 / 30.0:
-                        _npb += 1
-                        break
-            _napt = _meta_s.get("napomena_sistem", "") or "—"
-            _naph = (_napt.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br/>"))
-            el.append(KeepTogether([
-                Paragraph(str(_sis) + "  (sistemski / nedeljni)", Hsys),
-                Paragraph("Objekata sa problemom (artikal na 0 ili zaliha ispod 7-dnevne prodaje): <b>"
-                          + str(_npb) + "</b> od " + str(len(po)) + ".", Nar),
-                Spacer(1, 3),
-                Paragraph("<b>Napomena administracije:</b><br/>" + _naph, Nar),
-                Spacer(1, 4),
-                HRFlowable(width="100%", thickness=0.6, color=colors.HexColor('#eae4f7'), spaceAfter=6),
-            ]))
+                    _prag = _pr * 7.0 / 30.0
+                    if _pr > 0 and _lg < _prag:
+                        _o.append({"naziv": str(s.get('naziv', '')), "lager": _lg, "prag": int(round(_prag))})
+                return _o
+            _prob_pdf = {idk: _pa_pdf(lst) for idk, lst in po.items()}
+            _prob_pdf = {k: v for k, v in _prob_pdf.items() if v}
+            _npb = len(_prob_pdf)
+            _prijave = dict(_meta_s.get("nedeljni_prijave") or {})
+            try:
+                _kf_pdf = sb_komitenti_full()
+            except Exception:
+                _kf_pdf = {}
+            _flow = [Paragraph(str(_sis) + "  (sistemski / nedeljni)", Hsys),
+                     Paragraph("Objekata sa problemom (artikal na 0 ili zaliha ispod 7-dnevne prodaje): <b>"
+                               + str(_npb) + "</b> od " + str(len(po)) + ".  Prijavljeno direktoru: <b>"
+                               + str(len(_prijave)) + "</b>.", Nar),
+                     Spacer(1, 3)]
+            # Prijavljeni komitenti — naziv, kontakt, artikli u problemu, napomena
+            _any_prij = False
+            for _idk, _info in _prijave.items():
+                try:
+                    _ik = int(_idk)
+                except Exception:
+                    continue
+                _arts_p = _prob_pdf.get(_ik, [])
+                _ki = (_kf_pdf.get(_ik, {}) or {})
+                _naz = _ki.get("naziv", "") or ("ID " + str(_ik))
+                _kbits = []
+                if _ki.get("telefon"): _kbits.append(str(_ki["telefon"]))
+                if _ki.get("email"): _kbits.append(str(_ki["email"]))
+                _kline = ("  ·  " + "  ·  ".join(_kbits)) if _kbits else ""
+                _any_prij = True
+                _artline = "; ".join((str(a["naziv"]) + " (lager " + str(a["lager"])
+                                      + ", za 7 dana ~" + str(a["prag"]) + ")") for a in _arts_p) or "—"
+                _naptxt = (_info.get("napomena", "") or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                _flow.append(Paragraph("• <b>" + _h_escape(str(_naz)) + "</b>" + _h_escape(_kline), Nar))
+                _flow.append(Paragraph("&nbsp;&nbsp;&nbsp;Problem: " + _h_escape(_artline), Nar))
+                if _naptxt:
+                    _flow.append(Paragraph("&nbsp;&nbsp;&nbsp;Napomena: " + _naptxt, Nar))
+                _flow.append(Spacer(1, 3))
+            if not _any_prij:
+                _flow.append(Paragraph("<i>Nema prijavljenih problema za ovaj sistem.</i>", Nar))
+            # Backward-compat: stara jedna napomena sistema (ako postoji)
+            _napt_old = _meta_s.get("napomena_sistem", "") or ""
+            if _napt_old.strip():
+                _naph = (_napt_old.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br/>"))
+                _flow.append(Spacer(1, 2))
+                _flow.append(Paragraph("<b>Napomena administracije:</b><br/>" + _naph, Nar))
+            _flow.append(Spacer(1, 4))
+            _flow.append(HRFlowable(width="100%", thickness=0.6, color=colors.HexColor('#eae4f7'), spaceAfter=6))
+            el.append(KeepTogether(_flow))
             continue
         objekti = []
         for idk, lst in po.items():
@@ -2420,46 +2484,86 @@ def prikazi_administraciju():
             if _pa:
                 _prob.append({"idk": o["idk"], "arts": _pa})
 
-        st.markdown('<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:14px;">'
+        # koji su komitenti već prijavljeni direktoru (iz meta.nedeljni_prijave)
+        _prijave = dict(meta.get("nedeljni_prijave") or {}) if isinstance(meta, dict) else {}
+        _n_prij = sum(1 for p in _prob if str(int(p["idk"])) in _prijave)
+
+        st.markdown('<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:14px;">'
                     '<div style="background:#fff7f7;border:1px solid #fecaca;border-radius:12px;padding:15px 18px;">'
                     '<div style="font-size:22px;font-weight:800;color:#dc2626;">' + str(len(_prob)) + '</div>'
                     '<div style="font-size:12px;color:#9b6b6b;margin-top:3px;">Objekata sa problemom (0 lagera ili < 7 dana)</div></div>'
+                    '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:15px 18px;">'
+                    '<div style="font-size:22px;font-weight:800;color:#b45309;">' + str(_n_prij) + '</div>'
+                    '<div style="font-size:12px;color:#9a7b3a;margin-top:3px;">Prijavljeno direktoru</div></div>'
                     '<div style="background:#faf7ff;border:1px solid #e9d5ff;border-radius:12px;padding:15px 18px;">'
                     '<div style="font-size:22px;font-weight:800;color:#7c3aed;">' + str(len(objekti)) + '</div>'
                     '<div style="font-size:12px;color:#8b7fa8;margin-top:3px;">Ukupno objekata u sistemu</div></div></div>',
                     unsafe_allow_html=True)
 
-        if _prob:
-            _rows = []
-            for p in _prob:
-                _nz = (komfull.get(int(p["idk"]), {}) or {}).get("naziv", "") or ("ID " + str(p["idk"]))
-                for a in p["arts"]:
-                    _rows.append({"Objekat": _nz, "Artikal": a["naziv"], "Lager": a["lager"],
-                                  "Predikcija (mes.)": a["pred"], "Za 7 dana (~)": a["prag"]})
-            st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True,
-                         height=min(60 + 34 * len(_rows), 560))
-        else:
+        if not _prob:
             st.success("Nema objekata sa problemom — svi imaju dovoljno zaliha za 7 dana.")
+            return
 
-        st.markdown("<div style='margin:16px 0 4px;font-weight:700;font-size:14px;'>Napomena "
-                    "(šta je preduzeto, kakvi su problemi — ide u izveštaj direktoru)</div>", unsafe_allow_html=True)
-        _nap_val = meta.get("napomena_sistem", "") or ""
-        _nap_new = st.text_area("Napomena", value=_nap_val, height=200,
-                                key="nedeljni_nap_" + str(sistem) + "_" + str(mesec_key),
-                                label_visibility="collapsed", disabled=_zakljucan,
-                                placeholder="Upiši šta je urađeno i koji su problemi…")
-        if not _zakljucan:
-            if st.button("💾 Sačuvaj napomenu", key="nedeljni_nap_save", type="primary"):
-                try:
-                    sb_napomena_sistem(mesec_key, sistem, _nap_new)
-                    st.success("Napomena sačuvana.")
-                    st.rerun()
-                except Exception as _e:
-                    st.error("Greška pri čuvanju: " + str(_e))
-        else:
-            st.caption("Izveštaj je predat/zaključan — napomena je zabeležena.")
-        if meta.get("napomena_sistem_at"):
-            st.caption("Poslednja izmena napomene: " + str(meta.get("napomena_sistem_at")))
+        st.markdown("<div style='margin:6px 0 8px;font-weight:700;font-size:14px;'>Objekti sa problemom "
+                    "— klikni na objekat da vidiš artikle, pa štikliraj Prijavi problem direktoru.</div>",
+                    unsafe_allow_html=True)
+
+        # sortiraj: neprijavljeni prvo, pa oni sa najviše problema
+        _prob.sort(key=lambda p: (str(int(p["idk"])) in _prijave, -len(p["arts"])))
+
+        for p in _prob:
+            _idk = int(p["idk"])
+            _kinfo = komfull.get(_idk, {}) or {}
+            _nz = _kinfo.get("naziv", "") or ("ID " + str(_idk))
+            _tel = _kinfo.get("telefon", "") or ""
+            _mail = _kinfo.get("email", "") or ""
+            _is_prij = str(_idk) in _prijave
+            _hdr = ("🟠 " if _is_prij else "🔴 ") + str(_nz) + "   ·   " + str(len(p["arts"])) + " art. u problemu"
+            if _tel:
+                _hdr += "   ·   📞 " + str(_tel)
+            if _mail:
+                _hdr += "   ·   ✉️ " + str(_mail)
+            if _is_prij:
+                _hdr += "   ·   ✅ prijavljeno"
+            with st.expander(_hdr, expanded=False):
+                _adf_p = pd.DataFrame([{"Artikal": a["naziv"], "Lager": a["lager"],
+                                        "Predikcija (mes.)": a["pred"], "Za 7 dana (~)": a["prag"]}
+                                       for a in p["arts"]])
+                st.dataframe(_adf_p, hide_index=True, use_container_width=True)
+                _kb = []
+                if _mail:
+                    _kb.append("✉️ " + _h_escape(_mail))
+                if _tel:
+                    _kb.append("📞 " + _h_escape(_tel))
+                if _kinfo.get("mesto"):
+                    _kb.append("📍 " + _h_escape(_kinfo["mesto"]))
+                if _kb:
+                    st.markdown('<div style="color:#6b7280;font-size:12.5px;margin:2px 0 8px;">'
+                                + "&nbsp;&nbsp;·&nbsp;&nbsp;".join(_kb) + '</div>', unsafe_allow_html=True)
+                _saved_nap = (_prijave.get(str(_idk), {}) or {}).get("napomena", "") if _is_prij else ""
+                _chk = st.checkbox("⚠️ Prijavi problem direktoru", value=_is_prij,
+                                   key="ndp_" + str(sistem) + "_" + str(mesec_key) + "_" + str(_idk),
+                                   disabled=_zakljucan)
+                _nap_k = st.text_input("Napomena (opciono — šta je preduzeto / dogovoreno)",
+                                       value=_saved_nap,
+                                       key="ndn_" + str(sistem) + "_" + str(mesec_key) + "_" + str(_idk),
+                                       disabled=_zakljucan or not _chk,
+                                       placeholder="npr. zvali, javiće se u ponedeljak…")
+                if _is_prij and _prijave.get(str(_idk), {}).get("at"):
+                    st.caption("Prijavljeno: " + str(_prijave[str(_idk)]["at"]))
+                if not _zakljucan:
+                    # sačuvaj samo ako se stanje promenilo (checkbox ili napomena)
+                    _changed = (_chk != _is_prij) or (_chk and (_nap_k or "") != (_saved_nap or ""))
+                    if st.button("💾 Sačuvaj", key="ndsave_" + str(sistem) + "_" + str(mesec_key) + "_" + str(_idk),
+                                 type="primary", disabled=not _changed):
+                        try:
+                            sb_nedeljni_prijava_set(mesec_key, sistem, _idk, _chk, _nap_k)
+                            st.success("Sačuvano.")
+                            st.rerun()
+                        except Exception as _e:
+                            st.error("Greška pri čuvanju: " + str(_e))
+        if _zakljucan:
+            st.caption("Izveštaj je predat/zaključan — prijave su zabeležene, izmene nisu moguće.")
         return
 
     n_obj = len(objekti)
@@ -2835,7 +2939,10 @@ def prikazi_administraciju():
                         _exp_xlsx = _objekat_order_xlsx(_naziv_kom, sel_id, _sel_lbl, _exp_rows)
                         _safe_sis = "".join(ch for ch in str(sistem or "")
                                             if ch.isalnum() or ch in " _-").strip()
-                        _fname = ((_safe_sis + " ") if _safe_sis else "") + str(sel_id) + ".xlsx"
+                        import re as _refn
+                        _mpm = _refn.search(r'MP\s*\d+', str(_naziv_kom or ""), _refn.IGNORECASE)
+                        _mp = _mpm.group(0).upper().replace(" ", "") if _mpm else str(sel_id)
+                        _fname = ((_safe_sis + " ") if _safe_sis else "") + _mp + ".xlsx"
                         st.download_button("⬇️ Excel za objekat (za mejl)", _exp_xlsx,
                             file_name=_fname,
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -3765,6 +3872,53 @@ def prikazi_direktore():
             _po = {}
             for s in _pod["stavke"]:
                 _po.setdefault(int(s["idk"]), []).append(s)
+            # Sistemski/nedeljni sistem — prosleđuje se preko štiklice „Prijavi problem"
+            _meta_d = _pod.get("meta") or {}
+            if _meta_d.get("nedeljni"):
+                _prij_d = dict(_meta_d.get("nedeljni_prijave") or {})
+                for _idk, _info in _prij_d.items():
+                    try:
+                        _ik = int(_idk)
+                    except Exception:
+                        continue
+                    _lst = _po.get(_ik) or []
+                    _pa = []
+                    for s in _lst:
+                        _lg = int(s.get('lager', 0) or 0); _pr = int(s.get('pred', 0) or 0)
+                        _prag = _pr * 7.0 / 30.0
+                        if _pr > 0 and _lg < _prag:
+                            _pa.append({"naziv": str(s.get('naziv', '')), "lager": _lg, "prag": int(round(_prag))})
+                    _found += 1
+                    _ki = _kf.get(_ik, {}) or {}
+                    _naz = _ki.get("naziv", "") or ("ID " + str(_ik))
+                    _cbits = []
+                    if _ki.get("telefon"): _cbits.append("📞 " + _h_escape(str(_ki["telefon"])))
+                    if _ki.get("email"): _cbits.append("✉️ " + _h_escape(str(_ki["email"])))
+                    _cline = ("&nbsp;&nbsp;·&nbsp;&nbsp;".join(_cbits))
+                    _artrows = "".join('<div style="font-size:12.5px;color:#4b5563;padding:2px 0;">• '
+                                       + _h_escape(a["naziv"]) + ' — <b>lager ' + str(a["lager"])
+                                       + '</b> (za 7 dana ~' + str(a["prag"]) + ')</div>' for a in _pa) or \
+                               '<div style="font-size:12.5px;color:#9aa0ad;">—</div>'
+                    _napd = (_info.get("napomena", "") or "")
+                    _atd = _info.get("at", "")
+                    _html = ('<div style="background:#fff;border:1px solid #efeaf7;border-left:4px solid #f59e0b;'
+                             'border-radius:14px;padding:16px 18px;margin-bottom:12px;box-shadow:0 2px 12px rgba(80,40,140,.05);">'
+                             '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;">'
+                             '<span style="font-weight:700;font-size:14.5px;">' + _h_escape(_naz) + '</span>'
+                             '<span style="font-size:12px;color:#9aa0ad;">· ' + _h_escape(_sis) + ' (nedeljni)</span>'
+                             '<span style="margin-left:auto;font-size:12px;font-weight:700;color:#b45309;">⚠️ Prijavljen problem</span></div>'
+                             + (('<div style="font-size:12.5px;color:#6b7280;margin-bottom:9px;">' + _cline + '</div>') if _cline else '')
+                             + '<div style="background:#faf9fd;border-radius:10px;padding:9px 12px;margin-bottom:'
+                             + ('9px;' if _napd else '2px;') + '">'
+                             '<div style="font-size:10.5px;color:#9aa0ad;text-transform:uppercase;font-weight:700;margin-bottom:3px;">Artikli u problemu</div>'
+                             + _artrows + '</div>'
+                             + (('<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:9px;padding:8px 12px;'
+                                 'font-size:12.5px;color:#78500a;"><b style="color:#4b5563;">Napomena:</b> ' + _h_escape(_napd)
+                                 + (('<span style="color:#9aa0ad;"> · ' + _h_escape(_atd) + '</span>') if _atd else '')
+                                 + '</div>') if _napd else '')
+                             + '</div>')
+                    st.markdown(_html, unsafe_allow_html=True)
+                continue
             _obr = sb_load_obrada(mesec_key, _sis)
             for _idk, _v in _obr.items():
                 if "Obavestila direktorku" not in (_v.get("reakcije") or []):
