@@ -2487,8 +2487,12 @@ def prikazi_administraciju():
         # koji su komitenti već prijavljeni direktoru (iz meta.nedeljni_prijave)
         _prijave = dict(meta.get("nedeljni_prijave") or {}) if isinstance(meta, dict) else {}
         _n_prij = sum(1 for p in _prob if str(int(p["idk"])) in _prijave)
+        # pravi ukupan broj objekata u sistemu (svi komitenti iz fajla), ako je sačuvan pri objavi
+        _sis_uk = int(meta.get("n_sistem_ukupno", 0) or 0) if isinstance(meta, dict) else 0
+        _uk_val = _sis_uk if _sis_uk > 0 else len(objekti)
+        _uk_lbl = "Ukupno objekata u sistemu" if _sis_uk > 0 else "Objekata sa porudžbinom (u izveštaju)"
 
-        st.markdown('<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:14px;">'
+        st.markdown('<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:6px;">'
                     '<div style="background:#fff7f7;border:1px solid #fecaca;border-radius:12px;padding:15px 18px;">'
                     '<div style="font-size:22px;font-weight:800;color:#dc2626;">' + str(len(_prob)) + '</div>'
                     '<div style="font-size:12px;color:#9b6b6b;margin-top:3px;">Objekata sa problemom (0 lagera ili < 7 dana)</div></div>'
@@ -2496,9 +2500,17 @@ def prikazi_administraciju():
                     '<div style="font-size:22px;font-weight:800;color:#b45309;">' + str(_n_prij) + '</div>'
                     '<div style="font-size:12px;color:#9a7b3a;margin-top:3px;">Prijavljeno direktoru</div></div>'
                     '<div style="background:#faf7ff;border:1px solid #e9d5ff;border-radius:12px;padding:15px 18px;">'
-                    '<div style="font-size:22px;font-weight:800;color:#7c3aed;">' + str(len(objekti)) + '</div>'
-                    '<div style="font-size:12px;color:#8b7fa8;margin-top:3px;">Ukupno objekata u sistemu</div></div></div>',
+                    '<div style="font-size:22px;font-weight:800;color:#7c3aed;">' + str(_uk_val) + '</div>'
+                    '<div style="font-size:12px;color:#8b7fa8;margin-top:3px;">' + _uk_lbl + '</div></div></div>',
                     unsafe_allow_html=True)
+        if _sis_uk > 0:
+            st.caption("U sistemu je ukupno " + str(_sis_uk) + " objekata; porudžbina je generisana za "
+                       + str(len(objekti)) + " (ostali su imali dovoljno zaliha, pa nemaju porudžbinu). "
+                       "Objekata sa problemom (0 lagera ili ispod 7-dnevne prodaje): " + str(len(_prob)) + ".")
+        else:
+            st.caption("Napomena: prikazani broj su objekti kojima je generisana porudžbina. Objekti koji su imali "
+                       "dovoljno zaliha u svemu se ne čuvaju u izveštaju. Za tačan ukupan broj objekata u sistemu, "
+                       "ponovo objavi ovaj sistem (novi podatak se tada beleži).")
 
         if not _prob:
             st.success("Nema objekata sa problemom — svi imaju dovoljno zaliha za 7 dana.")
@@ -5666,7 +5678,7 @@ with tab_obj:
                         except Exception:
                             _presek_iso = None
                         _stavke = stavke_iz_rezultata(_res, _eng)
-                        _payload = {"mesec_label": _mlbl2, "meta": {"pred_label": _eng.pred_label, "order_label": _eng.order_label, "min_lager": _eng.min_lager, "meseci": round(float(_o_mes), 1), "presek": _presek_iso, "nedeljni": bool(_o_nedeljni), "generisano": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"), "n_objekata": int(len({_s2['idk'] for _s2 in _stavke})), "ukupno_kom": int(sum(_s2['kol'] for _s2 in _stavke))}, "stavke": _stavke}
+                        _payload = {"mesec_label": _mlbl2, "meta": {"pred_label": _eng.pred_label, "order_label": _eng.order_label, "min_lager": _eng.min_lager, "meseci": round(float(_o_mes), 1), "presek": _presek_iso, "nedeljni": bool(_o_nedeljni), "generisano": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"), "n_objekata": int(len({_s2['idk'] for _s2 in _stavke})), "n_sistem_ukupno": int(getattr(_eng, "num_komitenti", 0)), "ukupno_kom": int(sum(_s2['kol'] for _s2 in _stavke))}, "stavke": _stavke}
                         try:
                             _payload["direktor"] = direktor_blok(_eng, _res)
                         except Exception:
