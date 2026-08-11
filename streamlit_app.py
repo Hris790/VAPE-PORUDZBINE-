@@ -2833,10 +2833,11 @@ def prikazi_administraciju():
                 if _exp_rows:
                     try:
                         _exp_xlsx = _objekat_order_xlsx(_naziv_kom, sel_id, _sel_lbl, _exp_rows)
-                        _safe_naz = "".join(ch for ch in str(_naziv_kom or ("ID_" + str(sel_id)))
-                                            if ch.isalnum() or ch in " _-")[:40].strip().replace(" ", "_")
+                        _safe_sis = "".join(ch for ch in str(sistem or "")
+                                            if ch.isalnum() or ch in " _-").strip()
+                        _fname = ((_safe_sis + " ") if _safe_sis else "") + str(sel_id) + ".xlsx"
                         st.download_button("⬇️ Excel za objekat (za mejl)", _exp_xlsx,
-                            file_name="Porudzbina_" + (_safe_naz or ("ID_" + str(sel_id))) + "_" + str(mesec_key) + ".xlsx",
+                            file_name=_fname,
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key="expobj_" + str(sel_id), use_container_width=True)
                     except Exception as _ee:
