@@ -226,6 +226,29 @@ def sb_start_snapshot(mesec_key, sistem, snap):
         pass
 
 
+def sb_admin_hist_set(mesec_key, sistem, hist_map, kada=None):
+    """Zapamti (trajno) povučene prethodne porudžbine iz admina za ceo sistem.
+    hist_map: {idk: [ {id,datum,status,cena,stavke} ]}. Upisuje se u meta.admin_hist
+    (ključevi kao stringovi) + meta.admin_hist_at (vreme poslednjeg ažuriranja).
+    Tako se posle osvežavanja stranice zadržavaju „posle 01." i sortiranje po zonama."""
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    res = cli.table("porudzbine").select("podaci").eq("mesec", mesec_key).eq("sistem", sistem.strip()).limit(1).execute()
+    if not res.data:
+        raise RuntimeError("Nema objavljenog izveštaja za taj mesec/sistem.")
+    podaci = res.data[0].get("podaci") or {}
+    meta = podaci.get("meta") or {}
+    meta["admin_hist"] = {str(k): (v or []) for k, v in (hist_map or {}).items() if v}
+    meta["admin_hist_at"] = kada or datetime.datetime.now().isoformat()
+    podaci["meta"] = meta
+    cli.table("porudzbine").update({"podaci": podaci}).eq("mesec", mesec_key).eq("sistem", sistem.strip()).execute()
+    try:
+        sb_ucitaj.clear()
+    except Exception:
+        pass
+
+
 @st.cache_data(ttl=30)
 def sb_pregled():
     """Lagani pregled svega objavljenog: mesec, sistem, kada (bez povlacenja stavki)."""
@@ -1610,6 +1633,54 @@ def _admin_order_xlsx(rows):
     return _buf.getvalue()
 
 
+def _objekat_order_xlsx(naziv, idk, mesec_lbl, rows):
+    """Jednostavan Excel za slanje objektu (mejlom): samo status (kružić),
+    naziv artikla i dodatna (naša) porudžbina. rows = lista dict-ova sa
+    ključevima 'kruzic', 'naziv', 'dodatna'. Vraća bajtove .xlsx."""
+    import io as _io
+    from openpyxl import Workbook as _WB
+    from openpyxl.styles import Font as _F, PatternFill as _PF, Alignment as _AL, Border as _BD, Side as _SD
+    _wb = _WB()
+    _ws = _wb.active
+    _ws.title = "Porudžbina"
+    _thin = _SD(style="thin", color="E5E0F0")
+    _bord = _BD(left=_thin, right=_thin, top=_thin, bottom=_thin)
+    # Naslov (koji objekat / mesec)
+    _ws.merge_cells("A1:C1")
+    _t = _ws["A1"]
+    _t.value = ("Porudžbina · " + str(naziv or ("ID " + str(idk))) + " · " + str(mesec_lbl))
+    _t.font = _F(bold=True, size=13, color="3730A3")
+    _t.alignment = _AL(horizontal="left", vertical="center")
+    _ws.row_dimensions[1].height = 22
+    # Zaglavlje tabele
+    _hdr = ["Status", "Naziv artikla", "Porudžbina"]
+    _ws.append([])  # red 2 prazan
+    _ws.append(_hdr)
+    _hr = 3
+    _hfill = _PF("solid", fgColor="EDE9FE")
+    for _ci, _hv in enumerate(_hdr, start=1):
+        _c = _ws.cell(row=_hr, column=_ci)
+        _c.font = _F(bold=True, size=11, color="4C1D95")
+        _c.fill = _hfill
+        _c.alignment = _AL(horizontal=("left" if _ci == 2 else "center"), vertical="center")
+        _c.border = _bord
+    for _r in rows:
+        _ws.append([str(_r.get("kruzic", "")), str(_r.get("naziv", "")), int(_r.get("dodatna", 0) or 0)])
+        _rr = _ws.max_row
+        _ws.cell(row=_rr, column=1).alignment = _AL(horizontal="center", vertical="center")
+        _ws.cell(row=_rr, column=2).alignment = _AL(horizontal="left", vertical="center")
+        _ws.cell(row=_rr, column=3).alignment = _AL(horizontal="center", vertical="center")
+        for _ci in range(1, 4):
+            _ws.cell(row=_rr, column=_ci).border = _bord
+    _ws.column_dimensions["A"].width = 9
+    _ws.column_dimensions["B"].width = 52
+    _ws.column_dimensions["C"].width = 13
+    _ws.freeze_panes = "A4"
+    _buf = _io.BytesIO()
+    _wb.save(_buf)
+    return _buf.getvalue()
+
+
 def _admin_secret(k, d=""):
     try:
         import streamlit as _s
@@ -2281,6 +2352,16 @@ def prikazi_administraciju():
     _mes_kol = meta.get("meseci")
     _por_lbl = ("Porudžbina (" + str(_mes_kol).replace(".", ",") + " mes)") if _mes_kol else "Porudžbina"
 
+    # --- Vrati zapamćene prethodne porudžbine iz admina (posle osvežavanja stranice) ---
+    # Ako u ovoj sesiji još nisu učitane, popuni iz meta.admin_hist da „posle 01." i
+    # sortiranje po zonama ostanu isti kao pri poslednjem „Ažuriraj iz admina".
+    _saved_hist = meta.get("admin_hist") if isinstance(meta, dict) else None
+    if isinstance(_saved_hist, dict):
+        for _sk, _slst in _saved_hist.items():
+            _hkk = "hist_" + str(sistem) + "_" + str(_sk)
+            if st.session_state.get(_hkk) is None:
+                st.session_state[_hkk] = {"lst": _slst or [], "err": ""}
+
     # --- Zaključavanje meseca: predato ručno ili istekao rok (rok postavljaju direktori) ---
     _predato = bool(meta.get("predato"))
     _rok = sb_rokovi_get(mesec_key).get("rok_admin") or meta.get("rok")  # 'YYYY-MM-DD' ako je postavljen
@@ -2398,6 +2479,20 @@ def prikazi_administraciju():
     st.markdown('<div class="adm-prog"><span class="t">Pregledano ' + str(n_done) + ' / ' + str(n_obj) + '</span>'
                 '<div class="bar"><div style="width:' + str(_pct) + '%"></div></div></div>', unsafe_allow_html=True)
 
+    # --- Poslednje ažuriranje podataka iz admina (koji period pokrivaju prethodne porudžbine) ---
+    _ah_at = meta.get("admin_hist_at") if isinstance(meta, dict) else None
+    _pk_disp = _admin_presek(meta, mesec_key)
+    _pk_ds = _pk_disp.strftime("%d.%m.%Y") if _pk_disp else "01."
+    if _ah_at:
+        st.markdown('<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:8px 14px;'
+                    'font-size:12.5px;color:#166534;font-weight:600;margin:2px 0 14px;">🔄 Podaci iz admina poslednji put ažurirani: '
+                    + _h_escape(_dt_fmt(_ah_at)) + '  ·  prethodne porudžbine se prate od ' + _pk_ds + ' (posle preseka)</div>',
+                    unsafe_allow_html=True)
+    else:
+        st.markdown('<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:8px 14px;'
+                    'font-size:12.5px;color:#92400e;font-weight:600;margin:2px 0 14px;">🔄 Prethodne porudžbine iz admina još nisu povučene — '
+                    'klikni „Ažuriraj iz admina" gore da se povuku i zapamte.</div>', unsafe_allow_html=True)
+
     # --- Predaja / zaključavanje izveštaja ---
     if _zakljucan:
         _pat = meta.get("predato_at")
@@ -2448,11 +2543,18 @@ def prikazi_administraciju():
             st.error(_be_all)
         else:
             _n_hist = 0
+            _hist_save = {}
             for o in objekti:
                 _lst = sorted(_bulk.get(o["idk"], []), key=_datum_sort_key, reverse=True)
                 st.session_state["hist_" + str(sistem) + "_" + str(o["idk"])] = {"lst": _lst, "err": ""}
                 if _lst:
                     _n_hist += 1
+                    _hist_save[int(o["idk"])] = _lst
+            _kada_now = datetime.datetime.now().isoformat()
+            try:
+                sb_admin_hist_set(mesec_key, sistem, _hist_save, _kada_now)
+            except Exception as _es:
+                st.warning("Podaci su ažurirani, ali nisu trajno sačuvani (osvežiće se ponovo pri sledećem ažuriranju): " + str(_es))
             st.session_state["_refresh_done"] = {"sis": sistem, "mes": mesec_key, "n": _n_hist}
             st.rerun()
     _rf = st.session_state.get("_refresh_done")
@@ -2477,11 +2579,13 @@ def prikazi_administraciju():
             st.error(_be_s)
         else:
             _cr = _zu = _ze = 0; _nh = 0
+            _hist_save_s = {}
             for o in objekti:
                 _lst_s = sorted(_bulk_s.get(o["idk"], []), key=_datum_sort_key, reverse=True)
                 st.session_state["hist_" + str(sistem) + "_" + str(o["idk"])] = {"lst": _lst_s, "err": ""}
                 if _lst_s:
                     _nh += 1
+                    _hist_save_s[int(o["idk"])] = _lst_s
                 _pm_s = _treb_posle_preseka(_lst_s, _pk_s) if _pk_s else {}
                 _nivo_s, _, _ = hitnost_objekta_dodatna(o["lst"], _pm_s)
                 if _nivo_s == "crveno":
@@ -2490,6 +2594,10 @@ def prikazi_administraciju():
                     _zu += 1
                 else:
                     _ze += 1
+            try:
+                sb_admin_hist_set(mesec_key, sistem, _hist_save_s, datetime.datetime.now().isoformat())
+            except Exception:
+                pass
             try:
                 sb_start_snapshot(mesec_key, sistem, {"n": len(objekti), "crveno": _cr, "zuto": _zu, "zeleno": _ze,
                                                       "kada": datetime.datetime.now().strftime("%d.%m.%Y %H:%M")})
@@ -2715,6 +2823,29 @@ def prikazi_administraciju():
                     "background-color": "#dcfce7", "color": "#14532d", "font-weight": "700"})
                 st.dataframe(_sty, hide_index=True, use_container_width=True, column_config=_colcfg)
                 _njihova_new = {str(int(a["ida"])): int(_njm.get(str(int(a["ida"])), 0)) for a in _arts}
+
+            # --- Jednostavan izvoz za objekat (mejl): kružić + naziv + dodatna (naša) por. ---
+            # U aplikaciji ostaju sve kolone (gore); ovaj Excel je samo za slanje objektu.
+            _exp_rows = [{"kruzic": r[" "], "naziv": r["Artikal"], "dodatna": r["Dodatna por."]}
+                         for r in _rows_adf if int(r.get("Dodatna por.", 0) or 0) > 0]
+            _ecol1, _ecol2 = st.columns([1.6, 2])
+            with _ecol1:
+                if _exp_rows:
+                    try:
+                        _exp_xlsx = _objekat_order_xlsx(_naziv_kom, sel_id, _sel_lbl, _exp_rows)
+                        _safe_naz = "".join(ch for ch in str(_naziv_kom or ("ID_" + str(sel_id)))
+                                            if ch.isalnum() or ch in " _-")[:40].strip().replace(" ", "_")
+                        st.download_button("⬇️ Excel za objekat (za mejl)", _exp_xlsx,
+                            file_name="Porudzbina_" + (_safe_naz or ("ID_" + str(sel_id))) + "_" + str(mesec_key) + ".xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="expobj_" + str(sel_id), use_container_width=True)
+                    except Exception as _ee:
+                        st.caption("Izvoz trenutno nije moguć: " + str(_ee))
+                else:
+                    st.button("⬇️ Excel za objekat (za mejl)", key="expobj_dis_" + str(sel_id),
+                              use_container_width=True, disabled=True)
+            with _ecol2:
+                st.caption("Samo status (🔴🟡🟢), naziv artikla i porudžbina (dodatna / naša) — spremno da se prosledi objektu na mejl.")
 
             # Naše količine = preporučena porudžbina umanjena za već trebovano posle 01. (min 0)
             _nase_rows = [(sel_id, int(a["ida"]), int(_dodatna_map.get(int(a["ida"]), 0)))
