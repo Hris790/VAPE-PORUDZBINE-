@@ -3916,8 +3916,30 @@ class PredictionEngine:
         if _ima_pre_sept:
             self.log("Rezim: KOMPLETAN ISTORIJAT u prodaja sheetu — istorijski sheet se ignorise")
         elif s_hist:
-            self.hist_df = pd.read_excel(xls, sheet_name=s_hist); self.hist_df.columns=[c.strip() for c in self.hist_df.columns]
-            self.has_history = True; self.log(f"Istorija: {len(self.hist_df)} redova")
+            _h = pd.read_excel(xls, sheet_name=s_hist)
+            _h.columns = [str(c).strip() for c in _h.columns]
+            # normalizuj nazive kolona na standard (razni fajlovi imaju sitne razlike)
+            _cm = {}
+            for c in _h.columns:
+                cl = str(c).lower()
+                if 'komitent' in cl: _cm[c] = 'ID KOMITENTA'
+                elif 'id' in cl and 'artikl' in cl: _cm[c] = 'id artikla'
+                elif 'naziv' in cl and 'artikl' in cl: _cm[c] = 'Naziv artikla'
+                elif 'grup' in cl: _cm[c] = 'Grupa'
+                elif 'prodat' in cl: _cm[c] = 'Prodata Kolicina'
+                elif cl.startswith('kolicin') or cl.startswith('količin'): _cm[c] = 'Prodata Kolicina'
+                elif cl.startswith('mesec'): _cm[c] = 'Mesec'
+                elif cl.startswith('godina'): _cm[c] = 'Godina'
+            _h = _h.rename(columns=_cm)
+            # istorija je validna samo ako ima redove i potrebne kolone; inače se ignoriše (nije greška)
+            if len(_h) > 0 and 'ID KOMITENTA' in _h.columns and 'Prodata Kolicina' in _h.columns:
+                self.hist_df = _h
+                self.has_history = True
+                self.log(f"Istorija: {len(self.hist_df)} redova")
+            else:
+                self.hist_df = pd.DataFrame()
+                self.has_history = False
+                self.log("Istorijski sheet je prazan ili nema potrebne kolone — ignoriše se.")
         self.meseci_order = sorted(self.prodaja[['Godina','Mesec']].drop_duplicates().values.tolist())
         mn={1:'Jan',2:'Feb',3:'Mar',4:'Apr',5:'Maj',6:'Jun',7:'Jul',8:'Avg',9:'Sep',10:'Okt',11:'Nov',12:'Dec'}
         self.mesec_labels = [f"{mn.get(int(m),'?')} {int(g)}" for g,m in self.meseci_order]
