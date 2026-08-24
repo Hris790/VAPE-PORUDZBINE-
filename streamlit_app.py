@@ -27,6 +27,75 @@ DIREKTOR_PASSWORD = _cfg("DIREKTOR_PASSWORD", "2026vape")  # direktori (pregled 
 SUPABASE_URL   = _cfg("SUPABASE_URL", "")
 SUPABASE_KEY   = _cfg("SUPABASE_KEY", "")
 
+# ---- Slanje mejla objektu (SMTP, sa prilogom) ----
+def _smtp_cfg():
+    return {
+        "host": _cfg("SMTP_HOST", ""),
+        "port": int(_cfg("SMTP_PORT", 587) or 587),
+        "user": _cfg("SMTP_USER", ""),
+        "password": _cfg("SMTP_PASSWORD", ""),
+        "from_email": _cfg("SMTP_FROM", "") or _cfg("SMTP_USER", ""),
+        "from_name": _cfg("SMTP_FROM_NAME", "Vape Shop"),
+        "use_ssl": bool(_cfg("SMTP_USE_SSL", False)),
+    }
+
+def smtp_dostupan():
+    c = _smtp_cfg()
+    return bool(c["host"] and c["user"] and c["password"])
+
+MEJL_TEKST_DEFAULT = ("U prilogu vam šaljem predlog trebovanja u skladu sa Vašim lagerom. "
+                       "Molim da što pre trebujete robu!")
+
+def posalji_mejl_sa_prilogom(to_email, subject, body, attach_bytes=None, attach_filename=None, cc_email=None):
+    """Pošalji mejl preko SMTP naloga iz Secrets, sa opcionim Excel prilogom.
+    Baca RuntimeError sa razumljivom porukom ako nešto fali."""
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.base import MIMEBase
+    from email import encoders
+    from email.utils import formataddr
+
+    cfg = _smtp_cfg()
+    if not smtp_dostupan():
+        raise RuntimeError("Slanje mejlova nije podešeno (dodaj SMTP_HOST / SMTP_USER / SMTP_PASSWORD u Secrets).")
+    to_email = (to_email or "").strip()
+    if not to_email or "@" not in to_email:
+        raise RuntimeError("Objekat nema ispravnu email adresu u šifarniku komitenata.")
+
+    msg = MIMEMultipart()
+    msg["From"] = formataddr((cfg["from_name"], cfg["from_email"]))
+    msg["To"] = to_email
+    if cc_email:
+        msg["Cc"] = cc_email
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+
+    if attach_bytes and attach_filename:
+        part = MIMEBase("application", "octet-stream")
+        part.set_payload(attach_bytes)
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", 'attachment; filename="' + str(attach_filename) + '"')
+        msg.attach(part)
+
+    recipients = [to_email] + ([cc_email] if cc_email else [])
+    try:
+        if cfg["use_ssl"]:
+            server = smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=30)
+        else:
+            server = smtplib.SMTP(cfg["host"], cfg["port"], timeout=30)
+            server.starttls()
+        server.login(cfg["user"], cfg["password"])
+        server.sendmail(cfg["from_email"], recipients, msg.as_string())
+        server.quit()
+    except smtplib.SMTPAuthenticationError:
+        raise RuntimeError("Prijava na SMTP nije uspela — proveri SMTP_USER/SMTP_PASSWORD (za Gmail mora App Password).")
+    except Exception as _e:
+        raise RuntimeError("Slanje mejla nije uspelo: " + str(_e))
+
+
+
+
 MESEC_NAZIVI = {1:'Januar',2:'Februar',3:'Mart',4:'April',5:'Maj',6:'Jun',
                 7:'Jul',8:'Avgust',9:'Septembar',10:'Oktobar',11:'Novembar',12:'Decembar'}
 
