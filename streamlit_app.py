@@ -2785,7 +2785,7 @@ def prikazi_administraciju():
             return '<span class="tb-nj">po njihovom</span>'
         return '<span class="np">—</span>' if rev else '<span class="np">·</span>'
 
-    tab_lista, tab_detalj = st.tabs(["Lista objekata", "Detalj / obrada"])
+    tab_lista, tab_detalj, tab_bulk = st.tabs(["Lista objekata", "Detalj / obrada", "📧 Grupno slanje mejlova"])
 
     with tab_lista:
         _cut_list = _admin_presek(meta, mesec_key)
@@ -3128,6 +3128,152 @@ def prikazi_administraciju():
                         st.rerun()
                     except Exception as _e:
                         st.error("Greška: " + str(_e))
+
+    with tab_bulk:
+        st.markdown('<div class="adm-lbl">Grupno slanje mejlova objektima</div>', unsafe_allow_html=True)
+        st.caption("Izaberi objekte (pojedinačno ili po zoni) pa klikni Pošalji izabranima. "
+                   "Šalje se samo objektima koji imaju email u šifarniku i imaju dodatnu porudžbinu (posle umanjenja za već trebovano posle 01.).")
+
+        if not smtp_dostupan():
+            st.warning("✉️ Slanje mejlova nije podešeno u Secrets (SMTP_HOST / SMTP_USER / SMTP_PASSWORD).")
+
+        _selk = "bulk_sel_" + str(sistem) + "_" + str(mesec_key)
+        _verk = "bulk_ver_" + str(sistem) + "_" + str(mesec_key)
+        if _selk not in st.session_state:
+            st.session_state[_selk] = set()
+        if _verk not in st.session_state:
+            st.session_state[_verk] = 0
+
+        _bulk_rows = []
+        for o in objekti:
+            _bidk = int(o["idk"])
+            _bkinfo = komfull.get(_bidk, {}) or {}
+            _bnaziv = _bkinfo.get("naziv", "") or ("ID " + str(_bidk))
+            _bemail = (_bkinfo.get("email") or "").strip()
+            _bz = _zona_disp(o["nivo"])
+            _bhist = st.session_state.get("hist_" + str(sistem) + "_" + str(_bidk))
+            _btreb_map = _treb_posle_preseka(_bhist.get("lst") or [], _cut_hit) if (_bhist and not _bhist.get("err")) else {}
+            _bexp_rows = []
+            for a in o["lst"]:
+                _bida = int(a["ida"]); _bkol = int(a["kol"])
+                _bpor = int(_btreb_map.get(_bida, 0))
+                _bdod = max(_bkol - _bpor, 0)
+                if _bdod > 0:
+                    _blg = int(a["lager"]) + _bpor
+                    _bsd = "🔴" if _blg == 0 else ("🟡" if _blg <= 2 else "🟢")
+                    _bexp_rows.append({"kruzic": _bsd, "naziv": str(a["naziv"]), "dodatna": _bdod})
+            _bsk = "mailsent_" + str(sistem) + "_" + str(_bidk)
+            _bres = st.session_state.get(_bsk)
+            _bstatus = ("✅ Poslato" if (_bres and _bres.get("ok")) else
+                       ("❌ Greška" if (_bres and not _bres.get("ok")) else "—"))
+            _bulk_rows.append({
+                "idk": _bidk, "Izabrano": _bidk in st.session_state[_selk],
+                " ": _bz[3][:1], "Naziv": _bnaziv, "Email": _bemail or "(nema mejla)",
+                "Stavki": len(_bexp_rows), "Status": _bstatus,
+                "_zona": o["nivo"], "_email_ok": bool(_bemail), "_has_rows": bool(_bexp_rows),
+            })
+
+        _zbc1, _zbc2, _zbc3, _zbc4, _zbc5 = st.columns(5)
+        with _zbc1:
+            if st.button("🔴 Crvena zona", key="bulk_pick_red", use_container_width=True):
+                for r in _bulk_rows:
+                    if r["_zona"] == "crveno":
+                        st.session_state[_selk].add(r["idk"])
+                st.session_state[_verk] += 1
+                st.rerun()
+        with _zbc2:
+            if st.button("🟡 Narandžasta zona", key="bulk_pick_yellow", use_container_width=True):
+                for r in _bulk_rows:
+                    if r["_zona"] == "zuto":
+                        st.session_state[_selk].add(r["idk"])
+                st.session_state[_verk] += 1
+                st.rerun()
+        with _zbc3:
+            if st.button("🟢 Zelena zona", key="bulk_pick_green", use_container_width=True):
+                for r in _bulk_rows:
+                    if r["_zona"] == "zeleno":
+                        st.session_state[_selk].add(r["idk"])
+                st.session_state[_verk] += 1
+                st.rerun()
+        with _zbc4:
+            if st.button("☑️ Izaberi sve", key="bulk_pick_all", use_container_width=True):
+                for r in _bulk_rows:
+                    st.session_state[_selk].add(r["idk"])
+                st.session_state[_verk] += 1
+                st.rerun()
+        with _zbc5:
+            if st.button("✖️ Poništi izbor", key="bulk_pick_none", use_container_width=True):
+                st.session_state[_selk] = set()
+                st.session_state[_verk] += 1
+                st.rerun()
+
+        _bdf = pd.DataFrame([{"Izabrano": r["Izabrano"], " ": r[" "], "Naziv": r["Naziv"],
+                              "Email": r["Email"], "Stavki": r["Stavki"], "Status": r["Status"]}
+                             for r in _bulk_rows])
+        _bedited = st.data_editor(
+            _bdf, hide_index=True, use_container_width=True, height=420,
+            key="bulk_editor_" + str(sistem) + "_" + str(mesec_key) + "_" + str(st.session_state[_verk]),
+            disabled=[" ", "Naziv", "Email", "Stavki", "Status"],
+            column_config={"Izabrano": st.column_config.CheckboxColumn("Izabrano")})
+        _new_sel = set()
+        for _i, _r in _bedited.iterrows():
+            if bool(_r["Izabrano"]):
+                _new_sel.add(_bulk_rows[_i]["idk"])
+        st.session_state[_selk] = _new_sel
+
+        _n_sel = len(st.session_state[_selk])
+        _n_sel_ok = sum(1 for r in _bulk_rows if r["idk"] in st.session_state[_selk] and r["_email_ok"] and r["_has_rows"])
+        _n_sel_no_email = sum(1 for r in _bulk_rows if r["idk"] in st.session_state[_selk] and not r["_email_ok"])
+        _n_sel_no_rows = sum(1 for r in _bulk_rows if r["idk"] in st.session_state[_selk] and r["_email_ok"] and not r["_has_rows"])
+
+        st.caption("Izabrano: " + str(_n_sel) + " objekata · spremno za slanje: " + str(_n_sel_ok)
+                   + ((" · bez mejla: " + str(_n_sel_no_email)) if _n_sel_no_email else "")
+                   + ((" · nema dodatne porudžbine: " + str(_n_sel_no_rows)) if _n_sel_no_rows else ""))
+
+        if st.button("📧 Pošalji izabranima (" + str(_n_sel_ok) + ")", key="bulk_send", type="primary",
+                     use_container_width=True, disabled=(_n_sel_ok == 0 or not smtp_dostupan() or _zakljucan)):
+            _bprog = st.progress(0, "Šaljem mejlove...")
+            _to_send = [r for r in _bulk_rows if r["idk"] in st.session_state[_selk] and r["_email_ok"] and r["_has_rows"]]
+            _n_ok = 0; _n_fail = 0
+            for _bi, r in enumerate(_to_send):
+                _bidk2 = r["idk"]
+                _o2 = obj_by_id[_bidk2]
+                _bkinfo2 = komfull.get(_bidk2, {}) or {}
+                _bnaziv2 = _bkinfo2.get("naziv", "") or ("ID " + str(_bidk2))
+                _bemail2 = (_bkinfo2.get("email") or "").strip()
+                _bhist2 = st.session_state.get("hist_" + str(sistem) + "_" + str(_bidk2))
+                _btreb_map2 = _treb_posle_preseka(_bhist2.get("lst") or [], _cut_hit) if (_bhist2 and not _bhist2.get("err")) else {}
+                _bexp_rows2 = []
+                for a in _o2["lst"]:
+                    _bida2 = int(a["ida"]); _bkol2 = int(a["kol"])
+                    _bpor2 = int(_btreb_map2.get(_bida2, 0))
+                    _bdod2 = max(_bkol2 - _bpor2, 0)
+                    if _bdod2 > 0:
+                        _blg2 = int(a["lager"]) + _bpor2
+                        _bsd2 = "🔴" if _blg2 == 0 else ("🟡" if _blg2 <= 2 else "🟢")
+                        _bexp_rows2.append({"kruzic": _bsd2, "naziv": str(a["naziv"]), "dodatna": _bdod2})
+                _bsk2 = "mailsent_" + str(sistem) + "_" + str(_bidk2)
+                try:
+                    _bxlsx2 = _objekat_order_xlsx(_bnaziv2, _bidk2, _sel_lbl, _bexp_rows2)
+                    import re as _refn2
+                    _safe_sis2 = "".join(ch for ch in str(sistem or "") if ch.isalnum() or ch in " _-").strip()
+                    _mpm2 = _refn2.search(r'MP\s*\d+', str(_bnaziv2 or ""), _refn2.IGNORECASE)
+                    _mp2 = _mpm2.group(0).upper().replace(" ", "") if _mpm2 else str(_bidk2)
+                    _bfname2 = ((_safe_sis2 + " ") if _safe_sis2 else "") + _mp2 + ".xlsx"
+                    _bsubj2 = "Porudžbina · " + str(_bnaziv2) + " · " + str(_sel_lbl)
+                    posalji_mejl_sa_prilogom(_bemail2, _bsubj2, MEJL_TEKST_DEFAULT, _bxlsx2, _bfname2)
+                    st.session_state[_bsk2] = {"ok": True, "msg": "Poslato na " + _bemail2}
+                    _n_ok += 1
+                except Exception as _be:
+                    st.session_state[_bsk2] = {"ok": False, "msg": str(_be)}
+                    _n_fail += 1
+                _bprog.progress(int((_bi + 1) / len(_to_send) * 100), "Poslato " + str(_bi + 1) + "/" + str(len(_to_send)) + "...")
+            _bprog.empty()
+            if _n_fail == 0:
+                st.success("✅ Poslato " + str(_n_ok) + " mejlova.")
+            else:
+                st.warning("Poslato " + str(_n_ok) + " · nije uspelo " + str(_n_fail) + " (proveri status u tabeli iznad).")
+            st.rerun()
 
 
 def _direktor_blok_iz_prodaje(sistem, sales):
