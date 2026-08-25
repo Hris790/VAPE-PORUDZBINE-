@@ -1817,6 +1817,10 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
             return _adm.setdefault(name or "Bez oznake", {"poz": 0, "mej": 0, "dir": 0, "obj": set()})
         _em_obj = 0; _em_reag = 0
         _call_b = {1: [0, 0], 2: [0, 0], 3: [0, 0]}   # broj poziva -> [ukupno objekata, reagovalo]
+        _eff = {}   # {osoba: {mej:[uk,reag], p1, p2, p3}} — efektivnost po osobi
+        def _E(name):
+            return _eff.setdefault(name or "Bez oznake",
+                                   {"mej": [0, 0], "p1": [0, 0], "p2": [0, 0], "p3": [0, 0]})
         for _sis in sistemi:
             _obr = sb_load_obrada(mesec_key, _sis)
             for _idk, _v in _obr.items():
@@ -1851,6 +1855,20 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
                     _call_b[_bk][0] += 1
                     if _reacted:
                         _call_b[_bk][1] += 1
+                # efektivnost PO OSOBI
+                _mailers = (set(_e.get("ko", "") for _e in _mejlovi) if _mejlovi
+                            else ({_rko.get("Poslala sam mejl", "")} if "Poslala sam mejl" in _reak else set()))
+                for _m in _mailers:
+                    _de = _E(_m); _de["mej"][0] += 1
+                    if _reacted: _de["mej"][1] += 1
+                if _pozivi:
+                    for _n in (1, 2, 3):
+                        if len(_pozivi) >= _n:
+                            _de = _E(_pozivi[_n - 1].get("ko", "")); _de["p" + str(_n)][0] += 1
+                            if _reacted: _de["p" + str(_n)][1] += 1
+                elif "Pozvala sam" in _reak:
+                    _de = _E(_rko.get("Pozvala sam", "")); _de["p1"][0] += 1
+                    if _reacted: _de["p1"][1] += 1
         _adm = {k: v for k, v in _adm.items() if (v["poz"] or v["mej"] or v["dir"])}
         if _adm or _em_obj or any(_call_b[b][0] for b in _call_b):
             Hbig = ParagraphStyle('Hbig', fontName=FB, fontSize=14, leading=18,
@@ -1896,6 +1914,20 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
             _zb.append(_fun("1 poziv", _call_b[1][0], _call_b[1][1]))
             _zb.append(_fun("2 poziva", _call_b[2][0], _call_b[2][1]))
             _zb.append(_fun("3+ poziva", _call_b[3][0], _call_b[3][1]))
+            # efektivnost PO OSOBI
+            _eff = {k: v for k, v in _eff.items()
+                    if any(v[_kk][0] for _kk in ("mej", "p1", "p2", "p3"))}
+            if _eff:
+                def _fp(arr):
+                    _p = (str(round(arr[1] / arr[0] * 100)) + "%") if arr[0] else "—"
+                    return str(arr[0]) + "→<font color='#158a3f'>" + str(arr[1]) + "</font> (" + _p + ")"
+                _zb.append(Spacer(1, 6))
+                _zb.append(Paragraph("Efektivnost po osobi <font color='#9aa0ad'>(kontaktirano → reagovalo)</font>", Hsys))
+                for _u in sorted(_eff.keys(), key=lambda u: (u == "Bez oznake", u)):
+                    _e = _eff[_u]
+                    _zb.append(Paragraph("<b>" + _h_escape(str(_u)) + "</b> — mejl: " + _fp(_e["mej"])
+                                         + " · 1. poziv: " + _fp(_e["p1"]) + " · 2. poziv: " + _fp(_e["p2"])
+                                         + " · 3. poziv: " + _fp(_e["p3"]), Nar))
             el.append(KeepTogether(_zb))
     except Exception:
         pass
@@ -1974,10 +2006,11 @@ def _zadaci_xlsx(rows, sistem, mesec_lbl):
     _buf = _io.BytesIO(); _wb.save(_buf); return _buf.getvalue()
 
 
-def _objekat_order_xlsx(naziv, idk, mesec_lbl, rows):
-    """Jednostavan Excel za slanje objektu (mejlom): samo status (kružić),
-    naziv artikla i dodatna (naša) porudžbina. rows = lista dict-ova sa
-    ključevima 'kruzic', 'naziv', 'dodatna'. Vraća bajtove .xlsx."""
+def _objekat_order_xlsx(naziv, idk, mesec_lbl, rows, meseci=None):
+    """Excel za slanje objektu (mejlom): status (kružić), naziv artikla, Lager
+    (realni: lager + poručeno posle 01.), Predikcija (za zadati broj meseci) i
+    Porudžbina (dodatna). rows = lista dict-ova sa ključevima
+    'kruzic','naziv','lager','predikcija','dodatna'. Vraća bajtove .xlsx."""
     import io as _io
     from openpyxl import Workbook as _WB
     from openpyxl.styles import Font as _F, PatternFill as _PF, Alignment as _AL, Border as _BD, Side as _SD
@@ -1986,15 +2019,18 @@ def _objekat_order_xlsx(naziv, idk, mesec_lbl, rows):
     _ws.title = "Porudžbina"
     _thin = _SD(style="thin", color="E5E0F0")
     _bord = _BD(left=_thin, right=_thin, top=_thin, bottom=_thin)
+    _pred_lbl = "Predikcija" + ((" (" + str(meseci).replace(".", ",") + " mes)") if meseci else "")
+    _ncols = 5
+    _last = "E"
     # Naslov (koji objekat / mesec)
-    _ws.merge_cells("A1:C1")
+    _ws.merge_cells("A1:" + _last + "1")
     _t = _ws["A1"]
     _t.value = ("Porudžbina · " + str(naziv or ("ID " + str(idk))) + " · " + str(mesec_lbl))
     _t.font = _F(bold=True, size=13, color="3730A3")
     _t.alignment = _AL(horizontal="left", vertical="center")
     _ws.row_dimensions[1].height = 22
     # Zaglavlje tabele
-    _hdr = ["Status", "Naziv artikla", "Porudžbina"]
+    _hdr = ["Status", "Naziv artikla", "Lager", _pred_lbl, "Porudžbina"]
     _ws.append([])  # red 2 prazan
     _ws.append(_hdr)
     _hr = 3
@@ -2003,19 +2039,22 @@ def _objekat_order_xlsx(naziv, idk, mesec_lbl, rows):
         _c = _ws.cell(row=_hr, column=_ci)
         _c.font = _F(bold=True, size=11, color="4C1D95")
         _c.fill = _hfill
-        _c.alignment = _AL(horizontal=("left" if _ci == 2 else "center"), vertical="center")
+        _c.alignment = _AL(horizontal=("left" if _ci == 2 else "center"), vertical="center", wrap_text=True)
         _c.border = _bord
     for _r in rows:
-        _ws.append([str(_r.get("kruzic", "")), str(_r.get("naziv", "")), int(_r.get("dodatna", 0) or 0)])
+        _ws.append([str(_r.get("kruzic", "")), str(_r.get("naziv", "")),
+                    int(_r.get("lager", 0) or 0), int(_r.get("predikcija", 0) or 0),
+                    int(_r.get("dodatna", 0) or 0)])
         _rr = _ws.max_row
-        _ws.cell(row=_rr, column=1).alignment = _AL(horizontal="center", vertical="center")
-        _ws.cell(row=_rr, column=2).alignment = _AL(horizontal="left", vertical="center")
-        _ws.cell(row=_rr, column=3).alignment = _AL(horizontal="center", vertical="center")
-        for _ci in range(1, 4):
+        for _ci in range(1, _ncols + 1):
+            _ws.cell(row=_rr, column=_ci).alignment = _AL(
+                horizontal=("left" if _ci == 2 else "center"), vertical="center")
             _ws.cell(row=_rr, column=_ci).border = _bord
     _ws.column_dimensions["A"].width = 9
-    _ws.column_dimensions["B"].width = 52
-    _ws.column_dimensions["C"].width = 13
+    _ws.column_dimensions["B"].width = 48
+    _ws.column_dimensions["C"].width = 10
+    _ws.column_dimensions["D"].width = 14
+    _ws.column_dimensions["E"].width = 13
     _ws.freeze_panes = "A4"
     _buf = _io.BytesIO()
     _wb.save(_buf)
@@ -2762,24 +2801,10 @@ def prikazi_administraciju():
         st.error("Veza sa bazom trenutno nije podešena. Javi se analitičaru.")
         return
 
-    _adm_mode = st.radio("Prikaz", ["📦 Porudžbine", "💳 Potraživanja", "📊 Statistika"], horizontal=True,
+    _adm_mode = st.radio("Prikaz", ["📦 Porudžbine", "💳 Potraživanja"], horizontal=True,
                          key="adm_mode", label_visibility="collapsed")
     if "Potra" in _adm_mode:
         potraz_admin_ui()
-        return
-    if "Statistika" in _adm_mode:
-        _pubs = sb_meseci()
-        _mk_s = [m["key"] for m in _pubs]
-        for _k in sb_plan_meseci():
-            if _k not in _mk_s:
-                _mk_s.append(_k)
-        _mk_s = sorted(set(_mk_s), reverse=True)
-        if not _mk_s:
-            st.info("Još nema objavljenih podataka.")
-            return
-        _lbls_s = [mesec_label(k) for k in _mk_s]
-        _sl = st.selectbox("Mesec", _lbls_s, index=0, key="stat_mes_adm")
-        render_statistika(_mk_s[_lbls_s.index(_sl)], _sl)
         return
 
     _pub = sb_meseci()
@@ -3508,9 +3533,12 @@ def prikazi_administraciju():
                 st.dataframe(_sty, hide_index=True, use_container_width=True, column_config=_colcfg)
                 _njihova_new = {str(int(a["ida"])): int(_njm.get(str(int(a["ida"])), 0)) for a in _arts}
 
-            # --- Jednostavan izvoz za objekat (mejl): kružić + naziv + dodatna (naša) por. ---
+            # --- Izvoz za objekat (mejl): kružić + naziv + lager + predikcija + dodatna por. ---
             # U aplikaciji ostaju sve kolone (gore); ovaj Excel je samo za slanje objektu.
-            _exp_rows = [{"kruzic": r[" "], "naziv": r["Artikal"], "dodatna": r["Dodatna por."]}
+            _meseci_par = float(_mes_kol) if _mes_kol else 1.0
+            _exp_rows = [{"kruzic": r[" "], "naziv": r["Artikal"], "lager": r["Realni lager"],
+                          "predikcija": int(round(int(r.get("Predikcija", 0) or 0) * _meseci_par)),
+                          "dodatna": r["Dodatna por."]}
                          for r in _rows_adf if int(r.get("Dodatna por.", 0) or 0) > 0]
             # --- Excel za preuzimanje + Prosledi mejl (automatski, sa prilogom) ---
             _exp_xlsx = None
@@ -3519,7 +3547,7 @@ def prikazi_administraciju():
             with _ecol1:
                 if _exp_rows:
                     try:
-                        _exp_xlsx = _objekat_order_xlsx(_naziv_kom, sel_id, _sel_lbl, _exp_rows)
+                        _exp_xlsx = _objekat_order_xlsx(_naziv_kom, sel_id, _sel_lbl, _exp_rows, meseci=_mes_kol)
                         _safe_sis = "".join(ch for ch in str(sistem or "")
                                             if ch.isalnum() or ch in " _-").strip()
                         import re as _refn
@@ -3869,6 +3897,7 @@ def prikazi_administraciju():
                 _bemail2 = (_bkinfo2.get("email") or "").strip()
                 _bhist2 = st.session_state.get("hist_" + str(sistem) + "_" + str(_bidk2))
                 _btreb_map2 = _treb_posle_preseka(_bhist2.get("lst") or [], _cut_hit) if (_bhist2 and not _bhist2.get("err")) else {}
+                _bmeseci = float(meta.get("meseci") or 1.0) if isinstance(meta, dict) else 1.0
                 _bexp_rows2 = []
                 for a in _o2["lst"]:
                     _bida2 = int(a["ida"]); _bkol2 = int(a["kol"])
@@ -3877,10 +3906,12 @@ def prikazi_administraciju():
                     if _bdod2 > 0:
                         _blg2 = int(a["lager"]) + _bpor2
                         _bsd2 = "🔴" if _blg2 == 0 else ("🟡" if _blg2 <= 2 else "🟢")
-                        _bexp_rows2.append({"kruzic": _bsd2, "naziv": str(a["naziv"]), "dodatna": _bdod2})
+                        _bexp_rows2.append({"kruzic": _bsd2, "naziv": str(a["naziv"]), "lager": _blg2,
+                                            "predikcija": int(round(int(a.get("pred", 0) or 0) * _bmeseci)),
+                                            "dodatna": _bdod2})
                 _bsk2 = "mailsent_" + str(sistem) + "_" + str(_bidk2)
                 try:
-                    _bxlsx2 = _objekat_order_xlsx(_bnaziv2, _bidk2, _sel_lbl, _bexp_rows2)
+                    _bxlsx2 = _objekat_order_xlsx(_bnaziv2, _bidk2, _sel_lbl, _bexp_rows2, meseci=meta.get("meseci") if isinstance(meta, dict) else None)
                     import re as _refn2
                     _safe_sis2 = "".join(ch for ch in str(sistem or "") if ch.isalnum() or ch in " _-").strip()
                     _mpm2 = _refn2.search(r'MP\s*\d+', str(_bnaziv2 or ""), _refn2.IGNORECASE)
