@@ -31,6 +31,15 @@ SUPABASE_KEY   = _cfg("SUPABASE_KEY", "")
 MESEC_NAZIVI = {1:'Januar',2:'Februar',3:'Mart',4:'April',5:'Maj',6:'Jun',
                 7:'Jul',8:'Avgust',9:'Septembar',10:'Oktobar',11:'Novembar',12:'Decembar'}
 
+def _now():
+    """Trenutno vreme po Beogradu (server radi po UTC-u)."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.datetime.now(ZoneInfo("Europe/Belgrade")).replace(tzinfo=None)
+    except Exception:
+        # rezerva: leto UTC+2 (CEST). Ako zoneinfo/tzdata nedostaje.
+        return datetime.datetime.utcnow() + datetime.timedelta(hours=2)
+
 def mesec_label(key):
     try:
         y, m = str(key).split('-')
@@ -103,7 +112,7 @@ def sb_objavi_izvestaj_prodaje(html, xlsx_b64, mesec_label, prodaja_json=""):
         raise RuntimeError("Supabase nije podešen.")
     payload = {"kljuc": "latest", "html": html, "xlsx_b64": xlsx_b64,
                "mesec_label": mesec_label or "", "prodaja_json": prodaja_json or "",
-               "generisano": datetime.datetime.now().strftime("%d.%m.%Y %H:%M")}
+               "generisano": _now().strftime("%d.%m.%Y %H:%M")}
     try:
         cli.table("izvestaj_prodaje").upsert(payload, on_conflict="kljuc").execute()
     except Exception:
@@ -178,7 +187,7 @@ def sb_predaj(mesec_key, sistem):
     podaci = res.data[0].get("podaci") or {}
     meta = podaci.get("meta") or {}
     meta["predato"] = True
-    meta["predato_at"] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+    meta["predato_at"] = _now().strftime("%d.%m.%Y %H:%M")
     podaci["meta"] = meta
     cli.table("porudzbine").update({"podaci": podaci}).eq("mesec", mesec_key).eq("sistem", sistem.strip()).execute()
     try:
@@ -198,7 +207,7 @@ def sb_napomena_sistem(mesec_key, sistem, tekst):
     podaci = res.data[0].get("podaci") or {}
     meta = podaci.get("meta") or {}
     meta["napomena_sistem"] = tekst or ""
-    meta["napomena_sistem_at"] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+    meta["napomena_sistem_at"] = _now().strftime("%d.%m.%Y %H:%M")
     podaci["meta"] = meta
     cli.table("porudzbine").update({"podaci": podaci}).eq("mesec", mesec_key).eq("sistem", sistem.strip()).execute()
     try:
@@ -222,7 +231,7 @@ def sb_nedeljni_prijava_set(mesec_key, sistem, idk, prijavljen, napomena="", ko=
     prij = dict(meta.get("nedeljni_prijave") or {})
     _k = str(int(idk))
     if prijavljen:
-        prij[_k] = {"napomena": napomena or "", "at": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"), "ko": ko or ""}
+        prij[_k] = {"napomena": napomena or "", "at": _now().strftime("%d.%m.%Y %H:%M"), "ko": ko or ""}
     else:
         prij.pop(_k, None)
     meta["nedeljni_prijave"] = prij
@@ -268,7 +277,7 @@ def sb_admin_hist_set(mesec_key, sistem, hist_map, kada=None):
     podaci = res.data[0].get("podaci") or {}
     meta = podaci.get("meta") or {}
     meta["admin_hist"] = {str(k): (v or []) for k, v in (hist_map or {}).items() if v}
-    meta["admin_hist_at"] = kada or datetime.datetime.now().isoformat()
+    meta["admin_hist_at"] = kada or _now().isoformat()
     podaci["meta"] = meta
     cli.table("porudzbine").update({"podaci": podaci}).eq("mesec", mesec_key).eq("sistem", sistem.strip()).execute()
     try:
@@ -357,7 +366,7 @@ def sb_obrada_log(mesec_key, sistem, idk, kind, ko=""):
     reakcije = list(_r.get("reakcije") or [])
     reakcije_ko = dict(_r.get("reakcije_ko") or {})
     dnevnik = dict(_r.get("dnevnik") or {})
-    _at = datetime.datetime.now().isoformat()
+    _at = _now().isoformat()
     if kind == "poziv":
         dnevnik.setdefault("pozivi", []).append({"ko": ko or "", "at": _at})
         if "Pozvala sam" not in reakcije:
@@ -404,7 +413,7 @@ def sb_save_obrada(mesec_key, sistem, idk, reakcije, trebovali_tip, njihova=None
             "reakcije": list(reakcije), "trebovali": bool(trebovali_tip), "trebovali_tip": trebovali_tip or "",
             "njihova": dict(njihova or {}), "napomena": napomena or "",
             "reakcije_ko": dict(reakcije_ko or {}), "azurirao": azurirao or "",
-            "azurirano": datetime.datetime.now().isoformat()}
+            "azurirano": _now().isoformat()}
     try:
         cli.table("obrada").upsert(_row, on_conflict="mesec,sistem,idk").execute()
     except Exception:
@@ -417,7 +426,7 @@ def sb_bulk_ubaci(mesec_key, sistem, ids, ko=""):
     cli = _sb()
     if cli is None:
         raise RuntimeError("Supabase nije podešen.")
-    _now = datetime.datetime.now().isoformat()
+    _now = _now().isoformat()
     _kod = {"Ubačena porudžbina": ko} if ko else {}
     rows = [{"mesec": mesec_key, "sistem": sistem, "idk": int(i),
              "reakcije": ["Ubačena porudžbina"], "trebovali": True, "trebovali_tip": "nas",
@@ -454,7 +463,7 @@ def sb_save_plan(mesec_key, datum):
     if cli is None:
         raise RuntimeError("Supabase nije podešen.")
     cli.table("plan_objave").upsert({"mesec": mesec_key, "datum": datum,
-        "azurirano": datetime.datetime.now().isoformat()}, on_conflict="mesec").execute()
+        "azurirano": _now().isoformat()}, on_conflict="mesec").execute()
 
 def sb_plan_meseci():
     cli = _sb()
@@ -497,7 +506,7 @@ def sb_rokovi_set(mesec_key, rok_admin, rok_sistemi, rok_prodaja, napomena, rok_
                "rok_admin": rok_admin or None, "rok_sistemi": rok_sistemi or None,
                "rok_prodaja": rok_prodaja or None, "rok_syx": rok_syx or None,
                "rok_potraz": rok_potraz or None, "napomena": napomena or "",
-               "azurirano": datetime.datetime.now().isoformat()}
+               "azurirano": _now().isoformat()}
     try:
         cli.table("rokovi").upsert(payload, on_conflict="mesec").execute()
     except Exception:
@@ -567,7 +576,7 @@ def sb_syx_set(mesec_key, filename, b64):
     if cli is None:
         raise RuntimeError("Supabase nije podešen.")
     cli.table("izvestaj_syx").upsert({"mesec": mesec_key, "filename": filename, "docx_b64": b64,
-        "azurirano": datetime.datetime.now().isoformat()}, on_conflict="mesec").execute()
+        "azurirano": _now().isoformat()}, on_conflict="mesec").execute()
     for fn in (sb_syx_list, sb_syx_get):
         try:
             fn.clear()
@@ -867,7 +876,7 @@ def sb_potraz_set(mesec_key, naziv, original_b64, struktura_json, popuna_json):
     cli.table("izvestaj_potrazivanja").upsert({"mesec": mesec_key, "naziv": naziv,
         "original_b64": original_b64, "struktura": struktura_json, "popuna": popuna_json,
         "predato": False, "predato_at": None,
-        "azurirano": datetime.datetime.now().isoformat()}, on_conflict="mesec").execute()
+        "azurirano": _now().isoformat()}, on_conflict="mesec").execute()
     for fn in (sb_potraz_list, sb_potraz_get):
         try:
             fn.clear()
@@ -878,10 +887,10 @@ def sb_potraz_popuni(mesec_key, popuna_json, predato=False):
     cli = _sb()
     if cli is None:
         raise RuntimeError("Supabase nije podešen.")
-    _upd = {"popuna": popuna_json, "azurirano": datetime.datetime.now().isoformat()}
+    _upd = {"popuna": popuna_json, "azurirano": _now().isoformat()}
     if predato:
         _upd["predato"] = True
-        _upd["predato_at"] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+        _upd["predato_at"] = _now().strftime("%d.%m.%Y %H:%M")
     cli.table("izvestaj_potrazivanja").update(_upd).eq("mesec", mesec_key).execute()
     for fn in (sb_potraz_list, sb_potraz_get):
         try:
@@ -906,7 +915,7 @@ def sb_potraz_reopen(mesec_key):
     if cli is None:
         raise RuntimeError("Supabase nije podešen.")
     cli.table("izvestaj_potrazivanja").update({"predato": False, "predato_at": None,
-        "azurirano": datetime.datetime.now().isoformat()}).eq("mesec", mesec_key).execute()
+        "azurirano": _now().isoformat()}).eq("mesec", mesec_key).execute()
     for fn in (sb_potraz_list, sb_potraz_get):
         try:
             fn.clear()
@@ -1659,7 +1668,7 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
     doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=16 * mm, bottomMargin=14 * mm,
                             leftMargin=18 * mm, rightMargin=18 * mm)
     el = [Paragraph("Izveštaj administracije", H1),
-          Paragraph("Mesec: " + mesec_lbl + "   ·   generisano " + datetime.datetime.now().strftime("%d.%m.%Y"), Hsub)]
+          Paragraph("Mesec: " + mesec_lbl + "   ·   generisano " + _now().strftime("%d.%m.%Y"), Hsub)]
 
     sistemi = sb_sisteme(mesec_key)
     if not sistemi:
@@ -1800,6 +1809,96 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
         _blk += [Spacer(1, 2), img, Spacer(1, 4),
                  HRFlowable(width="100%", thickness=0.6, color=colors.HexColor('#eae4f7'), spaceAfter=6)]
         el.append(KeepTogether(_blk))
+
+    # ===== ZBIRNO: rad administracije po osobi + efektivnost kontakta (ceo mesec) =====
+    try:
+        _adm = {}
+        def _A(name):
+            return _adm.setdefault(name or "Bez oznake", {"poz": 0, "mej": 0, "dir": 0, "obj": set()})
+        _em_obj = 0; _em_reag = 0
+        _call_b = {1: [0, 0], 2: [0, 0], 3: [0, 0]}   # broj poziva -> [ukupno objekata, reagovalo]
+        for _sis in sistemi:
+            _obr = sb_load_obrada(mesec_key, _sis)
+            for _idk, _v in _obr.items():
+                _dn = _v.get("dnevnik") or {}
+                _reak = _v.get("reakcije") or []
+                _rko = _v.get("reakcije_ko") or {}
+                _pozivi = _dn.get("pozivi") or []
+                _mejlovi = _dn.get("mejlovi") or []
+                _reacted = (_v.get("trebovali_tip") == "njihov")
+                # rad po osobi
+                if _pozivi:
+                    for _e in _pozivi:
+                        _d = _A(_e.get("ko", "")); _d["poz"] += 1; _d["obj"].add((_sis, _idk))
+                elif "Pozvala sam" in _reak:
+                    _d = _A(_rko.get("Pozvala sam", "")); _d["poz"] += 1; _d["obj"].add((_sis, _idk))
+                if _mejlovi:
+                    for _e in _mejlovi:
+                        _d = _A(_e.get("ko", "")); _d["mej"] += 1; _d["obj"].add((_sis, _idk))
+                elif "Poslala sam mejl" in _reak:
+                    _d = _A(_rko.get("Poslala sam mejl", "")); _d["mej"] += 1; _d["obj"].add((_sis, _idk))
+                if "Obavestila direktorku" in _reak:
+                    _d = _A(_rko.get("Obavestila direktorku", "")); _d["dir"] += 1; _d["obj"].add((_sis, _idk))
+                # efektivnost kontakta
+                _nmej = len(_mejlovi) if _mejlovi else (1 if "Poslala sam mejl" in _reak else 0)
+                if _nmej > 0:
+                    _em_obj += 1
+                    if _reacted:
+                        _em_reag += 1
+                _ncall = len(_pozivi) if _pozivi else (1 if "Pozvala sam" in _reak else 0)
+                if _ncall > 0:
+                    _bk = 3 if _ncall >= 3 else _ncall
+                    _call_b[_bk][0] += 1
+                    if _reacted:
+                        _call_b[_bk][1] += 1
+        _adm = {k: v for k, v in _adm.items() if (v["poz"] or v["mej"] or v["dir"])}
+        if _adm or _em_obj or any(_call_b[b][0] for b in _call_b):
+            Hbig = ParagraphStyle('Hbig', fontName=FB, fontSize=14, leading=18,
+                                  textColor=colors.HexColor('#3b0764'), spaceBefore=8, spaceAfter=6)
+            _zb = [HRFlowable(width="100%", thickness=1, color=colors.HexColor('#c9b8ec'), spaceAfter=8),
+                   Paragraph("Rad administracije — ko je šta uradio (" + str(mesec_lbl) + ")", Hbig)]
+            # grafik po osobi
+            if _adm:
+                def _adm_chart(adm):
+                    _names = sorted(adm.keys(), key=lambda u: (u == "Bez oznake", u))
+                    _xx = np.arange(len(_names)); _w = 0.26
+                    fig, ax = _plt.subplots(figsize=(8.2, 2.7))
+                    ax.bar(_xx - _w, [adm[n]["poz"] for n in _names], _w, label="Pozivi", color="#16a34a")
+                    ax.bar(_xx, [adm[n]["mej"] for n in _names], _w, label="Mejlovi", color="#7c3aed")
+                    ax.bar(_xx + _w, [adm[n]["dir"] for n in _names], _w, label="Direktoru", color="#ec4899")
+                    ax.set_xticks(_xx); ax.set_xticklabels(_names, fontsize=9)
+                    ax.legend(fontsize=8, frameon=False, ncol=3, loc='upper right')
+                    for _sp in ['top', 'right']:
+                        ax.spines[_sp].set_visible(False)
+                    ax.tick_params(axis='y', labelsize=8)
+                    ax.grid(axis='y', color='#eee', linewidth=0.7)
+                    fig.tight_layout()
+                    _b = _io.BytesIO(); fig.savefig(_b, format='png', dpi=200, facecolor='white'); _plt.close(fig); _b.seek(0)
+                    return _b
+                _cimg = Image(_adm_chart(_adm), width=170 * mm, height=170 * mm * 2.7 / 8.2)
+                _cimg.hAlign = 'CENTER'
+                _zb.append(_cimg)
+                _zb.append(Spacer(1, 3))
+                for _u in sorted(_adm.keys(), key=lambda u: (u == "Bez oznake", u)):
+                    _d = _adm[_u]
+                    _zb.append(Paragraph("<b>" + _h_escape(str(_u)) + "</b>: pozvano " + str(_d["poz"])
+                                         + ", mejlova " + str(_d["mej"]) + ", prosleđeno direktoru " + str(_d["dir"])
+                                         + " · obradila " + str(len(_d["obj"])) + " objekata.", Nar))
+            # efektivnost kontakta
+            _zb.append(Spacer(1, 6))
+            _zb.append(Paragraph("Efektivnost kontakta <font color='#9aa0ad'>(reagovao = objekat poručio po svom "
+                                 "sistemu posle kontakta)</font>", Hsys))
+            def _fun(lbl, uk, re):
+                _p = (str(round(re / uk * 100)) + "%") if uk else "—"
+                return Paragraph("• <b>" + lbl + "</b>: " + str(uk) + " objekata → reagovalo <b><font color='#158a3f'>"
+                                 + str(re) + "</font></b> (" + _p + ")", Nar)
+            _zb.append(_fun("Poslat mejl", _em_obj, _em_reag))
+            _zb.append(_fun("1 poziv", _call_b[1][0], _call_b[1][1]))
+            _zb.append(_fun("2 poziva", _call_b[2][0], _call_b[2][1]))
+            _zb.append(_fun("3+ poziva", _call_b[3][0], _call_b[3][1]))
+            el.append(KeepTogether(_zb))
+    except Exception:
+        pass
 
     doc.build(el)
     buf.seek(0)
@@ -2977,7 +3076,7 @@ def prikazi_administraciju():
                 if _lst:
                     _n_hist += 1
                     _hist_save[int(o["idk"])] = _lst
-            _kada_now = datetime.datetime.now().isoformat()
+            _kada_now = _now().isoformat()
             try:
                 sb_admin_hist_set(mesec_key, sistem, _hist_save, _kada_now)
             except Exception as _es:
@@ -3022,12 +3121,12 @@ def prikazi_administraciju():
                 else:
                     _ze += 1
             try:
-                sb_admin_hist_set(mesec_key, sistem, _hist_save_s, datetime.datetime.now().isoformat())
+                sb_admin_hist_set(mesec_key, sistem, _hist_save_s, _now().isoformat())
             except Exception:
                 pass
             try:
                 sb_start_snapshot(mesec_key, sistem, {"n": len(objekti), "crveno": _cr, "zuto": _zu, "zeleno": _ze,
-                                                      "kada": datetime.datetime.now().strftime("%d.%m.%Y %H:%M")})
+                                                      "kada": _now().strftime("%d.%m.%Y %H:%M")})
                 st.session_state["_refresh_done"] = {"sis": sistem, "mes": mesec_key, "n": _nh}
                 st.rerun()
             except Exception as _e:
@@ -3217,7 +3316,8 @@ def prikazi_administraciju():
                     except Exception:
                         pass
                     st.session_state["_dial_" + str(sel_id)] = _tel_clean
-                    st.session_state.pop("r1_" + str(sel_id), None)  # osveži čekboks „Pozvala sam"
+                    for _kk in (1, 2, 3):  # osveži čekboks „Pozvala sam N. put"
+                        st.session_state.pop("callchk_" + str(sel_id) + "_" + str(_kk), None)
                     st.rerun()
             # Posle klika: pokreni pozivanje (Phone Link) + rezervni link ako se ne otvori samo
             if st.session_state.get("_dial_" + str(sel_id)):
@@ -3463,23 +3563,47 @@ def prikazi_administraciju():
         with _dc2:
             if "Ubačena porudžbina" in (v.get("reakcije") or []):
                 st.info("📦 Porudžbina je ubačena za ceo sistem (grupno).")
-            st.markdown('<div class="adm-lbl">Reakcija</div>', unsafe_allow_html=True)
+            _dnv = v.get("dnevnik") or {}
+            _pozivi = _dnv.get("pozivi") or []
+            _ncall = len(_pozivi)
+            st.markdown('<div class="adm-lbl">Pozivi</div>', unsafe_allow_html=True)
+            st.caption("Čekiraj kad obaviš poziv (ili koristi dugme Pozovi levo) — beleži se ko i kada.")
+            for _n in (1, 2, 3):
+                _done = _ncall >= _n
+                _dis = _zakljucan or _done or (_n > _ncall + 1)   # zabeležen zaključan; može samo sledeći po redu
+                _cv = st.checkbox("📞 Pozvala sam " + str(_n) + ". put", value=_done,
+                                  key="callchk_" + str(sel_id) + "_" + str(_n), disabled=_dis)
+                if _done:
+                    _e = _pozivi[_n - 1]
+                    st.markdown('<div style="font-size:10.5px;color:#9ca3af;font-style:italic;margin:-6px 0 4px 26px;">'
+                                + _h_escape(str(_e.get("ko", ""))) + " · " + _h_escape(_dt_kratko(_e.get("at", "")))
+                                + '</div>', unsafe_allow_html=True)
+                elif _cv and (_n == _ncall + 1):
+                    try:
+                        sb_obrada_log(mesec_key, sistem, sel_id, "poziv",
+                                      st.session_state.get("admin_user", "Administracija"))
+                    except Exception:
+                        pass
+                    for _kk in (1, 2, 3):
+                        st.session_state.pop("callchk_" + str(sel_id) + "_" + str(_kk), None)
+                    st.rerun()
+            st.markdown('<div class="adm-lbl" style="margin-top:10px;">Ostale reakcije</div>', unsafe_allow_html=True)
             _loaded = list(v.get("reakcije", []))
-            _r1 = st.checkbox("Pozvala sam", value=("Pozvala sam" in _loaded), key="r1_" + str(sel_id))
-            _r2 = st.checkbox("Poslala sam mejl", value=("Poslala sam mejl" in _loaded), key="r2_" + str(sel_id))
-            _r3 = st.checkbox("Obavestila direktorku", value=("Obavestila direktorku" in _loaded), key="r3_" + str(sel_id))
+            _r2 = st.checkbox("Poslala sam mejl", value=("Poslala sam mejl" in _loaded),
+                              key="r2_" + str(sel_id), disabled=_zakljucan)
+            _mejlovi = _dnv.get("mejlovi") or []
+            if _mejlovi:
+                _lm = _mejlovi[-1]
+                st.markdown('<div style="font-size:10.5px;color:#9ca3af;font-style:italic;margin:-6px 0 4px 26px;">✉️ '
+                            + _h_escape(str(_lm.get("ko", ""))) + " · " + _h_escape(_dt_kratko(_lm.get("at", "")))
+                            + '</div>', unsafe_allow_html=True)
+            _r3 = st.checkbox("Obavestila direktorku", value=("Obavestila direktorku" in _loaded),
+                              key="r3_" + str(sel_id), disabled=_zakljucan)
             react = []
-            if _r1: react.append("Pozvala sam")
+            if _ncall > 0: react.append("Pozvala sam")
             if _r2: react.append("Poslala sam mejl")
             if _r3: react.append("Obavestila direktorku")
             _can = len(react) > 0
-            # ko je uneo koju reakciju (iz baze)
-            _rko_det = v.get("reakcije_ko") or {}
-            _ko_bits = [(_reak_short(_rr).split(" ", 1)[-1] + ": " + _h_escape(str(_rko_det[_rr])))
-                        for _rr in (v.get("reakcije") or []) if _rko_det.get(_rr)]
-            if _ko_bits:
-                st.markdown('<div style="font-size:11.5px;color:#8b8fa0;margin:2px 0 4px;">👤 '
-                            + "&nbsp;·&nbsp; ".join(_ko_bits) + '</div>', unsafe_allow_html=True)
             st.markdown('<div class="adm-lbl" style="margin-top:12px;">Trebovanje nakon reakcije</div>', unsafe_allow_html=True)
             _tip_idx = ["", "nas", "njihov"].index(_loaded_tip) if _loaded_tip in ["", "nas", "njihov"] else 0
             _treb_lbl = st.radio("Trebovanje", TREB_OPT, index=_tip_idx, disabled=not _can,
@@ -5665,7 +5789,7 @@ def create_excel(engine, ukljuci_model=True):
             f"Ukupan trosak marketinga: {engine.mesecni_trosak:,.0f} RSD / {engine.num_komitenti} objekata = {engine.trosak_po_objektu:,.0f} RSD po objektu za period",
             f"Mesecni trosak po objektu: {engine.trosak_po_objektu / max(len(engine.analitika_labels), 1):,.0f} RSD",
             f"Neto po mesecu = Bruto profit meseca - mesecni trosak po objektu"]
-    info+=[f"","Generisano: {datetime.datetime.now().strftime('%d.%m.%Y. u %H:%M')}"]
+    info+=[f"","Generisano: {_now().strftime('%d.%m.%Y. u %H:%M')}"]
     for i,line in enumerate(info,1):
         cell=ws3.cell(i,1,line)
         if i==1: cell.font=Font(bold=True,name='Arial',size=14,color='375623')
@@ -6311,7 +6435,7 @@ with tab_obj:
                         except Exception:
                             _presek_iso = None
                         _stavke = stavke_iz_rezultata(_res, _eng)
-                        _payload = {"mesec_label": _mlbl2, "meta": {"pred_label": _eng.pred_label, "order_label": _eng.order_label, "min_lager": _eng.min_lager, "meseci": round(float(_o_mes), 1), "presek": _presek_iso, "nedeljni": bool(_o_nedeljni), "generisano": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"), "n_objekata": int(len({_s2['idk'] for _s2 in _stavke})), "n_sistem_ukupno": int(getattr(_eng, "num_komitenti", 0)), "ukupno_kom": int(sum(_s2['kol'] for _s2 in _stavke))}, "stavke": _stavke}
+                        _payload = {"mesec_label": _mlbl2, "meta": {"pred_label": _eng.pred_label, "order_label": _eng.order_label, "min_lager": _eng.min_lager, "meseci": round(float(_o_mes), 1), "presek": _presek_iso, "nedeljni": bool(_o_nedeljni), "generisano": _now().strftime("%d.%m.%Y %H:%M"), "n_objekata": int(len({_s2['idk'] for _s2 in _stavke})), "n_sistem_ukupno": int(getattr(_eng, "num_komitenti", 0)), "ukupno_kom": int(sum(_s2['kol'] for _s2 in _stavke))}, "stavke": _stavke}
                         try:
                             _payload["direktor"] = direktor_blok(_eng, _res)
                         except Exception:
