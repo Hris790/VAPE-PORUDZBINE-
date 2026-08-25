@@ -1922,6 +1922,58 @@ def _admin_order_xlsx(rows):
     return _buf.getvalue()
 
 
+def _zadaci_xlsx(rows, sistem, mesec_lbl):
+    """Excel liste zadataka administracije: ID, naziv, mejl + 3 poziva (Da/Ne),
+    4 kolone ko+kada, i Završeno. rows = lista dict-ova."""
+    import io as _io
+    from openpyxl import Workbook as _WB
+    from openpyxl.styles import Font as _F, PatternFill as _PF, Alignment as _AL, Border as _BD, Side as _SD
+    _wb = _WB(); _ws = _wb.active; _ws.title = "Zadaci"
+    _thin = _SD(style="thin", color="E5E0F0")
+    _bord = _BD(left=_thin, right=_thin, top=_thin, bottom=_thin)
+    _ws.merge_cells("A1:K1")
+    _t = _ws["A1"]; _t.value = "Lista zadataka · " + str(sistem) + " · " + str(mesec_lbl)
+    _t.font = _F(bold=True, size=13, color="3730A3"); _t.alignment = _AL(horizontal="left", vertical="center")
+    _ws.row_dimensions[1].height = 22
+    _hdr = ["ID komitenta", "Naziv objekta", "Mejl", "Pozvala 1. put", "Pozvala 2. put", "Pozvala 3. put",
+            "Mejl — ko i kada", "1. poziv — ko i kada", "2. poziv — ko i kada", "3. poziv — ko i kada", "Završeno"]
+    _ws.append([])           # red 2 prazan
+    _ws.append(_hdr)         # red 3 zaglavlje
+    _hf = _PF("solid", fgColor="EDE9FE")
+    for _ci in range(1, len(_hdr) + 1):
+        _c = _ws.cell(row=3, column=_ci)
+        _c.font = _F(bold=True, size=10, color="4C1D95"); _c.fill = _hf
+        _c.alignment = _AL(horizontal="center", vertical="center", wrap_text=True); _c.border = _bord
+    _green = _PF("solid", fgColor="DCFCE7")
+    for _r in rows:
+        _ws.append([
+            _r.get("idk"), _r.get("naziv", ""),
+            "Da" if _r.get("mejl") else "Ne",
+            "Da" if _r.get("p1") else "Ne",
+            "Da" if _r.get("p2") else "Ne",
+            "Da" if _r.get("p3") else "Ne",
+            _r.get("mejl_ko", ""), _r.get("p1_ko", ""), _r.get("p2_ko", ""), _r.get("p3_ko", ""),
+            "ZAVRŠENO" if _r.get("zavrseno") else "",
+        ])
+        _rr = _ws.max_row
+        for _ci in range(1, len(_hdr) + 1):
+            _cc = _ws.cell(row=_rr, column=_ci)
+            _cc.border = _bord
+            _cc.alignment = _AL(horizontal=("left" if _ci == 2 else "center"), vertical="center")
+        if _r.get("zavrseno"):
+            _zc = _ws.cell(row=_rr, column=11); _zc.fill = _green
+            _zc.font = _F(bold=True, color="14532D")
+    _ws.column_dimensions["A"].width = 12
+    _ws.column_dimensions["B"].width = 42
+    for _cl in ("C", "D", "E", "F"):
+        _ws.column_dimensions[_cl].width = 13
+    for _cl in ("G", "H", "I", "J"):
+        _ws.column_dimensions[_cl].width = 26
+    _ws.column_dimensions["K"].width = 12
+    _ws.freeze_panes = "A4"
+    _buf = _io.BytesIO(); _wb.save(_buf); return _buf.getvalue()
+
+
 def _objekat_order_xlsx(naziv, idk, mesec_lbl, rows):
     """Jednostavan Excel za slanje objektu (mejlom): samo status (kružić),
     naziv artikla i dodatna (naša) porudžbina. rows = lista dict-ova sa
@@ -3179,25 +3231,50 @@ def prikazi_administraciju():
 
     with tab_lista:
         _cut_list = _admin_presek(meta, mesec_key)
+        def _je_zavrseno(_o, _v):
+            # Objekat je „završeno" ako je poručeno (prešao iz crvene/žute u zelenu, ili je trebovanje zabeleženo)
+            if (_v.get("trebovali_tip") or "") in ("nas", "njihov"):
+                return True
+            if "Ubačena porudžbina" in (_v.get("reakcije") or []):
+                return True
+            try:
+                _raw = hitnost_objekta(_o["lst"])[0]
+            except Exception:
+                _raw = _o["nivo"]
+            return _raw in ("crveno", "zuto") and _o["nivo"] == "zeleno"
         _rows = ""
+        _export_rows = []
         for o in objekti:
             z = _zona_disp(o["nivo"])
             v = obrada_map.get(o["idk"], {})
             reak = v.get("reakcije", [])
             _rko = v.get("reakcije_ko") or {}
+            _dnv = v.get("dnevnik") or {}
+            _pz = _dnv.get("pozivi") or []
+            _mj = _dnv.get("mejlovi") or []
+            _zav = _je_zavrseno(o, v)
+            _nazlist = (komfull.get(int(o["idk"]), {}) or {}).get("naziv", "")
+            # red za Excel izvoz
+            def _koik(_e):
+                return (str(_e.get("ko", "")) + " · " + _dt_kratko(_e.get("at", ""))) if _e else ""
+            _export_rows.append({
+                "idk": int(o["idk"]), "naziv": _nazlist or ("ID " + str(o["idk"])),
+                "mejl": len(_mj) > 0, "p1": len(_pz) >= 1, "p2": len(_pz) >= 2, "p3": len(_pz) >= 3,
+                "mejl_ko": _koik(_mj[-1] if _mj else None),
+                "p1_ko": _koik(_pz[0] if len(_pz) >= 1 else None),
+                "p2_ko": _koik(_pz[1] if len(_pz) >= 2 else None),
+                "p3_ko": _koik(_pz[2] if len(_pz) >= 3 else None),
+                "zavrseno": _zav,
+            })
             if reak:
                 stat = "".join('<span class="stchip">' + _reak_short_ko(r, _rko) + '</span>' for r in reak)
             else:
                 stat = '<span class="stat">Nepregledano</span>'
-            # sitni sivi kosi tekst: ko + kada (poslednji poziv / mejl)
-            _dnv = v.get("dnevnik") or {}
             _sub = []
-            _pz = _dnv.get("pozivi") or []
             if _pz:
                 _lp = _pz[-1]
                 _sub.append("📞 " + str(len(_pz)) + "× · posl. " + _h_escape(_ko_kratko(_lp.get("ko", "")))
                             + " " + _h_escape(_dt_kratko(_lp.get("at", ""))))
-            _mj = _dnv.get("mejlovi") or []
             if _mj:
                 _lm = _mj[-1]
                 _sub.append("✉️ " + _h_escape(_ko_kratko(_lm.get("ko", ""))) + " " + _h_escape(_dt_kratko(_lm.get("at", ""))))
@@ -3205,15 +3282,15 @@ def prikazi_administraciju():
                 stat += ('<div style="font-size:10.5px;color:#9ca3af;font-style:italic;margin-top:2px;">'
                          + "&nbsp;·&nbsp;".join(_sub) + '</div>')
             _rc = "row-red" if o["nivo"] == "crveno" else ("row-org" if o["nivo"] == "zuto" else "")
-            # oznaka: da li je već trebovano posle 01. (samo za objekte čija je istorija učitana)
             _treb_mark = ""
             _hf = st.session_state.get("hist_" + str(sistem) + "_" + str(o["idk"]))
             if _hf and not _hf.get("err"):
                 _tt = int(sum(_treb_posle_preseka(_hf.get("lst") or [], _cut_list).values()))
                 if _tt > 0:
                     _treb_mark = ' <span title="Trebovano posle 01." style="color:#b45309;font-weight:700;">⚠️ posle 01. (' + str(_tt) + ')</span>'
-            _nazlist = (komfull.get(int(o["idk"]), {}) or {}).get("naziv", "")
             _nazcell = ('<td>' + _h_escape(_nazlist) + _treb_mark + '</td>') if _nazlist else ('<td class="mut">— naknadno' + _treb_mark + '</td>')
+            _zavcell = ('<td class="ce"><span style="background:#dcfce7;color:#14532d;font-weight:700;font-size:11.5px;'
+                        'padding:3px 9px;border-radius:20px;">✓ Završeno</span></td>') if _zav else '<td class="ce"><span class="np">—</span></td>'
             _rows += ('<tr class="' + _rc + '">'
                 '<td class="idc">' + str(o["idk"]) + '</td>'
                 + _nazcell +
@@ -3222,12 +3299,31 @@ def prikazi_administraciju():
                 '<td><span class="zona ' + z[0] + '"><span class="zd"></span>' + z[3] + '</span></td>'
                 '<td>' + stat + '</td>'
                 '<td class="ce">' + _treb_list_cell(v.get("trebovali_tip", ""), o["idk"] in reviewed) + '</td>'
+                + _zavcell +
                 '</tr>')
+        # Izvoz u Excel (iznad liste)
+        _lc1, _lc2 = st.columns([1.4, 3])
+        with _lc1:
+            try:
+                _zx = _zadaci_xlsx(_export_rows, sistem, _sel_lbl)
+                _safe_s = "".join(ch for ch in str(sistem or "") if ch.isalnum() or ch in " _-").strip().replace(" ", "_")
+                st.download_button("⬇️ Izvezi listu u Excel", _zx,
+                    file_name="Zadaci_" + (_safe_s or "sistem") + "_" + str(mesec_key) + ".xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="zadaci_xlsx", use_container_width=True)
+            except Exception as _ze:
+                st.caption("Izvoz trenutno nije moguć: " + str(_ze))
+        with _lc2:
+            _nz = sum(1 for r in _export_rows if r["zavrseno"])
+            st.caption("Excel: mejl + 1./2./3. poziv (Da/Ne), ko i kada, i Završeno.  ·  Završeno: "
+                       + str(_nz) + " / " + str(len(_export_rows)) + " objekata.")
         st.markdown('<table class="adm-t">'
             '<thead><tr><th>ID</th><th>Naziv komitenta</th><th>Na nuli</th><th>Izgubljeno</th>'
-            '<th>Zona</th><th>Status</th><th style="text-align:center;">Trebovali</th></tr></thead>'
+            '<th>Zona</th><th>Status</th><th style="text-align:center;">Trebovali</th>'
+            '<th style="text-align:center;">Završeno</th></tr></thead>'
             '<tbody>' + _rows + '</tbody></table>', unsafe_allow_html=True)
-        st.caption("Status i trebovanje se menjaju u kartici Detalj / obrada.")
+        st.caption("Status i trebovanje se menjaju u kartici Detalj / obrada. "
+                   "Završeno = objekat je iz crvene/narandžaste prešao u zelenu (trebovao je).")
 
     with tab_detalj:
         _labels = []
@@ -3566,38 +3662,29 @@ def prikazi_administraciju():
             _dnv = v.get("dnevnik") or {}
             _pozivi = _dnv.get("pozivi") or []
             _ncall = len(_pozivi)
-            st.markdown('<div class="adm-lbl">Pozivi</div>', unsafe_allow_html=True)
-            st.caption("Čekiraj kad obaviš poziv (ili koristi dugme Pozovi levo) — beleži se ko i kada.")
+            st.markdown('<div class="adm-lbl">Pozivi <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#b0b4bd;">(automatski — preko dugmeta Pozovi)</span></div>', unsafe_allow_html=True)
+            # Pozivi se NE mogu ručno čekirati — samo se prikazuju; broje se preko dugmeta „Pozovi" (slušalica).
             for _n in (1, 2, 3):
                 _done = _ncall >= _n
-                _dis = _zakljucan or _done or (_n > _ncall + 1)   # zabeležen zaključan; može samo sledeći po redu
-                _cv = st.checkbox("📞 Pozvala sam " + str(_n) + ". put", value=_done,
-                                  key="callchk_" + str(sel_id) + "_" + str(_n), disabled=_dis)
+                st.checkbox("📞 Pozvala sam " + str(_n) + ". put", value=_done,
+                            key="callchk_" + str(sel_id) + "_" + str(_n), disabled=True)
                 if _done:
                     _e = _pozivi[_n - 1]
                     st.markdown('<div style="font-size:10.5px;color:#9ca3af;font-style:italic;margin:-6px 0 4px 26px;">'
                                 + _h_escape(str(_e.get("ko", ""))) + " · " + _h_escape(_dt_kratko(_e.get("at", "")))
                                 + '</div>', unsafe_allow_html=True)
-                elif _cv and (_n == _ncall + 1):
-                    try:
-                        sb_obrada_log(mesec_key, sistem, sel_id, "poziv",
-                                      st.session_state.get("admin_user", "Administracija"))
-                    except Exception:
-                        pass
-                    for _kk in (1, 2, 3):
-                        st.session_state.pop("callchk_" + str(sel_id) + "_" + str(_kk), None)
-                    st.rerun()
             st.markdown('<div class="adm-lbl" style="margin-top:10px;">Ostale reakcije</div>', unsafe_allow_html=True)
             _loaded = list(v.get("reakcije", []))
-            _r2 = st.checkbox("Poslala sam mejl", value=("Poslala sam mejl" in _loaded),
-                              key="r2_" + str(sel_id), disabled=_zakljucan)
             _mejlovi = _dnv.get("mejlovi") or []
+            _r2 = ("Poslala sam mejl" in _loaded)   # automatski — označava se pri slanju mejla (pojedinačno/grupno)
+            st.checkbox("✉️ Poslala sam mejl  (automatski)", value=_r2,
+                        key="r2_" + str(sel_id), disabled=True)
             if _mejlovi:
                 _lm = _mejlovi[-1]
                 st.markdown('<div style="font-size:10.5px;color:#9ca3af;font-style:italic;margin:-6px 0 4px 26px;">✉️ '
                             + _h_escape(str(_lm.get("ko", ""))) + " · " + _h_escape(_dt_kratko(_lm.get("at", "")))
                             + '</div>', unsafe_allow_html=True)
-            _r3 = st.checkbox("Obavestila direktorku", value=("Obavestila direktorku" in _loaded),
+            _r3 = st.checkbox("👤 Obavestila direktorku", value=("Obavestila direktorku" in _loaded),
                               key="r3_" + str(sel_id), disabled=_zakljucan)
             react = []
             if _ncall > 0: react.append("Pozvala sam")
