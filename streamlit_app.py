@@ -2870,10 +2870,15 @@ def prikazi_administraciju():
     _bez_naziva = [o["idk"] for o in objekti if not ((komfull.get(int(o["idk"]), {}) or {}).get("naziv"))]
     if st.session_state.pop("_req_refresh_admin", False) and not _zakljucan:
         try:
-            _cut_all = datetime.date(int(str(mesec_key).split("-")[0]), int(str(mesec_key).split("-")[1]), 1)
+            # Povuci poslednjih ~6 meseci (od 6 meseci pre meseca izveštaja, 1. u mesecu)
+            _yy0 = int(str(mesec_key).split("-")[0]); _mm0 = int(str(mesec_key).split("-")[1])
+            _mm6 = _mm0 - 6; _yy6 = _yy0
+            while _mm6 <= 0:
+                _mm6 += 12; _yy6 -= 1
+            _cut_all = datetime.date(_yy6, _mm6, 1)
         except Exception:
             _cut_all = None
-        with st.spinner("Povlačim sve iz admina za ceo sistem (nazivi + prethodne porudžbine + dopuna)... može potrajati par minuta."):
+        with st.spinner("Povlačim sve iz admina za ceo sistem (poslednjih ~6 meseci: nazivi + prethodne porudžbine + dopuna)... može potrajati par minuta."):
             if _bez_naziva:
                 admin_build_komitenti(only_ids=_bez_naziva)
             _kf = sb_komitenti_full()
@@ -2883,10 +2888,23 @@ def prikazi_administraciju():
         if _be_all and not _bulk:
             st.error(_be_all)
         else:
+            # Spoji sa već zapamćenim (dedupe po ID porudžbine) — novo se DODAJE, staro se ne gubi
+            _prev_hist = (meta.get("admin_hist") or {}) if isinstance(meta, dict) else {}
             _n_hist = 0
             _hist_save = {}
             for o in objekti:
-                _lst = sorted(_bulk.get(o["idk"], []), key=_datum_sort_key, reverse=True)
+                _old_lst = _prev_hist.get(str(int(o["idk"])), []) or []
+                _new_lst = _bulk.get(o["idk"], []) or []
+                _by_id = {}
+                for _od in (_old_lst + _new_lst):
+                    _oid = str(_od.get("id") or "")
+                    if not _oid:
+                        continue
+                    if _oid not in _by_id:
+                        _by_id[_oid] = _od
+                    elif (not (_by_id[_oid].get("stavke"))) and _od.get("stavke"):
+                        _by_id[_oid] = _od  # zadrži verziju sa stavkama
+                _lst = sorted(_by_id.values(), key=_datum_sort_key, reverse=True)
                 st.session_state["hist_" + str(sistem) + "_" + str(o["idk"])] = {"lst": _lst, "err": ""}
                 if _lst:
                     _n_hist += 1
@@ -3077,16 +3095,39 @@ def prikazi_administraciju():
                     '<span class="zona ' + z[0] + '"><span class="zd"></span>' + z[3] + '</span>'
                     + _naz_html +
                     '<span style="margin-left:auto;">' + _revb + '</span></div>', unsafe_allow_html=True)
+        _tel_raw = str(_kinfo.get("telefon", "") or "").strip()
+        # očisti broj za tel: link (zadrži cifre i vodeći +)
+        import re as _reph
+        _tel_clean = _reph.sub(r"[^\d+]", "", _tel_raw)
+        if _tel_clean.count("+") > 1:
+            _tel_clean = "+" + _tel_clean.replace("+", "")
+        # Prevedi u međunarodni format (+381…) da Phone Link pouzdano okrene
+        if _tel_clean.startswith("+"):
+            pass
+        elif _tel_clean.startswith("00"):
+            _tel_clean = "+" + _tel_clean[2:]
+        elif _tel_clean.startswith("0"):
+            _tel_clean = "+381" + _tel_clean[1:]
         _kbits = []
         if _kinfo.get("mesto"):
             _kbits.append("📍 " + _h_escape(_kinfo["mesto"]))
-        if _kinfo.get("telefon"):
-            _kbits.append("📞 " + _h_escape(_kinfo["telefon"]))
+        if _tel_raw:
+            if _tel_clean:
+                _kbits.append('<a href="tel:' + _h_escape(_tel_clean) + '" style="color:#7c3aed;text-decoration:none;font-weight:600;">📞 '
+                              + _h_escape(_tel_raw) + '</a>')
+            else:
+                _kbits.append("📞 " + _h_escape(_tel_raw))
         if _kinfo.get("email"):
-            _kbits.append("✉️ " + _h_escape(_kinfo["email"]))
+            _kbits.append('<a href="mailto:' + _h_escape(_kinfo["email"]) + '" style="color:#6b7280;text-decoration:none;">✉️ '
+                          + _h_escape(_kinfo["email"]) + '</a>')
         if _kbits:
-            st.markdown('<div style="margin:-8px 0 12px;color:#6b7280;font-size:13px;">'
+            st.markdown('<div style="margin:-8px 0 10px;color:#6b7280;font-size:13px;">'
                         + "&nbsp;&nbsp;·&nbsp;&nbsp;".join(_kbits) + '</div>', unsafe_allow_html=True)
+        # Veliko dugme za poziv (na telefonu odmah zove; na laptopu kroz app za pozive)
+        if _tel_clean:
+            st.markdown('<a href="tel:' + _h_escape(_tel_clean) + '" style="display:inline-block;background:#16a34a;color:#fff;'
+                        'text-decoration:none;font-weight:700;font-size:13.5px;padding:8px 18px;border-radius:9px;margin:0 0 12px;">'
+                        '📞 Pozovi ' + _h_escape(_tel_raw) + '</a>', unsafe_allow_html=True)
 
         # --- Presek (1. u mesecu posle poslednjeg meseca podataka) + istorija iz admina ---
         import datetime as _dtp
@@ -3288,7 +3329,7 @@ def prikazi_administraciju():
                         st.session_state.pop(_sk, None)
                         st.rerun()
 
-            st.markdown('<div class="adm-lbl" style="margin-top:18px;">🧾 Prethodne porudžbine (admin · ~3 meseca)</div>', unsafe_allow_html=True)
+            st.markdown('<div class="adm-lbl" style="margin-top:18px;">🧾 Prethodne porudžbine (admin · ~6 meseci)</div>', unsafe_allow_html=True)
             if not _naziv_kom:
                 st.caption("Nema naziva za ovaj objekat — učitaj šifarnik komitenata u Objavi izveštaja (ili poveži iz admina).")
                 if st.button("🔗 Poveži šifre komitenata iz admina", key="bk_" + str(sel_id)):
