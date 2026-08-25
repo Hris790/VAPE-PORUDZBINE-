@@ -2646,6 +2646,22 @@ def prikazi_administraciju():
             if st.session_state.get(_hkk) is None:
                 st.session_state[_hkk] = {"lst": _slst or [], "err": ""}
 
+    # --- Poslednje ažuriranje iz admina (odmah ispod dugmeta „Ažuriraj iz admina") ---
+    if not (isinstance(meta, dict) and meta.get("nedeljni")):
+        _ah_at = meta.get("admin_hist_at") if isinstance(meta, dict) else None
+        _pk_disp = _admin_presek(meta, mesec_key)
+        _pk_ds = _pk_disp.strftime("%d.%m.%Y") if _pk_disp else "01."
+        if _ah_at:
+            st.markdown('<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:8px 14px;'
+                        'font-size:12.5px;color:#166534;font-weight:600;margin:2px 0 14px;">🔄 Podaci iz admina poslednji put ažurirani: '
+                        + _h_escape(_dt_fmt(_ah_at)) + '  ·  prethodne porudžbine (posle 01.) su zapamćene i prate se od '
+                        + _pk_ds + '. Ne moraš ponovo da ažuriraš ako je datum skorašnji.</div>',
+                        unsafe_allow_html=True)
+        else:
+            st.markdown('<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:8px 14px;'
+                        'font-size:12.5px;color:#92400e;font-weight:600;margin:2px 0 14px;">🔄 Prethodne porudžbine iz admina još nisu povučene za ovaj sistem — '
+                        'klikni „Ažuriraj iz admina" gore (povuku se i trajno zapamte).</div>', unsafe_allow_html=True)
+
     # --- Zaključavanje meseca: predato ručno ili istekao rok (rok postavljaju direktori) ---
     _predato = bool(meta.get("predato"))
     _rok = sb_rokovi_get(mesec_key).get("rok_admin") or meta.get("rok")  # 'YYYY-MM-DD' ako je postavljen
@@ -2817,20 +2833,6 @@ def prikazi_administraciju():
         '</div>', unsafe_allow_html=True)
     st.markdown('<div class="adm-prog"><span class="t">Pregledano ' + str(n_done) + ' / ' + str(n_obj) + '</span>'
                 '<div class="bar"><div style="width:' + str(_pct) + '%"></div></div></div>', unsafe_allow_html=True)
-
-    # --- Poslednje ažuriranje podataka iz admina (koji period pokrivaju prethodne porudžbine) ---
-    _ah_at = meta.get("admin_hist_at") if isinstance(meta, dict) else None
-    _pk_disp = _admin_presek(meta, mesec_key)
-    _pk_ds = _pk_disp.strftime("%d.%m.%Y") if _pk_disp else "01."
-    if _ah_at:
-        st.markdown('<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:8px 14px;'
-                    'font-size:12.5px;color:#166534;font-weight:600;margin:2px 0 14px;">🔄 Podaci iz admina poslednji put ažurirani: '
-                    + _h_escape(_dt_fmt(_ah_at)) + '  ·  prethodne porudžbine se prate od ' + _pk_ds + ' (posle preseka)</div>',
-                    unsafe_allow_html=True)
-    else:
-        st.markdown('<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:8px 14px;'
-                    'font-size:12.5px;color:#92400e;font-weight:600;margin:2px 0 14px;">🔄 Prethodne porudžbine iz admina još nisu povučene — '
-                    'klikni „Ažuriraj iz admina" gore da se povuku i zapamte.</div>', unsafe_allow_html=True)
 
     # --- Predaja / zaključavanje izveštaja ---
     if _zakljucan:
@@ -3444,6 +3446,15 @@ def prikazi_administraciju():
                     return False
             return True
         _view_rows = [r for r in _bulk_rows if _match(r)]
+        # Kad se filter promeni — poništi izbor (da izbor uvek prati ono što je trenutno prikazano)
+        _sig = str(_f_zona) + "|" + str(_f_mail) + "|" + _f_q.strip().lower()
+        _sigk = "bulk_sig_" + str(sistem) + "_" + str(mesec_key)
+        if st.session_state.get(_sigk) != _sig:
+            st.session_state[_sigk] = _sig
+            st.session_state[_selk] = set()
+            st.session_state[_verk] += 1
+        st.caption("Prikazano posle filtera: " + str(len(_view_rows)) + " objekata"
+                   + (" (od ukupno " + str(len(_bulk_rows)) + ")" if len(_view_rows) != len(_bulk_rows) else ""))
         # Akcije nad filtriranom listom
         _ba1, _ba2, _ba3 = st.columns([1.3, 1.3, 3])
         with _ba1:
@@ -3476,24 +3487,26 @@ def prikazi_administraciju():
                 column_config={"Izabrano": st.column_config.CheckboxColumn("Izabrano", width="small"),
                                "Zona": st.column_config.TextColumn("Zona", width="small"),
                                "Mejl": st.column_config.TextColumn("Mejl", width="small")})
-            _visible_ids = [r["idk"] for r in _view_rows]
             _new_sel_vis = set()
             for _i, _r in _bedited.iterrows():
                 if bool(_r["Izabrano"]):
                     _new_sel_vis.add(_view_rows[_i]["idk"])
-            st.session_state[_selk] = (st.session_state[_selk] - set(_visible_ids)) | _new_sel_vis
+            # izbor = tačno ono što je štiklirano u trenutno prikazanoj (filtriranoj) listi
+            st.session_state[_selk] = _new_sel_vis
         _sel_ids = st.session_state[_selk]
+        _view_ids = set(r["idk"] for r in _view_rows)
+        _sel_ids = _sel_ids & _view_ids   # sigurnosno: samo iz trenutnog filtera
         _n_sel = len(_sel_ids)
-        _n_sel_ok = sum(1 for r in _bulk_rows if r["idk"] in _sel_ids and r["_email_ok"] and r["_has_rows"])
-        _n_sel_no_email = sum(1 for r in _bulk_rows if r["idk"] in _sel_ids and not r["_email_ok"])
-        _n_sel_no_rows = sum(1 for r in _bulk_rows if r["idk"] in _sel_ids and r["_email_ok"] and not r["_has_rows"])
+        _n_sel_ok = sum(1 for r in _view_rows if r["idk"] in _sel_ids and r["_email_ok"] and r["_has_rows"])
+        _n_sel_no_email = sum(1 for r in _view_rows if r["idk"] in _sel_ids and not r["_email_ok"])
+        _n_sel_no_rows = sum(1 for r in _view_rows if r["idk"] in _sel_ids and r["_email_ok"] and not r["_has_rows"])
         st.caption("Izabrano: " + str(_n_sel) + " objekata · spremno za slanje: " + str(_n_sel_ok)
                    + ((" · bez mejla: " + str(_n_sel_no_email)) if _n_sel_no_email else "")
                    + ((" · nema dodatne porudžbine: " + str(_n_sel_no_rows)) if _n_sel_no_rows else ""))
         if st.button("📧 Pošalji izabranima (" + str(_n_sel_ok) + ")", key="bulk_send", type="primary",
                      use_container_width=True, disabled=(_n_sel_ok == 0 or not smtp_dostupan() or _zakljucan)):
             _bprog = st.progress(0, "Šaljem mejlove...")
-            _to_send = [r for r in _bulk_rows if r["idk"] in _sel_ids and r["_email_ok"] and r["_has_rows"]]
+            _to_send = [r for r in _view_rows if r["idk"] in _sel_ids and r["_email_ok"] and r["_has_rows"]]
             _cur_u = st.session_state.get("admin_user", "Administracija")
             _n_ok = 0; _n_fail = 0
             for _bi, r in enumerate(_to_send):
