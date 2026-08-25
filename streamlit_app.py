@@ -269,6 +269,27 @@ def sb_nedeljni_mail_set(mesec_key, sistem, to_email, ko="", poslato=False):
         pass
 
 
+def sb_nedeljni_start_set(mesec_key, sistem, snap):
+    """Za sistemske sisteme: zabeleži STARTNO stanje izveštaja (broj objekata sa
+    problemom u trenutku pokretanja) u meta.nedeljni_start = {kada, n, problem}.
+    Snima se JEDNOM — kasnija ažuriranja iz admina ne diraju ovaj start."""
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    res = cli.table("porudzbine").select("podaci").eq("mesec", mesec_key).eq("sistem", sistem.strip()).limit(1).execute()
+    if not res.data:
+        raise RuntimeError("Nema objavljenog izveštaja za taj mesec/sistem.")
+    podaci = res.data[0].get("podaci") or {}
+    meta = podaci.get("meta") or {}
+    meta["nedeljni_start"] = snap
+    podaci["meta"] = meta
+    cli.table("porudzbine").update({"podaci": podaci}).eq("mesec", mesec_key).eq("sistem", sistem.strip()).execute()
+    try:
+        sb_ucitaj.clear()
+    except Exception:
+        pass
+
+
 def sb_start_snapshot(mesec_key, sistem, snap):
     """Zabeleži „startni rezultat" (zone u trenutku prvog povlačenja porudžbina od 01.)
     u meta.start_zone. Jednom snimljeno — koristi se u PDF izveštaju kao START."""
@@ -1733,12 +1754,15 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
             _prob_pdf = {k: v for k, v in _prob_pdf.items() if v}
             _npb = len(_prob_pdf)
             _prijave = dict(_meta_s.get("nedeljni_prijave") or {})
+            _nst = _meta_s.get("nedeljni_start") or {}
             try:
                 _kf_pdf = sb_komitenti_full()
             except Exception:
                 _kf_pdf = {}
+            _start_line = ("Na startu (" + str(_nst.get("kada", "")) + "): <b>" + str(_nst.get("problem", 0))
+                           + "</b> objekata sa problemom od " + str(_nst.get("n", len(po))) + ".  ") if _nst else ""
             _flow = [Paragraph(str(_sis) + "  (sistemski · period " + _perl_s + ")", Hsys),
-                     Paragraph("Objekata sa problemom (0 lagera ili realni lager ispod prodaje za " + _perl_s + "): <b>"
+                     Paragraph(_start_line + "Trenutno sa problemom (realni lager ispod prodaje za " + _perl_s + "): <b>"
                                + str(_npb) + "</b> od " + str(len(po)) + ".  Prijavljeno direktoru: <b>"
                                + str(len(_prijave)) + "</b>.", Nar),
                      Spacer(1, 3)]
@@ -3156,28 +3180,44 @@ def prikazi_administraciju():
                     + ' (realni lager = lager + naknadne porudžbine posle preseka).</div>',
                     unsafe_allow_html=True)
 
-        # --- Start dugme: povuci naknadne porudžbine (posle preseka) pa preračunaj realni lager ---
         _pk_ned = _admin_presek(meta, mesec_key)
         _pk_ned_lbl = _pk_ned.strftime("%d.%m.") if _pk_ned else "01."
         _ah_at_n = meta.get("admin_hist_at") if isinstance(meta, dict) else None
-        _scn = st.columns([2.4, 3])
-        with _scn[0]:
-            if st.button("▶ Start — povuci lager (naknadne porudžbine)", key="ned_start_pull",
-                         use_container_width=True, type="primary", disabled=_zakljucan):
-                st.session_state["_req_ned_pull"] = True
-                st.rerun()
-        with _scn[1]:
-            if _ah_at_n:
-                st.caption("🔄 Poslednji put povučeno: " + _dt_fmt(_ah_at_n)
-                           + ". Realni lager = lager sa preseka + sve što su naknadno poručili (posle "
-                           + _pk_ned_lbl + ").")
-            else:
-                st.caption("Klikni Start da se naknadne porudžbine (posle " + _pk_ned_lbl
-                           + ") dodaju na lager PRE nego što se odredi ko ima problem. "
-                             "Bez ovoga lager je star (od preseka) i može lažno da prikaže problem.")
+        _ned_start = meta.get("nedeljni_start") if isinstance(meta, dict) else None
 
-        # Handler za pull (glavni „Ažuriraj iz admina" handler je posle ovog return-a, pa ga ovde radimo sami)
-        if st.session_state.pop("_req_ned_pull", False) and not _zakljucan:
+        # Gornje dugme „Ažuriraj iz admina" (za ceo prikaz) — za sistemske ga hvatamo ovde:
+        # živo osvežava realni lager (objekti prelaze zone), ali NE dira startne podatke izveštaja.
+        if st.session_state.pop("_req_refresh_admin", False) and not _zakljucan:
+            st.session_state["_req_ned_pull"] = "refresh"
+
+        # --- START: povuci JEDNOM na početku, zabeleži startno stanje izveštaja i zaključaj ---
+        if _ned_start:
+            st.markdown('<div style="background:#eef2ff;border:1px solid #c7d2fe;border-radius:10px;padding:9px 14px;'
+                        'font-size:12.5px;color:#3730a3;margin:2px 0 6px;">📌 <b>Start izveštaja zabeležen</b> ('
+                        + str(_ned_start.get("kada", "")) + '): <b>' + str(_ned_start.get("problem", 0))
+                        + '</b> objekata sa problemom na startu (od ' + str(_ned_start.get("n", 0))
+                        + '). Ovo je START u izveštaju — naknadna ažuriranja iz admina ga ne menjaju.</div>',
+                        unsafe_allow_html=True)
+        elif not _zakljucan:
+            _scn = st.columns([2.4, 3])
+            with _scn[0]:
+                if st.button("▶ Start — povuci porudžbine i zabeleži start", key="ned_start_pull",
+                             use_container_width=True, type="primary"):
+                    st.session_state["_req_ned_pull"] = "start"
+                    st.rerun()
+            with _scn[1]:
+                st.caption("Povuci JEDNOM na početku rada — povuku se porudžbine do sada, zabeleži se "
+                           "startno stanje izveštaja i dugme se zaključava. Kasnije za osvežavanje koristi "
+                           "dugme Ažuriraj iz admina gore (menja živi prikaz zona, ne dira start).")
+
+        if _ah_at_n:
+            st.caption("🔄 Poslednji put ažurirano iz admina: " + _dt_fmt(_ah_at_n)
+                       + ". Realni lager = lager sa preseka + sve što su naknadno poručili (posle "
+                       + _pk_ned_lbl + ").")
+
+        # Handler za povlačenje (start ili živo osvežavanje) — glavni refresh handler je posle return-a
+        _ned_pull_mode = st.session_state.pop("_req_ned_pull", None)
+        if _ned_pull_mode and not _zakljucan:
             _bez_n = [o["idk"] for o in objekti if not ((komfull.get(int(o["idk"]), {}) or {}).get("naziv"))]
             with st.spinner("Povlačim naknadne porudžbine iz admina za ceo sistem... može potrajati par minuta."):
                 if _bez_n:
@@ -3217,8 +3257,28 @@ def prikazi_administraciju():
                     sb_admin_hist_set(mesec_key, sistem, _hsave, _now().isoformat())
                 except Exception as _e:
                     st.warning("Povučeno, ali nije trajno sačuvano: " + str(_e))
-                st.success("✅ Povučeno — realni lager preračunat (lager + naknadne porudžbine posle "
-                           + _pk_ned_lbl + ").")
+                if _ned_pull_mode == "start":
+                    # Zabeleži STARTNO stanje izveštaja: broj objekata sa problemom na realnom lageru
+                    _cnt_prob = 0
+                    for o in objekti:
+                        _pm0 = _treb_posle_preseka(_hsave.get(int(o["idk"]), []) or [], _cut_hit) if _cut_hit else {}
+                        _has = False
+                        for s in o["lst"]:
+                            _lg0 = int(s.get('lager', 0) or 0) + int(_pm0.get(int(s.get('ida', -1)), 0) or 0)
+                            _pr0 = int(s.get('pred', 0) or 0)
+                            if _pr0 > 0 and _lg0 < _pr0 * _dani / 30.0:
+                                _has = True; break
+                        if _has:
+                            _cnt_prob += 1
+                    try:
+                        sb_nedeljni_start_set(mesec_key, sistem, {"kada": _now().strftime("%d.%m.%Y %H:%M"),
+                                                                  "n": len(objekti), "problem": _cnt_prob})
+                    except Exception as _e:
+                        st.warning("Start nije trajno sačuvan: " + str(_e))
+                    st.success("✅ Start zabeležen — povučene porudžbine do sada i zaključan start ("
+                               + str(_cnt_prob) + " objekata sa problemom).")
+                else:
+                    st.success("🔄 Osveženo iz admina — realni lager preračunat (start izveštaja ostaje isti).")
                 st.rerun()
 
         # --- Realni lager po objektu i detekcija problema ---
