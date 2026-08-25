@@ -243,6 +243,32 @@ def sb_nedeljni_prijava_set(mesec_key, sistem, idk, prijavljen, napomena="", ko=
         pass
 
 
+def sb_nedeljni_mail_set(mesec_key, sistem, to_email, ko="", poslato=False):
+    """Za sistemske sisteme: zapamti mejl nadležnog (glavni kontakt) i podatak o
+    poslednjem slanju. Čuva se u meta.nedeljni_mail = {to, at, ko}.
+    poslato=False samo pamti adresu; poslato=True beleži i vreme slanja."""
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    res = cli.table("porudzbine").select("podaci").eq("mesec", mesec_key).eq("sistem", sistem.strip()).limit(1).execute()
+    if not res.data:
+        raise RuntimeError("Nema objavljenog izveštaja za taj mesec/sistem.")
+    podaci = res.data[0].get("podaci") or {}
+    meta = podaci.get("meta") or {}
+    _m = dict(meta.get("nedeljni_mail") or {})
+    _m["to"] = (to_email or "").strip()
+    if poslato:
+        _m["at"] = _now().strftime("%d.%m.%Y %H:%M")
+        _m["ko"] = ko or ""
+    meta["nedeljni_mail"] = _m
+    podaci["meta"] = meta
+    cli.table("porudzbine").update({"podaci": podaci}).eq("mesec", mesec_key).eq("sistem", sistem.strip()).execute()
+    try:
+        sb_ucitaj.clear()
+    except Exception:
+        pass
+
+
 def sb_start_snapshot(mesec_key, sistem, snap):
     """Zabeleži „startni rezultat" (zone u trenutku prvog povlačenja porudžbina od 01.)
     u meta.start_zone. Jednom snimljeno — koristi se u PDF izveštaju kao START."""
@@ -1688,15 +1714,22 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
         _meta_s = podaci.get("meta") or {}
         # Sistemski/nedeljni sistem — u izveštaju samo problem + napomena (bez zona/trebovanja)
         if _meta_s.get("nedeljni"):
-            def _pa_pdf(lst):
+            _dani_s = int(_meta_s.get("nedeljni_dani", 7) or 7)
+            _perl_s = str(_dani_s) + " dana"
+            _cut_s = _admin_presek(_meta_s, mesec_key)
+            _ahist_s = (_meta_s.get("admin_hist") or {}) if isinstance(_meta_s, dict) else {}
+            def _pa_pdf(lst, idk):
+                _pm = _treb_posle_preseka(_ahist_s.get(str(int(idk)), []) or [], _cut_s) if _cut_s else {}
                 _o = []
                 for s in lst:
-                    _lg = int(s.get('lager', 0) or 0); _pr = int(s.get('pred', 0) or 0)
-                    _prag = _pr * 7.0 / 30.0
+                    _por = int(_pm.get(int(s.get('ida', -1)), 0) or 0)
+                    _lg = int(s.get('lager', 0) or 0) + _por   # realni lager
+                    _pr = int(s.get('pred', 0) or 0)
+                    _prag = _pr * _dani_s / 30.0
                     if _pr > 0 and _lg < _prag:
                         _o.append({"naziv": str(s.get('naziv', '')), "lager": _lg, "prag": int(round(_prag))})
                 return _o
-            _prob_pdf = {idk: _pa_pdf(lst) for idk, lst in po.items()}
+            _prob_pdf = {idk: _pa_pdf(lst, idk) for idk, lst in po.items()}
             _prob_pdf = {k: v for k, v in _prob_pdf.items() if v}
             _npb = len(_prob_pdf)
             _prijave = dict(_meta_s.get("nedeljni_prijave") or {})
@@ -1704,8 +1737,8 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
                 _kf_pdf = sb_komitenti_full()
             except Exception:
                 _kf_pdf = {}
-            _flow = [Paragraph(str(_sis) + "  (sistemski / nedeljni)", Hsys),
-                     Paragraph("Objekata sa problemom (artikal na 0 ili zaliha ispod 7-dnevne prodaje): <b>"
+            _flow = [Paragraph(str(_sis) + "  (sistemski · period " + _perl_s + ")", Hsys),
+                     Paragraph("Objekata sa problemom (0 lagera ili realni lager ispod prodaje za " + _perl_s + "): <b>"
                                + str(_npb) + "</b> od " + str(len(po)) + ".  Prijavljeno direktoru: <b>"
                                + str(len(_prijave)) + "</b>.", Nar),
                      Spacer(1, 3)]
@@ -1724,8 +1757,8 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
                 if _ki.get("email"): _kbits.append(str(_ki["email"]))
                 _kline = ("  ·  " + "  ·  ".join(_kbits)) if _kbits else ""
                 _any_prij = True
-                _artline = "; ".join((str(a["naziv"]) + " (lager " + str(a["lager"])
-                                      + ", za 7 dana ~" + str(a["prag"]) + ")") for a in _arts_p) or "—"
+                _artline = "; ".join((str(a["naziv"]) + " (realni lager " + str(a["lager"])
+                                      + ", za " + _perl_s + " ~" + str(a["prag"]) + ")") for a in _arts_p) or "—"
                 _naptxt = (_info.get("napomena", "") or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 _flow.append(Paragraph("• <b>" + _h_escape(str(_naz)) + "</b>" + _h_escape(_kline), Nar))
                 _flow.append(Paragraph("&nbsp;&nbsp;&nbsp;Problem: " + _h_escape(_artline), Nar))
@@ -2093,6 +2126,9 @@ def _nedeljni_prilog_pdf(payload):
     _art = list(payload.get("artikli", []))[:6]
     _primer = payload.get("primer")
     _posl = list(payload.get("poslednje", []))[:6]
+    _dani = int(payload.get("dani", 7) or 7)
+    _perl = str(_dani) + " dana"
+    _ned_hdr = "Ned. prodaja" if _dani == 7 else ("Prodaja / " + str(_dani) + "d")
 
     fig = _plt.figure(figsize=(8.27, 11.69), dpi=150)
     fig.patch.set_facecolor("white")
@@ -2111,18 +2147,18 @@ def _nedeljni_prilog_pdf(payload):
                   boxstyle="round,pad=0.01,rounding_size=0.02", facecolor=NAVY, edgecolor="none"))
     axh.text(0.02, 0.62, "PROBLEM SA LAGEROM — " + _sis.upper(), transform=axh.transAxes,
              color="white", fontsize=15, fontweight="bold", va="center")
-    axh.text(0.02, 0.26, "Objekti koji ne mogu da zadovolje potražnju ni za 7 dana",
+    axh.text(0.02, 0.26, "Objekti koji ne mogu da zadovolje potražnju ni za " + _perl,
              transform=axh.transAxes, color="#cfd8e3", fontsize=9.5, va="center")
-    axh.text(0.98, 0.5, "Nedeljni izveštaj\n" + _datum, transform=axh.transAxes,
+    axh.text(0.98, 0.5, "Sistemski izveštaj\n(period " + _perl + ")\n" + _datum, transform=axh.transAxes,
              color="white", fontsize=9, va="center", ha="right")
 
     # ----- KPI kartice -----
     axk = fig.add_subplot(gs[1, :]); axk.axis("off")
     kpis = [(str(_bp), (("od " + str(_bu) + " objekata\n") if _bu else "") + "sa problemom", RED),
-            ("~" + format(_ik, ",").replace(",", ".") + " kom", "procenjena izgubljena\nprodaja (7 dana)", ORANGE)]
+            ("~" + format(_ik, ",").replace(",", ".") + " kom", "procenjena izgubljena\nprodaja (" + _perl + ")", ORANGE)]
     if _ir:
-        kpis.append(("~" + str(int(round(_ir / 1000.0))) + "k RSD", "procenjena izgubljena\nvrednost (7 dana)", ORANGE))
-    kpis.append((("%.1f" % _pp) + " dana", "prosečna pokrivenost\nlagera (< 7)", NAVY))
+        kpis.append(("~" + str(int(round(_ir / 1000.0))) + "k RSD", "procenjena izgubljena\nvrednost (" + _perl + ")", ORANGE))
+    kpis.append((("%.1f" % _pp) + " dana", "prosečna pokrivenost\nlagera (< " + str(_dani) + ")", NAVY))
     _nk = len(kpis); _w = 1.0 / _nk
     for i, (big, small, col) in enumerate(kpis):
         x = i * _w
@@ -2143,8 +2179,8 @@ def _nedeljni_prilog_pdf(payload):
         yp = list(range(len(names)))
         axg = fig.add_subplot(gs[2, 0])
         axg.barh(yp, cover, color=cols, edgecolor="white")
-        axg.axvline(7, color=GREEN, linestyle="--", linewidth=1.4)
-        axg.text(7.1, (len(names) - 0.4) if names else 0, "cilj 7 dana", color=GREEN, fontsize=7.5, va="center")
+        axg.axvline(_dani, color=GREEN, linestyle="--", linewidth=1.4)
+        axg.text(_dani * 1.02, (len(names) - 0.4) if names else 0, "cilj " + _perl, color=GREEN, fontsize=7.5, va="center")
         axg.set_yticks(yp); axg.set_yticklabels(names, fontsize=7.5); axg.invert_yaxis()
         axg.set_xlabel("pokrivenost lagera (dana)", fontsize=8)
         axg.set_title("Koliko dugo lager pokriva prodaju", fontsize=9.5, fontweight="bold", loc="left")
@@ -2153,8 +2189,8 @@ def _nedeljni_prilog_pdf(payload):
         axg2 = fig.add_subplot(gs[2, 1])
         axg2.barh(yp, manjak, color=NAVY, edgecolor="white")
         axg2.set_yticks(yp); axg2.set_yticklabels([""] * len(names)); axg2.invert_yaxis()
-        axg2.set_xlabel("manjak za 7 dana (kom)", fontsize=8)
-        axg2.set_title("Koliko robe fali do pokrića 7 dana", fontsize=9.5, fontweight="bold", loc="left")
+        axg2.set_xlabel("manjak za " + _perl + " (kom)", fontsize=8)
+        axg2.set_title("Koliko robe fali do pokrića " + _perl, fontsize=9.5, fontweight="bold", loc="left")
         for s in ("top", "right"): axg2.spines[s].set_visible(False)
         for i, v in enumerate(manjak):
             axg2.text(v + max(manjak + [1]) * 0.02, i, str(v), va="center", fontsize=7.5, color=NAVY)
@@ -2165,7 +2201,7 @@ def _nedeljni_prilog_pdf(payload):
         axt = fig.add_subplot(gs[3, :]); axt.axis("off")
         axt.text(0.0, 1.02, "Kritične zalihe po artiklu", transform=axt.transAxes,
                  fontsize=10.5, fontweight="bold", color=NAVY, va="bottom")
-        col_labels = ["Artikal", "Lager", "Ned. prodaja", "Pokrivenost", "Manjak (7 dana)"]
+        col_labels = ["Artikal", "Lager", _ned_hdr, "Pokrivenost", "Manjak (" + _perl + ")"]
         cell_text = []; cell_colors = []
         for a in _art:
             _pk = float(a.get("pokriv", 0) or 0)
@@ -2219,7 +2255,7 @@ def _nedeljni_prilog_pdf(payload):
 
     # ----- podnožje -----
     axf = fig.add_subplot(gs[5, :]); axf.axis("off")
-    axf.text(0.5, 0.5, "Automatski generisano · VapeShop nedeljni izveštaj · "
+    axf.text(0.5, 0.5, "Automatski generisano · VapeShop sistemski izveštaj · "
              "podaci su procena na osnovu prodaje i realnog lagera",
              transform=axf.transAxes, fontsize=7, color=GREY, ha="center", va="center")
 
@@ -3112,10 +3148,12 @@ def prikazi_administraciju():
 
     # ===== Nedeljni/sistemski sistem: pojednostavljen prikaz =====
     if isinstance(meta, dict) and meta.get("nedeljni"):
+        _dani = int(meta.get("nedeljni_dani", 7) or 7)   # period pokrivenosti (7 = nedeljni, 45 = mesec i po...)
+        _per_lbl = (str(_dani) + " dana")
         st.markdown('<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:9px 14px;'
-                    'font-size:12.5px;color:#1e40af;margin:2px 0 14px;">📅 Sistemski (nedeljni) sistem — prikazani su samo '
-                    'objekti sa problemom: neki artikal na lageru 0 ili zaliha ispod 7-dnevne prodaje '
-                    '(gleda se REALNI lager = lager + naknadne porudžbine posle preseka).</div>',
+                    'font-size:12.5px;color:#1e40af;margin:2px 0 14px;">📅 Sistemski sistem (period: ' + _per_lbl
+                    + ') — prikazani su samo objekti sa problemom: realni lager ne pokriva prodaju za ' + _per_lbl
+                    + ' (realni lager = lager + naknadne porudžbine posle preseka).</div>',
                     unsafe_allow_html=True)
 
         # --- Start dugme: povuci naknadne porudžbine (posle preseka) pa preračunaj realni lager ---
@@ -3196,8 +3234,8 @@ def prikazi_administraciju():
                 _por = int(por_map.get(int(s.get('ida', -1)), 0) or 0)
                 _lg = int(s.get('lager', 0) or 0) + _por      # REALNI lager
                 _pr = int(s.get('pred', 0) or 0)
-                _prag = _pr * 7.0 / 30.0
-                if _pr > 0 and _lg < _prag:   # artikal koji se prodaje, a realni lager ispod 7 dana (uklj. 0)
+                _prag = _pr * _dani / 30.0
+                if _pr > 0 and _lg < _prag:   # artikal koji se prodaje, a realni lager ispod perioda (uklj. 0)
                     out.append({"ida": int(s.get('ida', -1)), "naziv": str(s.get('naziv', '')),
                                 "lager": _lg, "pred": _pr, "prag": int(round(_prag)),
                                 "manjak7": max(int(round(_prag)) - _lg, 0)})
@@ -3220,7 +3258,7 @@ def prikazi_administraciju():
         st.markdown('<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:6px;">'
                     '<div style="background:#fff7f7;border:1px solid #fecaca;border-radius:12px;padding:15px 18px;">'
                     '<div style="font-size:22px;font-weight:800;color:#dc2626;">' + str(len(_prob)) + '</div>'
-                    '<div style="font-size:12px;color:#9b6b6b;margin-top:3px;">Objekata sa problemom (0 lagera ili < 7 dana)</div></div>'
+                    '<div style="font-size:12px;color:#9b6b6b;margin-top:3px;">Objekata sa problemom (0 lagera ili < ' + _per_lbl + ')</div></div>'
                     '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:15px 18px;">'
                     '<div style="font-size:22px;font-weight:800;color:#b45309;">' + str(_n_prij) + '</div>'
                     '<div style="font-size:12px;color:#9a7b3a;margin-top:3px;">Prijavljeno direktoru</div></div>'
@@ -3231,14 +3269,14 @@ def prikazi_administraciju():
         if _sis_uk > 0:
             st.caption("U sistemu je ukupno " + str(_sis_uk) + " objekata; porudžbina je generisana za "
                        + str(len(objekti)) + " (ostali su imali dovoljno zaliha, pa nemaju porudžbinu). "
-                       "Objekata sa problemom (0 lagera ili ispod 7-dnevne prodaje): " + str(len(_prob)) + ".")
+                       "Objekata sa problemom (0 lagera ili ispod prodaje za " + _per_lbl + "): " + str(len(_prob)) + ".")
         else:
             st.caption("Napomena: prikazani broj su objekti kojima je generisana porudžbina. Objekti koji su imali "
                        "dovoljno zaliha u svemu se ne čuvaju u izveštaju. Za tačan ukupan broj objekata u sistemu, "
                        "ponovo objavi ovaj sistem (novi podatak se tada beleži).")
 
         if not _prob:
-            st.success("Nema objekata sa problemom — svi imaju dovoljno zaliha za 7 dana.")
+            st.success("Nema objekata sa problemom — svi imaju dovoljno zaliha za " + _per_lbl + ".")
             return
 
         st.markdown("<div style='margin:6px 0 8px;font-weight:700;font-size:14px;'>Objekti sa problemom "
@@ -3264,8 +3302,8 @@ def prikazi_administraciju():
                 _hdr += "   ·   ✅ prijavljeno"
             with st.expander(_hdr, expanded=False):
                 _adf_p = pd.DataFrame([{"Artikal": a["naziv"], "Realni lager": a["lager"],
-                                        "Predikcija (mes.)": a["pred"], "Za 7 dana (~)": a["prag"],
-                                        "Manjak (7 dana)": a.get("manjak7", 0)}
+                                        "Predikcija (mes.)": a["pred"], ("Za " + _per_lbl + " (~)"): a["prag"],
+                                        ("Manjak (" + _per_lbl + ")"): a.get("manjak7", 0)}
                                        for a in p["arts"]])
                 st.dataframe(_adf_p, hide_index=True, use_container_width=True)
                 _kb = []
@@ -3335,7 +3373,7 @@ def prikazi_administraciju():
                 _daily = a["pred"] / 30.0
                 _cov = (a["lager"] / _daily) if _daily > 0 else 0.0
                 _artrows.append({"naziv": a["naziv"], "lager": a["lager"],
-                                 "ned": int(round(a["pred"] * 7 / 30.0)), "pokriv": round(_cov, 1),
+                                 "ned": int(round(a["pred"] * _dani / 30.0)), "pokriv": round(_cov, 1),
                                  "manjak7": int(a.get("manjak7", 0) or 0)})
             _hh = st.session_state.get("hist_" + str(sistem) + "_" + str(_idk))
             _lst = (_hh or {}).get("lst") or []
@@ -3358,21 +3396,23 @@ def prikazi_administraciju():
                       "datum": _now().strftime("%d.%m.%Y."), "broj_problem": len(_prob),
                       "broj_ukupno": _uk_val, "izgub_kom": _izgub_kom, "izgub_rsd": None,
                       "prosek_pokriv": _prosek_n, "objekti": _objrows[:7], "artikli": _artrows[:6],
-                      "primer": _primer_best, "poslednje": _poslrows[:6]}
+                      "primer": _primer_best, "poslednje": _poslrows[:6], "dani": _dani}
 
         _mail_subj_n = "Problem sa lagerom — " + str(sistem) + " (" + _now().strftime("%d.%m.%Y.") + ")"
         _mail_body_n = ("Poštovani,\n\n"
                         "U prilogu se nalaze objekti koji imaju problem sa lagerom i ne mogu da "
-                        "zadovolje potražnju ni za 7 dana. Za svaki objekat je prikazano koliko dana "
+                        "zadovolje potražnju ni za " + _per_lbl + ". Za svaki objekat je prikazano koliko dana "
                         "lager pokriva prodaju, koliko robe nedostaje i kritične zalihe po artiklu.\n\n"
                         "Ukupno objekata sa problemom: " + str(len(_prob)) + ".\n\n"
                         "Molimo da se roba dopuni kako bi objekti mogli da zadrže kontinuitet prodaje.\n\n"
                         "Srdačan pozdrav")
 
-        st.text_input("Naslov mejla", value=_mail_subj_n,
-                      key="ned_mail_subj_" + str(sistem) + "_" + str(mesec_key))
-        st.text_area("Tekst mejla (kopiraj i pošalji glavnom kontaktu)", value=_mail_body_n, height=180,
-                     key="ned_mail_body_" + str(sistem) + "_" + str(mesec_key))
+        _subj_key = "ned_mail_subj_" + str(sistem) + "_" + str(mesec_key)
+        _body_key = "ned_mail_body_" + str(sistem) + "_" + str(mesec_key)
+        st.text_input("Naslov mejla", value=_mail_subj_n, key=_subj_key)
+        st.text_area("Tekst mejla (možeš da izmeniš pre slanja)", value=_mail_body_n, height=180, key=_body_key)
+
+        _pdf_bytes_n = None
         try:
             _pdf_bytes_n = _nedeljni_prilog_pdf(_payload_n)
             _dc1, _dc2 = st.columns([1.4, 3])
@@ -3387,6 +3427,50 @@ def prikazi_administraciju():
                            "grafikoni pokrivenosti, kritične zalihe po artiklu i poslednje trebovanje.")
         except Exception as _pe:
             st.error("Greška pri pravljenju priloga: " + str(_pe))
+
+        # --- Slanje mejla nadležnom (glavni kontakt) sa prilogom ---
+        _mail_meta = dict(meta.get("nedeljni_mail") or {}) if isinstance(meta, dict) else {}
+        _to_default = _mail_meta.get("to", "") or ""
+        _to_key = "ned_mail_to_" + str(sistem) + "_" + str(mesec_key)
+        st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+        _mc1, _mc2 = st.columns([2.2, 1.2])
+        with _mc1:
+            _to_val = st.text_input("Mejl nadležnog (glavni kontakt)", value=_to_default,
+                                    key=_to_key, placeholder="npr. nabavka@univerexport.rs",
+                                    disabled=_zakljucan)
+        with _mc2:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            _send_disabled = _zakljucan or not smtp_dostupan() or _pdf_bytes_n is None
+            if st.button("✉️ Pošalji mejl", key="ned_mail_send_" + str(sistem) + "_" + str(mesec_key),
+                         type="primary", use_container_width=True, disabled=_send_disabled):
+                _to_send = (st.session_state.get(_to_key, "") or "").strip()
+                _subj_send = st.session_state.get(_subj_key, _mail_subj_n)
+                _body_send = st.session_state.get(_body_key, _mail_body_n)
+                if not _to_send or "@" not in _to_send:
+                    st.error("Upiši ispravan mejl nadležnog.")
+                else:
+                    try:
+                        posalji_mejl_sa_prilogom(
+                            _to_send, _subj_send, _body_send, attach_bytes=_pdf_bytes_n,
+                            attach_filename="Prilog_" + str(sistem).replace(" ", "_") + "_" + mesec_key + ".pdf")
+                        try:
+                            sb_nedeljni_mail_set(mesec_key, sistem, _to_send,
+                                                 ko=st.session_state.get("admin_user", "Administracija"),
+                                                 poslato=True)
+                        except Exception:
+                            pass
+                        st.success("✅ Mejl poslat na " + _to_send + " (sa prilogom).")
+                        st.rerun()
+                    except Exception as _me:
+                        st.error("Slanje nije uspelo: " + str(_me))
+        if not smtp_dostupan():
+            st.caption("ℹ️ Slanje mejlova nije podešeno (SMTP u Secrets). Možeš da preuzmeš prilog i pošalješ ručno.")
+        elif _mail_meta.get("at"):
+            st.caption("📧 Poslednji put poslato: " + str(_mail_meta.get("at"))
+                       + (" · " + str(_mail_meta.get("ko")) if _mail_meta.get("ko") else "")
+                       + (" · " + str(_mail_meta.get("to")) if _mail_meta.get("to") else ""))
+        elif _to_default:
+            st.caption("Zapamćen mejl nadležnog: " + _to_default + ". Klikni Pošalji mejl da pošalješ sa prilogom.")
 
         if _zakljucan:
             st.caption("Izveštaj je predat/zaključan — prijave su zabeležene, izmene nisu moguće.")
@@ -5087,6 +5171,10 @@ def prikazi_direktore():
             # Sistemski/nedeljni sistem — prosleđuje se preko štiklice „Prijavi problem"
             _meta_d = _pod.get("meta") or {}
             if _meta_d.get("nedeljni"):
+                _dani_d = int(_meta_d.get("nedeljni_dani", 7) or 7)
+                _perl_d = str(_dani_d) + " dana"
+                _cut_d = _admin_presek(_meta_d, mesec_key)
+                _ahist_d = (_meta_d.get("admin_hist") or {}) if isinstance(_meta_d, dict) else {}
                 _prij_d = dict(_meta_d.get("nedeljni_prijave") or {})
                 for _idk, _info in _prij_d.items():
                     try:
@@ -5094,10 +5182,13 @@ def prikazi_direktore():
                     except Exception:
                         continue
                     _lst = _po.get(_ik) or []
+                    _pm_d = _treb_posle_preseka(_ahist_d.get(str(_ik), []) or [], _cut_d) if _cut_d else {}
                     _pa = []
                     for s in _lst:
-                        _lg = int(s.get('lager', 0) or 0); _pr = int(s.get('pred', 0) or 0)
-                        _prag = _pr * 7.0 / 30.0
+                        _por = int(_pm_d.get(int(s.get('ida', -1)), 0) or 0)
+                        _lg = int(s.get('lager', 0) or 0) + _por
+                        _pr = int(s.get('pred', 0) or 0)
+                        _prag = _pr * _dani_d / 30.0
                         if _pr > 0 and _lg < _prag:
                             _pa.append({"naziv": str(s.get('naziv', '')), "lager": _lg, "prag": int(round(_prag))})
                     _found += 1
@@ -5108,8 +5199,8 @@ def prikazi_direktore():
                     if _ki.get("email"): _cbits.append("✉️ " + _h_escape(str(_ki["email"])))
                     _cline = ("&nbsp;&nbsp;·&nbsp;&nbsp;".join(_cbits))
                     _artrows = "".join('<div style="font-size:12.5px;color:#4b5563;padding:2px 0;">• '
-                                       + _h_escape(a["naziv"]) + ' — <b>lager ' + str(a["lager"])
-                                       + '</b> (za 7 dana ~' + str(a["prag"]) + ')</div>' for a in _pa) or \
+                                       + _h_escape(a["naziv"]) + ' — <b>realni lager ' + str(a["lager"])
+                                       + '</b> (za ' + _perl_d + ' ~' + str(a["prag"]) + ')</div>' for a in _pa) or \
                                '<div style="font-size:12.5px;color:#9aa0ad;">—</div>'
                     _napd = (_info.get("napomena", "") or "")
                     _atd = _info.get("at", "")
@@ -6857,8 +6948,20 @@ with tab_obj:
                 _o_mes_key = st.selectbox("Mesec porudžbine", _mo_keys, index=_def_i,
                                           format_func=mesec_label, key="obj_mes_sel",
                                           help="Automatski je poslednji mesec iz fajla + 1, ali možeš da objaviš pod drugim mesecom (npr. Jul).")
-            _o_nedeljni = st.checkbox("Sistem trebuje nedeljno (sistemski) — pojednostavljen prikaz", value=False, key="obj_nedeljni",
-                                      help="Za sisteme koji trebuju npr. svakog ponedeljka i ne možemo da utičemo. Administracija vidi samo objekte sa problemom (artikal na 0 ili zaliha ispod 7-dnevne prodaje) i jedno polje Napomena.")
+            _o_nedeljni = st.checkbox("Sistemski sistem (trebuju u fiksnom periodu) — pojednostavljen prikaz", value=False, key="obj_nedeljni",
+                                      help="Za sisteme koji trebuju sami u fiksnom ritmu i ne možemo da utičemo. Administracija vidi samo objekte sa problemom (realni lager ispod prodaje za zadati period) i jedno polje Napomena.")
+            _o_sist_dani = 7
+            if _o_nedeljni:
+                _cpd = st.columns([1, 2])
+                with _cpd[0]:
+                    _o_sist_dani = st.number_input("Na koliko dana trebuju (period pokrivenosti)",
+                                                   min_value=1, max_value=120, value=7, step=1,
+                                                   key="obj_sist_dani",
+                                                   help="Npr. 7 = nedeljni, 14 = na dve nedelje, 30 = mesečni, 45 = mesec i po. "
+                                                        "Ne trebuju svi isto — ovde upiši koliko dana taj sistem pokriva jednim trebovanjem.")
+                with _cpd[1]:
+                    st.caption("Objekat je u problemu ako mu realni lager (lager + naknadne porudžbine) ne pokriva "
+                               "prodaju za " + str(int(_o_sist_dani)) + " dana. Prag = predikcija × (" + str(int(_o_sist_dani)) + " ÷ 30).")
             if not sb_dostupan():
                 st.info("Objava nije moguća dok Supabase nije podešen.")
             elif st.button("📤 Objavi za koleginice", use_container_width=True, key="obj_btn"):
@@ -6884,7 +6987,7 @@ with tab_obj:
                         except Exception:
                             _presek_iso = None
                         _stavke = stavke_iz_rezultata(_res, _eng)
-                        _payload = {"mesec_label": _mlbl2, "meta": {"pred_label": _eng.pred_label, "order_label": _eng.order_label, "min_lager": _eng.min_lager, "meseci": round(float(_o_mes), 1), "presek": _presek_iso, "nedeljni": bool(_o_nedeljni), "generisano": _now().strftime("%d.%m.%Y %H:%M"), "n_objekata": int(len({_s2['idk'] for _s2 in _stavke})), "n_sistem_ukupno": int(getattr(_eng, "num_komitenti", 0)), "ukupno_kom": int(sum(_s2['kol'] for _s2 in _stavke))}, "stavke": _stavke}
+                        _payload = {"mesec_label": _mlbl2, "meta": {"pred_label": _eng.pred_label, "order_label": _eng.order_label, "min_lager": _eng.min_lager, "meseci": round(float(_o_mes), 1), "presek": _presek_iso, "nedeljni": bool(_o_nedeljni), "nedeljni_dani": int(_o_sist_dani), "generisano": _now().strftime("%d.%m.%Y %H:%M"), "n_objekata": int(len({_s2['idk'] for _s2 in _stavke})), "n_sistem_ukupno": int(getattr(_eng, "num_komitenti", 0)), "ukupno_kom": int(sum(_s2['kol'] for _s2 in _stavke))}, "stavke": _stavke}
                         try:
                             _payload["direktor"] = direktor_blok(_eng, _res)
                         except Exception:
