@@ -316,9 +316,9 @@ def sb_load_obrada(mesec_key, sistem):
     if cli is None:
         return {}
     try:
-        res = cli.table("obrada").select("idk,reakcije,trebovali,trebovali_tip,njihova,napomena,reakcije_ko,azurirao").eq("mesec", mesec_key).eq("sistem", sistem).execute()
+        res = cli.table("obrada").select("idk,reakcije,trebovali,trebovali_tip,njihova,napomena,reakcije_ko,azurirao,dnevnik").eq("mesec", mesec_key).eq("sistem", sistem).execute()
     except Exception:
-        # kolone reakcije_ko/azurirao možda još ne postoje -> učitaj bez njih
+        # kolone reakcije_ko/azurirao/dnevnik možda još ne postoje -> učitaj bez njih
         try:
             res = cli.table("obrada").select("idk,reakcije,trebovali,trebovali_tip,njihova,napomena").eq("mesec", mesec_key).eq("sistem", sistem).execute()
         except Exception:
@@ -327,8 +327,74 @@ def sb_load_obrada(mesec_key, sistem):
     for r in (res.data or []):
         out[int(r["idk"])] = {"reakcije": r.get("reakcije") or [], "trebovali_tip": r.get("trebovali_tip") or "",
                               "njihova": r.get("njihova") or {}, "napomena": r.get("napomena") or "",
-                              "reakcije_ko": r.get("reakcije_ko") or {}, "azurirao": r.get("azurirao") or ""}
+                              "reakcije_ko": r.get("reakcije_ko") or {}, "azurirao": r.get("azurirao") or "",
+                              "dnevnik": r.get("dnevnik") or {}}
     return out
+
+
+def _dt_kratko(iso):
+    """ISO -> 'DD.MM.YYYY HH:MM' (ili original)."""
+    if not iso:
+        return ""
+    try:
+        return datetime.datetime.fromisoformat(str(iso)).strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return str(iso)
+
+
+def sb_obrada_log(mesec_key, sistem, idk, kind, ko=""):
+    """Zabeleži poziv ili mejl u dnevnik obrade (dnevnik.pozivi / dnevnik.mejlovi = lista {ko, at}).
+    Uz to upali odgovarajuću reakciju (Pozvala sam / Poslala sam mejl) da se vidi u pregledu.
+    kind: 'poziv' ili 'mejl'. Čuva postojeća polja (trebovanje, njihova, napomena)."""
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    try:
+        res = cli.table("obrada").select("reakcije,trebovali_tip,njihova,napomena,reakcije_ko,dnevnik").eq("mesec", mesec_key).eq("sistem", sistem).eq("idk", int(idk)).limit(1).execute()
+        _r = res.data[0] if res.data else {}
+    except Exception:
+        _r = {}
+    reakcije = list(_r.get("reakcije") or [])
+    reakcije_ko = dict(_r.get("reakcije_ko") or {})
+    dnevnik = dict(_r.get("dnevnik") or {})
+    _at = datetime.datetime.now().isoformat()
+    if kind == "poziv":
+        dnevnik.setdefault("pozivi", []).append({"ko": ko or "", "at": _at})
+        if "Pozvala sam" not in reakcije:
+            reakcije.append("Pozvala sam")
+        reakcije_ko["Pozvala sam"] = reakcije_ko.get("Pozvala sam") or (ko or "")
+    else:
+        dnevnik.setdefault("mejlovi", []).append({"ko": ko or "", "at": _at})
+        if "Poslala sam mejl" not in reakcije:
+            reakcije.append("Poslala sam mejl")
+        reakcije_ko["Poslala sam mejl"] = reakcije_ko.get("Poslala sam mejl") or (ko or "")
+    _row = {"mesec": mesec_key, "sistem": sistem, "idk": int(idk),
+            "reakcije": reakcije, "trebovali": bool(_r.get("trebovali_tip")),
+            "trebovali_tip": _r.get("trebovali_tip") or "", "njihova": _r.get("njihova") or {},
+            "napomena": _r.get("napomena") or "", "reakcije_ko": reakcije_ko, "dnevnik": dnevnik,
+            "azurirao": ko or "", "azurirano": _at}
+    try:
+        cli.table("obrada").upsert(_row, on_conflict="mesec,sistem,idk").execute()
+    except Exception:
+        for _c in ("dnevnik", "reakcije_ko", "azurirao"):
+            _row.pop(_c, None)
+        cli.table("obrada").upsert(_row, on_conflict="mesec,sistem,idk").execute()
+
+
+def _dnevnik_lista_html(dnevnik, kind):
+    """Sitni sivi kosi tekst: lista poziva/mejlova (ko + datum + vreme)."""
+    _arr = (dnevnik or {}).get("pozivi" if kind == "poziv" else "mejlovi") or []
+    if not _arr:
+        return ""
+    _rows = []
+    for _i, _e in enumerate(_arr, 1):
+        _ko = _ko_kratko(_e.get("ko", "")) or "?"
+        _kd = str(_e.get("ko", "")) or "?"
+        _tm = _dt_kratko(_e.get("at", ""))
+        _pref = (str(_i) + ". poziv — ") if kind == "poziv" else ""
+        _rows.append('<div style="font-size:11px;color:#9ca3af;font-style:italic;">' + _pref
+                     + _h_escape(_kd) + " · " + _h_escape(_tm) + "</div>")
+    return "".join(_rows)
 
 def sb_save_obrada(mesec_key, sistem, idk, reakcije, trebovali_tip, njihova=None, napomena="", reakcije_ko=None, azurirao=""):
     cli = _sb()
@@ -2506,6 +2572,8 @@ def prikazi_administraciju():
     button[data-testid="baseButton-primary"]{background:#7c3aed !important;border-color:#7c3aed !important;color:#fff !important;}
     /* dugmad za slanje u admin — jasno obojena, kompaktna */
     [class*="st-key-axn_"] button{background:#16a34a !important;border-color:#16a34a !important;color:#fff !important;font-weight:600 !important;font-size:13px !important;padding:7px 12px !important;border-radius:8px !important;box-shadow:none !important;}
+    [class*="st-key-callbtn_"] button{background:#16a34a !important;border-color:#16a34a !important;color:#fff !important;font-weight:700 !important;font-size:13.5px !important;padding:8px 14px !important;border-radius:9px !important;box-shadow:none !important;}
+    [class*="st-key-callbtn_"] button:hover{background:#128a3e !important;border-color:#128a3e !important;}
     [class*="st-key-axn_"] button:hover{background:#128a3e !important;border-color:#128a3e !important;}
     [class*="st-key-axj_"] button{background:#f59e0b !important;border-color:#f59e0b !important;color:#fff !important;font-weight:600 !important;font-size:13px !important;padding:7px 12px !important;border-radius:8px !important;box-shadow:none !important;}
     [class*="st-key-axj_"] button:hover{background:#d97706 !important;border-color:#d97706 !important;}
@@ -3022,6 +3090,21 @@ def prikazi_administraciju():
                 stat = "".join('<span class="stchip">' + _reak_short_ko(r, _rko) + '</span>' for r in reak)
             else:
                 stat = '<span class="stat">Nepregledano</span>'
+            # sitni sivi kosi tekst: ko + kada (poslednji poziv / mejl)
+            _dnv = v.get("dnevnik") or {}
+            _sub = []
+            _pz = _dnv.get("pozivi") or []
+            if _pz:
+                _lp = _pz[-1]
+                _sub.append("📞 " + str(len(_pz)) + "× · posl. " + _h_escape(_ko_kratko(_lp.get("ko", "")))
+                            + " " + _h_escape(_dt_kratko(_lp.get("at", ""))))
+            _mj = _dnv.get("mejlovi") or []
+            if _mj:
+                _lm = _mj[-1]
+                _sub.append("✉️ " + _h_escape(_ko_kratko(_lm.get("ko", ""))) + " " + _h_escape(_dt_kratko(_lm.get("at", ""))))
+            if _sub:
+                stat += ('<div style="font-size:10.5px;color:#9ca3af;font-style:italic;margin-top:2px;">'
+                         + "&nbsp;·&nbsp;".join(_sub) + '</div>')
             _rc = "row-red" if o["nivo"] == "crveno" else ("row-org" if o["nivo"] == "zuto" else "")
             # oznaka: da li je već trebovano posle 01. (samo za objekte čija je istorija učitana)
             _treb_mark = ""
@@ -3123,11 +3206,33 @@ def prikazi_administraciju():
         if _kbits:
             st.markdown('<div style="margin:-8px 0 10px;color:#6b7280;font-size:13px;">'
                         + "&nbsp;&nbsp;·&nbsp;&nbsp;".join(_kbits) + '</div>', unsafe_allow_html=True)
-        # Veliko dugme za poziv (na telefonu odmah zove; na laptopu kroz app za pozive)
+        # Dugme za poziv: beleži poziv (ko + vreme) pa pokreće pozivanje (Phone Link)
         if _tel_clean:
-            st.markdown('<a href="tel:' + _h_escape(_tel_clean) + '" style="display:inline-block;background:#16a34a;color:#fff;'
-                        'text-decoration:none;font-weight:700;font-size:13.5px;padding:8px 18px;border-radius:9px;margin:0 0 12px;">'
-                        '📞 Pozovi ' + _h_escape(_tel_raw) + '</a>', unsafe_allow_html=True)
+            _cbtn1, _cbtn2 = st.columns([1.6, 3])
+            with _cbtn1:
+                if st.button("📞 Pozovi " + _tel_raw, key="callbtn_" + str(sel_id), use_container_width=True):
+                    try:
+                        sb_obrada_log(mesec_key, sistem, sel_id, "poziv",
+                                      st.session_state.get("admin_user", "Administracija"))
+                    except Exception:
+                        pass
+                    st.session_state["_dial_" + str(sel_id)] = _tel_clean
+                    st.session_state.pop("r1_" + str(sel_id), None)  # osveži čekboks „Pozvala sam"
+                    st.rerun()
+            # Posle klika: pokreni pozivanje (Phone Link) + rezervni link ako se ne otvori samo
+            if st.session_state.get("_dial_" + str(sel_id)):
+                _dn = st.session_state.pop("_dial_" + str(sel_id))
+                components.html("<script>window.location.href='tel:" + _dn + "';</script>", height=0)
+                with _cbtn2:
+                    st.markdown('<a href="tel:' + _h_escape(_dn) + '" style="display:inline-block;background:#16a34a;'
+                                'color:#fff;text-decoration:none;font-weight:700;font-size:13px;padding:8px 16px;'
+                                'border-radius:9px;">📞 Ako se poziv ne otvori sam — klikni</a>', unsafe_allow_html=True)
+            # Dnevnik poziva (ko + kada), sitno sivo
+            _pozivi = (v.get("dnevnik") or {}).get("pozivi") or []
+            if _pozivi:
+                st.markdown('<div style="font-size:12px;color:#6b7280;font-weight:600;margin:2px 0 1px;">📞 Pozvano '
+                            + str(len(_pozivi)) + '× :</div>' + _dnevnik_lista_html(v.get("dnevnik") or {}, "poziv"),
+                            unsafe_allow_html=True)
 
         # --- Presek (1. u mesecu posle poslednjeg meseca podataka) + istorija iz admina ---
         import datetime as _dtp
@@ -3245,17 +3350,10 @@ def prikazi_administraciju():
                         _fname_mail = _fname if _exp_rows else (str(sel_id) + ".xlsx")
                         posalji_mejl_sa_prilogom(_mail_to, _subj, MEJL_TEKST_DEFAULT, _exp_xlsx, _fname_mail)
                         st.session_state[_sk_mail] = {"ok": True, "msg": "Poslato na " + _mail_to}
-                        # Auto: upali „Poslala sam mejl" i trajno sačuvaj status (bez klika na Sačuvaj)
+                        # Auto: zabeleži mejl u dnevnik (ko + vreme) + upali „Poslala sam mejl"
                         try:
                             _cur_u = st.session_state.get("admin_user", "Administracija")
-                            _react_now = list(v.get("reakcije") or [])
-                            if "Poslala sam mejl" not in _react_now:
-                                _react_now.append("Poslala sam mejl")
-                            _ko_now = dict(v.get("reakcije_ko") or {})
-                            _ko_now["Poslala sam mejl"] = _ko_now.get("Poslala sam mejl") or _cur_u
-                            sb_save_obrada(mesec_key, sistem, sel_id, _react_now, v.get("trebovali_tip", "") or "",
-                                           v.get("njihova") or {}, v.get("napomena", "") or "",
-                                           reakcije_ko=_ko_now, azurirao=_cur_u)
+                            sb_obrada_log(mesec_key, sistem, sel_id, "mejl", _cur_u)
                             st.session_state.pop("r2_" + str(sel_id), None)  # da se čekboks osveži na True
                         except Exception:
                             pass
@@ -3268,11 +3366,13 @@ def prikazi_administraciju():
                     st.caption("Objekat nema email u šifarniku komitenata.")
                 elif not _exp_rows:
                     st.caption("Nema dodatne porudžbine za slanje.")
-                # Trajna zelena oznaka (iz baze) — ostaje i kad se izađe iz objekta / relogin
+                # Trajna zelena oznaka (iz baze) + sitni sivi dnevnik mejlova (ko + kada)
+                _mejlovi = (v.get("dnevnik") or {}).get("mejlovi") or []
                 if "Poslala sam mejl" in (v.get("reakcije") or []):
-                    _ko_m = (v.get("reakcije_ko") or {}).get("Poslala sam mejl", "")
-                    st.success("✅ Mejl je poslat objektu" + ((" (" + str(_ko_m) + ")") if _ko_m else "")
-                               + ((" · " + _mail_to) if _mail_to else "") + ".")
+                    st.success("✅ Mejl je poslat objektu" + ((" · " + _mail_to) if _mail_to else "") + ".")
+                    _mhtml = _dnevnik_lista_html(v.get("dnevnik") or {}, "mejl")
+                    if _mhtml:
+                        st.markdown('<div style="margin:-4px 0 4px;">' + _mhtml + '</div>', unsafe_allow_html=True)
                 _mres = st.session_state.get(_sk_mail)
                 if _mres and not _mres.get("ok"):
                     st.error("❌ " + _mres["msg"])
@@ -3579,17 +3679,9 @@ def prikazi_administraciju():
                     posalji_mejl_sa_prilogom(_bemail2, _bsubj2, MEJL_TEKST_DEFAULT, _bxlsx2, _bfname2)
                     st.session_state[_bsk2] = {"ok": True, "msg": "Poslato na " + _bemail2}
                     _n_ok += 1
-                    # Auto: upali „Poslala sam mejl" i trajno sačuvaj (isto kao pojedinačno slanje)
+                    # Auto: zabeleži mejl u dnevnik (ko + vreme) + upali „Poslala sam mejl"
                     try:
-                        _bobr2 = obrada_map.get(_bidk2, {}) or {}
-                        _react2 = list(_bobr2.get("reakcije") or [])
-                        if "Poslala sam mejl" not in _react2:
-                            _react2.append("Poslala sam mejl")
-                        _ko2 = dict(_bobr2.get("reakcije_ko") or {})
-                        _ko2["Poslala sam mejl"] = _ko2.get("Poslala sam mejl") or _cur_u
-                        sb_save_obrada(mesec_key, sistem, _bidk2, _react2, _bobr2.get("trebovali_tip", "") or "",
-                                       _bobr2.get("njihova") or {}, _bobr2.get("napomena", "") or "",
-                                       reakcije_ko=_ko2, azurirao=_cur_u)
+                        sb_obrada_log(mesec_key, sistem, _bidk2, "mejl", _cur_u)
                     except Exception:
                         pass
                 except Exception as _be:
