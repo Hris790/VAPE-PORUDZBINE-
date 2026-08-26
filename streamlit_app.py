@@ -3163,6 +3163,11 @@ def prikazi_administraciju():
                     + ' (realni lager = lager + naknadne porudžbine posle preseka).</div>',
                     unsafe_allow_html=True)
 
+        if not (meta.get("mesec_nazivi")):
+            st.warning("⚠️ Ovaj sistem je objavljen pre nadogradnje, pa u prilogu (PDF) NEMA grafika prodaje "
+                       "u primeru. Da bi se primer sa grafikom pojavio, analitičar treba JEDNOM ponovo da "
+                       "objavi ovaj sistem (istim Excel fajlom) — tada se upiše mesečna prodaja po artiklu.")
+
         _pk_ned = _admin_presek(meta, mesec_key)
         _pk_ned_lbl = _pk_ned.strftime("%d.%m.") if _pk_ned else "01."
         _ah_at_n = meta.get("admin_hist_at") if isinstance(meta, dict) else None
@@ -3393,41 +3398,45 @@ def prikazi_administraciju():
         st.caption("Ovi objekti se ne zovu pojedinačno — pošalji jedan mejl glavnom kontaktu, "
                    "a u prilogu su svi problematični objekti (predikcija, izgubljena prodaja, kritične zalihe).")
 
-        # imena objekata + ključni brojevi + primer (artikal na 0 sa najvećom prodajom)
+        # imena objekata + ključni brojevi + primer (artikal sa najvećom prodajom, prvenstveno na lageru 0)
         _imena = []
         _art_na_nuli = 0
         _obj_sa_nulom = 0
         _izgub7 = 0
-        _primer_pl = None
-        _primer_score = -1
         _mes_naz = list(meta.get("mesec_nazivi", []) or []) if isinstance(meta, dict) else []
+        _cand0 = None; _cand0_sc = -1       # kandidati sa lagerom 0
+        _candA = None; _candA_sc = -1       # svi problem artikli (fallback)
+        _ima_serije = False
         for p in _prob:
             _idk = int(p["idk"])
             _nz = (komfull.get(_idk, {}) or {}).get("naziv", "") or ("ID " + str(_idk))
             _nz_s = _nz.replace(str(sistem), "").strip(" -—") or _nz
             _imena.append(_nz_s)
             _ima_nulu = False
+            # mapa ida -> mesečna prodaja za ovaj objekat
+            _ser_map = {}
+            for s in (p.get("lst") or []):
+                _ser_map[int(s.get("ida", -1))] = [int(x or 0) for x in (s.get("prodaja_mesecno") or [])]
             for a in p["arts"]:
                 _izgub7 += int(a.get("manjak7", 0) or 0)
-                if int(a.get("lager", 0) or 0) <= 0:
+                _lg = int(a.get("lager", 0) or 0)
+                if _lg <= 0:
                     _art_na_nuli += 1
                     _ima_nulu = True
-                # primer = artikal na 0 sa najvećom mesečnom prodajom (predikcijom)
                 _pr = int(a.get("pred", 0) or 0)
-                if int(a.get("lager", 0) or 0) <= 0 and _pr > _primer_score:
-                    _ser = []
-                    for s in (p.get("lst") or []):
-                        if int(s.get("ida", -1)) == int(a.get("ida", -2)):
-                            _ser = [int(x or 0) for x in (s.get("prodaja_mesecno") or [])]
-                            break
-                    if _ser and sum(_ser) > 0:
-                        _primer_score = _pr
-                        _primer_pl = {"obj": _nz_s, "art": a["naziv"], "meseci": _mes_naz,
-                                      "prodaja": _ser, "ned": int(round(_pr * 7 / 30.0)),
-                                      "lager": int(a.get("lager", 0) or 0),
-                                      "pred7": int(round(_pr * _dani / 30.0))}
+                _ser = _ser_map.get(int(a.get("ida", -2)), [])
+                if _ser and sum(_ser) > 0:
+                    _ima_serije = True
+                    _pl = {"obj": _nz_s, "art": a["naziv"], "meseci": _mes_naz, "prodaja": _ser,
+                           "ned": int(round(_pr * 7 / 30.0)), "lager": _lg,
+                           "pred7": int(round(_pr * _dani / 30.0))}
+                    if _pr > _candA_sc:
+                        _candA_sc = _pr; _candA = _pl
+                    if _lg <= 0 and _pr > _cand0_sc:
+                        _cand0_sc = _pr; _cand0 = _pl
             if _ima_nulu:
                 _obj_sa_nulom += 1
+        _primer_pl = _cand0 or _candA   # prvo artikal na 0, ako ga nema — najgori sa prodajom
 
         # datum lagera = poslednji dan meseca pre preseka; dodatne do = danas
         _lager_datum = ""
@@ -3755,21 +3764,20 @@ def prikazi_administraciju():
                 "p3_ko": _koik(_pz[2] if len(_pz) >= 3 else None),
                 "zavrseno": _zav,
             })
+            # Prikaz u listi: samo koliko puta je zvala i da li je poslat mejl.
+            # (ko je i kada — ostaje u Excel izvozu i u detaljnoj kartici.)
             if reak:
-                stat = "".join('<span class="stchip">' + _reak_short_ko(r, _rko) + '</span>' for r in reak)
+                _chips = []
+                for r in reak:
+                    if r == "Pozvala sam":
+                        _chips.append("📞 Pozvala" + ((" " + str(len(_pz)) + "×") if _pz else ""))
+                    elif r == "Poslala sam mejl":
+                        _chips.append("✉️ Mejl")
+                    else:
+                        _chips.append(_reak_short(r))
+                stat = "".join('<span class="stchip">' + _h_escape(c) + '</span>' for c in _chips)
             else:
                 stat = '<span class="stat">Nepregledano</span>'
-            _sub = []
-            if _pz:
-                _lp = _pz[-1]
-                _sub.append("📞 " + str(len(_pz)) + "× · posl. " + _h_escape(_ko_kratko(_lp.get("ko", "")))
-                            + " " + _h_escape(_dt_kratko(_lp.get("at", ""))))
-            if _mj:
-                _lm = _mj[-1]
-                _sub.append("✉️ " + _h_escape(_ko_kratko(_lm.get("ko", ""))) + " " + _h_escape(_dt_kratko(_lm.get("at", ""))))
-            if _sub:
-                stat += ('<div style="font-size:10.5px;color:#9ca3af;font-style:italic;margin-top:2px;">'
-                         + "&nbsp;·&nbsp;".join(_sub) + '</div>')
             _rc = "row-red" if o["nivo"] == "crveno" else ("row-org" if o["nivo"] == "zuto" else "")
             _treb_mark = ""
             _hf = st.session_state.get("hist_" + str(sistem) + "_" + str(o["idk"]))
@@ -4031,10 +4039,14 @@ def prikazi_administraciju():
                 _mail_to = (_kinfo.get("email") or "").strip()
                 _sk_mail = "mailsent_" + str(sistem) + "_" + str(sel_id)
                 _can_mail = bool(_exp_xlsx) and bool(_mail_to) and smtp_dostupan() and not _zakljucan
-                if st.button("📧 Prosledi mejl", key="sendmail_" + str(sel_id),
-                             use_container_width=True, disabled=not _can_mail):
+                _vec_poslat = "Poslala sam mejl" in (v.get("reakcije") or [])
+                _ck_mail = "_mailconf_" + str(sistem) + "_" + str(sel_id)
+                _dk_mail = "_dosend_" + str(sistem) + "_" + str(sel_id)
+
+                def _posalji_mejl_objektu():
                     try:
-                        _subj = "Porudžbina · " + str(_naziv_kom or ("ID " + str(sel_id))) + " · " + str(_sel_lbl)
+                        _subj = ("VAPE SHOP - " + str(_naziv_kom or ("ID " + str(sel_id)))
+                                 + " - PORUDŽBINA - " + _now().strftime("%d.%m.%Y."))
                         _fname_mail = _fname if _exp_rows else (str(sel_id) + ".xlsx")
                         posalji_mejl_sa_prilogom(_mail_to, _subj, MEJL_TEKST_DEFAULT, _exp_xlsx, _fname_mail)
                         st.session_state[_sk_mail] = {"ok": True, "msg": "Poslato na " + _mail_to}
@@ -4047,7 +4059,51 @@ def prikazi_administraciju():
                             pass
                     except Exception as _em:
                         st.session_state[_sk_mail] = {"ok": False, "msg": str(_em)}
+
+                if st.button("📧 Prosledi mejl", key="sendmail_" + str(sel_id),
+                             use_container_width=True, disabled=not _can_mail):
+                    if _vec_poslat:
+                        st.session_state[_ck_mail] = True      # traži potvrdu (već je poslat)
+                    else:
+                        st.session_state[_dk_mail] = True
                     st.rerun()
+
+                if st.session_state.pop(_dk_mail, False):
+                    _posalji_mejl_objektu()
+                    st.rerun()
+
+                # Upozorenje preko celog ekrana kad se mejl šalje PONOVO
+                if st.session_state.get(_ck_mail):
+                    _mejlovi_p = (v.get("dnevnik") or {}).get("mejlovi") or []
+                    _last_m = _mejlovi_p[-1] if _mejlovi_p else None
+                    _kada_m = ((" (" + _ko_kratko(_last_m.get("ko", "")) + " · "
+                                + _dt_kratko(_last_m.get("at", "")) + ")") if _last_m else "")
+
+                    def _confirm_body():
+                        st.warning("⚠️ Ovom objektu je mejl VEĆ poslat" + _kada_m + ".")
+                        st.markdown("**Da li ste sigurni da želite da pošaljete ponovo?**")
+                        st.caption(str(_naziv_kom or ("ID " + str(sel_id))) + " · " + str(_mail_to))
+                        _q1, _q2 = st.columns(2)
+                        with _q1:
+                            if st.button("Da, pošalji ponovo", type="primary", use_container_width=True,
+                                         key="mconf_yes_" + str(sel_id)):
+                                st.session_state.pop(_ck_mail, None)
+                                st.session_state[_dk_mail] = True
+                                st.rerun()
+                        with _q2:
+                            if st.button("Otkaži", use_container_width=True,
+                                         key="mconf_no_" + str(sel_id)):
+                                st.session_state.pop(_ck_mail, None)
+                                st.rerun()
+
+                    _dlg = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
+                    if _dlg:
+                        try:
+                            _dlg("Mejl je već poslat")(_confirm_body)()
+                        except Exception:
+                            _confirm_body()
+                    else:
+                        _confirm_body()
                 if not smtp_dostupan():
                     st.caption("✉️ Slanje mejla nije podešeno u Secrets.")
                 elif not _mail_to:
@@ -4268,21 +4324,17 @@ def prikazi_administraciju():
                     '<div style="font-size:20px;font-weight:800;color:#b45309;">' + str(sum(1 for r in _bulk_rows if not r["_email_ok"])) + '</div>'
                     '<div style="font-size:11.5px;color:#9a7b3a;">Bez emaila</div></div></div>',
                     unsafe_allow_html=True)
-        # Filteri
-        _fc1, _fc2, _fc3 = st.columns([1, 1, 2])
+        # Filteri (objekti kojima je mejl VEĆ poslat se ne prikazuju — ne mogu se ponovo slati grupno)
+        _fc1, _fc3 = st.columns([1, 3])
         with _fc1:
             _f_zona = st.selectbox("Zona", ["Sve zone", "🔴 Hitno", "🟡 Iskontrolisati", "🟢 Dobra"], key="bulk_f_zona")
-        with _fc2:
-            _f_mail = st.selectbox("Status mejla", ["Svi", "Nije poslat", "Poslat"], key="bulk_f_mail")
         with _fc3:
             _f_q = st.text_input("Pretraga (naziv ili email)", value="", key="bulk_f_q", placeholder="npr. Novi Sad ili mp123@…")
         _zmap = {"🔴 Hitno": "crveno", "🟡 Iskontrolisati": "zuto", "🟢 Dobra": "zeleno"}
         def _match(r):
+            if r["mail_sent"]:
+                return False   # već poslat mejl (grupno ili pojedinačno) — ne nudi se ponovo
             if _f_zona in _zmap and r["_zona"] != _zmap[_f_zona]:
-                return False
-            if _f_mail == "Poslat" and not r["mail_sent"]:
-                return False
-            if _f_mail == "Nije poslat" and r["mail_sent"]:
                 return False
             if _f_q.strip():
                 _qq = _f_q.strip().lower()
@@ -4290,8 +4342,11 @@ def prikazi_administraciju():
                     return False
             return True
         _view_rows = [r for r in _bulk_rows if _match(r)]
+        if _n_sent_total:
+            st.caption("ℹ️ " + str(_n_sent_total) + " objekata je već dobilo mejl (grupno ili pojedinačno) — "
+                       "oni se ne prikazuju ovde. Ponovno slanje je moguće samo pojedinačno, sa kartice objekta.")
         # Kad se filter promeni — poništi izbor (da izbor uvek prati ono što je trenutno prikazano)
-        _sig = str(_f_zona) + "|" + str(_f_mail) + "|" + _f_q.strip().lower()
+        _sig = str(_f_zona) + "|" + _f_q.strip().lower()
         _sigk = "bulk_sig_" + str(sistem) + "_" + str(mesec_key)
         if st.session_state.get(_sigk) != _sig:
             st.session_state[_sigk] = _sig
@@ -4381,7 +4436,8 @@ def prikazi_administraciju():
                     _mpm2 = _refn2.search(r'MP\s*\d+', str(_bnaziv2 or ""), _refn2.IGNORECASE)
                     _mp2 = _mpm2.group(0).upper().replace(" ", "") if _mpm2 else str(_bidk2)
                     _bfname2 = ((_safe_sis2 + " ") if _safe_sis2 else "") + _mp2 + ".xlsx"
-                    _bsubj2 = "Porudžbina · " + str(_bnaziv2) + " · " + str(_sel_lbl)
+                    _bsubj2 = ("VAPE SHOP - " + str(_bnaziv2) + " - PORUDŽBINA - "
+                               + _now().strftime("%d.%m.%Y."))
                     posalji_mejl_sa_prilogom(_bemail2, _bsubj2, MEJL_TEKST_DEFAULT, _bxlsx2, _bfname2)
                     st.session_state[_bsk2] = {"ok": True, "msg": "Poslato na " + _bemail2}
                     _n_ok += 1
