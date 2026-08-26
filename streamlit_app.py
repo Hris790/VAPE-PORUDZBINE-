@@ -292,6 +292,144 @@ def sb_nedeljni_start_set(mesec_key, sistem, snap):
         pass
 
 
+# =====================================================================
+# KOMERCIJALA — rute i kontrola (tabele: rute_dan, ruta_objekti)
+# =====================================================================
+def sb_ruta_dan_get(datum, ko):
+    """Vrati {start_at, kraj_at, napomena} za dan rute (ili prazno)."""
+    cli = _sb()
+    if cli is None:
+        return {}
+    try:
+        res = cli.table("rute_dan").select("*").eq("datum", str(datum)).eq("ko", ko).limit(1).execute()
+        return (res.data or [{}])[0] or {}
+    except Exception:
+        return {}
+
+
+def sb_ruta_dan_set(datum, ko, start_at=None, kraj_at=None, napomena=None):
+    """Upiši start/kraj rute. Šalju se samo polja koja nisu None."""
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    _p = {"datum": str(datum), "ko": ko}
+    if start_at is not None:
+        _p["start_at"] = start_at
+    if kraj_at is not None:
+        _p["kraj_at"] = kraj_at
+    if napomena is not None:
+        _p["napomena"] = napomena
+    cli.table("rute_dan").upsert(_p, on_conflict="datum,ko").execute()
+
+
+def sb_ruta_objekti(datum, ko):
+    """Svi objekti u ruti za dati dan i komercijalistu."""
+    cli = _sb()
+    if cli is None:
+        return []
+    try:
+        res = cli.table("ruta_objekti").select("*").eq("datum", str(datum)).eq("ko", ko).execute()
+        return list(res.data or [])
+    except Exception:
+        return []
+
+
+def sb_ruta_obj_get(datum, ko, idk):
+    cli = _sb()
+    if cli is None:
+        return {}
+    try:
+        res = (cli.table("ruta_objekti").select("*").eq("datum", str(datum))
+               .eq("ko", ko).eq("idk", int(idk)).limit(1).execute())
+        return (res.data or [{}])[0] or {}
+    except Exception:
+        return {}
+
+
+def sb_ruta_obj_save(datum, ko, idk, **polja):
+    """Upsert jednog objekta u ruti. Šalju se samo prosleđena polja."""
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    _p = {"datum": str(datum), "ko": ko, "idk": int(idk)}
+    for _k, _v in (polja or {}).items():
+        if _v is not None:
+            _p[_k] = _v
+    cli.table("ruta_objekti").upsert(_p, on_conflict="datum,ko,idk").execute()
+
+
+def sb_ruta_obj_del(datum, ko, idk):
+    cli = _sb()
+    if cli is None:
+        return
+    try:
+        (cli.table("ruta_objekti").delete().eq("datum", str(datum))
+         .eq("ko", ko).eq("idk", int(idk)).execute())
+    except Exception:
+        pass
+
+
+def sb_ruta_mesec(mesec_key):
+    """Svi obilasci u mesecu (svi komercijalisti) — za karticu Kontrola.
+    Vrati {idk: red_sa_najnovijim_obilaskom}."""
+    cli = _sb()
+    if cli is None:
+        return {}
+    try:
+        res = cli.table("ruta_objekti").select("*").eq("mesec", str(mesec_key)).execute()
+    except Exception:
+        return {}
+    out = {}
+    for r in (res.data or []):
+        _i = int(r.get("idk") or 0)
+        _prev = out.get(_i)
+        # zadrži najnoviji obilazak (ili onaj koji je završen)
+        if (_prev is None) or (str(r.get("datum") or "") > str(_prev.get("datum") or "")):
+            out[_i] = r
+    return out
+
+
+def sb_ruta_slika_upload(file_bytes, filename, content_type="image/jpeg"):
+    """Otpremi sliku u Supabase Storage bucket 'ruta-slike' i vrati javni URL."""
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    _path = _now().strftime("%Y/%m/") + filename
+    try:
+        cli.storage.from_("ruta-slike").upload(
+            _path, file_bytes, {"content-type": content_type, "upsert": "true"})
+    except Exception as _e:
+        # ako fajl već postoji, probaj update
+        try:
+            cli.storage.from_("ruta-slike").update(
+                _path, file_bytes, {"content-type": content_type})
+        except Exception:
+            raise RuntimeError("Slanje slike nije uspelo: " + str(_e))
+    try:
+        return cli.storage.from_("ruta-slike").get_public_url(_path)
+    except Exception:
+        return ""
+
+
+def _smanji_sliku(file_bytes, max_px=1400, kvalitet=78):
+    """Smanji sliku pre slanja (da ne troši prostor). Ako PIL nije dostupan — vrati original."""
+    try:
+        from PIL import Image as _PILImage
+        import io as _io
+        _im = _PILImage.open(_io.BytesIO(file_bytes))
+        if _im.mode in ("RGBA", "P", "LA"):
+            _im = _im.convert("RGB")
+        _w, _h = _im.size
+        if max(_w, _h) > max_px:
+            _sc = max_px / float(max(_w, _h))
+            _im = _im.resize((int(_w * _sc), int(_h * _sc)), _PILImage.LANCZOS)
+        _b = _io.BytesIO()
+        _im.save(_b, format="JPEG", quality=kvalitet, optimize=True)
+        return _b.getvalue()
+    except Exception:
+        return file_bytes
+
+
 def sb_start_snapshot(mesec_key, sistem, snap):
     """Zabeleži „startni rezultat" (zone u trenutku prvog povlačenja porudžbina od 01.)
     u meta.start_zone. Jednom snimljeno — koristi se u PDF izveštaju kao START."""
@@ -421,6 +559,13 @@ def sb_obrada_log(mesec_key, sistem, idk, kind, ko=""):
         if "Pozvala sam" not in reakcije:
             reakcije.append("Pozvala sam")
         reakcije_ko["Pozvala sam"] = reakcije_ko.get("Pozvala sam") or (ko or "")
+    elif kind == "komercijala":
+        # prosleđeno komercijali — pamti se vreme da bi se videlo da li je objekat
+        # trebovao POSLE prosleđivanja
+        dnevnik.setdefault("komercijala", []).append({"ko": ko or "", "at": _at})
+        if "Obavestila direktorku" not in reakcije:
+            reakcije.append("Obavestila direktorku")
+        reakcije_ko["Obavestila direktorku"] = reakcije_ko.get("Obavestila direktorku") or (ko or "")
     else:
         dnevnik.setdefault("mejlovi", []).append({"ko": ko or "", "at": _at})
         if "Poslala sam mejl" not in reakcije:
@@ -531,7 +676,7 @@ def sb_rokovi_all():
     if cli is None:
         return {}
     try:
-        res = cli.table("rokovi").select("mesec,rok_admin,rok_sistemi,rok_prodaja,rok_syx,rok_potraz,napomena").execute()
+        res = cli.table("rokovi").select("mesec,rok_admin,rok_sistemi,rok_prodaja,rok_syx,rok_potraz,rok_kontrola,napomena").execute()
         return {r["mesec"]: r for r in (res.data or [])}
     except Exception:
         # kolone rok_syx/rok_potraz možda još ne postoje -> učitaj bez njih
@@ -547,14 +692,14 @@ def sb_rokovi_get(mesec_key):
     except Exception:
         return {}
 
-def sb_rokovi_set(mesec_key, rok_admin, rok_sistemi, rok_prodaja, napomena, rok_syx=None, rok_potraz=None):
+def sb_rokovi_set(mesec_key, rok_admin, rok_sistemi, rok_prodaja, napomena, rok_syx=None, rok_potraz=None, rok_kontrola=None):
     cli = _sb()
     if cli is None:
         raise RuntimeError("Supabase nije podešen.")
     payload = {"mesec": mesec_key,
                "rok_admin": rok_admin or None, "rok_sistemi": rok_sistemi or None,
                "rok_prodaja": rok_prodaja or None, "rok_syx": rok_syx or None,
-               "rok_potraz": rok_potraz or None, "napomena": napomena or "",
+               "rok_potraz": rok_potraz or None, "rok_kontrola": rok_kontrola or None, "napomena": napomena or "",
                "azurirano": _now().isoformat()}
     try:
         cli.table("rokovi").upsert(payload, on_conflict="mesec").execute()
@@ -562,6 +707,7 @@ def sb_rokovi_set(mesec_key, rok_admin, rok_sistemi, rok_prodaja, napomena, rok_
         # fallback ako rok_syx/rok_potraz kolone ne postoje
         payload.pop("rok_syx", None)
         payload.pop("rok_potraz", None)
+        payload.pop("rok_kontrola", None)
         cli.table("rokovi").upsert(payload, on_conflict="mesec").execute()
     try:
         sb_rokovi_all.clear()
@@ -4299,6 +4445,12 @@ def prikazi_administraciju():
                             _new_ko[_rk] = _prev_ko.get(_rk) or _cur_user
                         sb_save_obrada(mesec_key, sistem, sel_id, react, _tip_val, _njihova_new, _nap,
                                        reakcije_ko=_new_ko, azurirao=_cur_user)
+                        # ako je TEK SADA prosleđeno komercijali — zabeleži vreme prosleđivanja
+                        if ("Obavestila direktorku" in react) and ("Obavestila direktorku" not in _loaded):
+                            try:
+                                sb_obrada_log(mesec_key, sistem, sel_id, "komercijala", _cur_user)
+                            except Exception:
+                                pass
                         st.success("Sačuvano ✓")
                         st.rerun()
                     except Exception as _e:
@@ -4544,9 +4696,8 @@ def _direktor_blok_iz_prodaje(sistem, sales):
 
 
 def prikazi_komercijalu():
-    """Pregled za komercijalu (Komercijala 1 / Komercijala 2).
-    Prva verzija — prikazuje objekte koje je administracija prosledila komercijali.
-    Dizajn se dorađuje po dogovoru."""
+    """Pregled za komercijalu (Komercijala 1 / Komercijala 2):
+    1) Moja ruta (dan)  2) Objekat — popis i porudžbina  3) Kontrola od administracije."""
     st.set_page_config(page_title="VAPE — Komercijala", page_icon="🤝",
                        layout="wide", initial_sidebar_state="collapsed")
     st.markdown("""<style>
@@ -4554,9 +4705,17 @@ def prikazi_komercijalu():
     section[data-testid="stSidebar"]{display:none !important;}
     header[data-testid="stHeader"]{display:none !important;}
     .stApp{background:#f4f1fb !important;font-family:'Inter',sans-serif;}
-    .block-container{max-width:1180px !important;padding-top:26px !important;}
+    .block-container{max-width:1180px !important;padding-top:22px !important;}
     [class*="st-key-kom_odjava"] button{font-size:11px !important;padding:4px 9px !important;border-radius:7px !important;
         min-height:0 !important;background:#fff !important;border:1px solid #e5e7eb !important;color:#6b7280 !important;font-weight:600 !important;}
+    .kom-card{background:#fff;border:1px solid #efeaf7;border-radius:14px;padding:14px 18px;margin-bottom:11px;
+        box-shadow:0 2px 12px rgba(80,40,140,.05);}
+    .kom-nm{font-weight:700;font-size:14.5px;}
+    .kom-ad{font-size:12px;color:#9aa0ad;margin-top:2px;}
+    .kchip{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11.5px;font-weight:700;}
+    .k-red{background:#fee2e2;color:#991b1b;} .k-org{background:#ffedd5;color:#9a3412;}
+    .k-grn{background:#dcfce7;color:#14532d;} .k-gry{background:#f1f2f6;color:#8b8fa0;}
+    .k-vio{background:#f3e8ff;color:#6b21a8;}
     </style>""", unsafe_allow_html=True)
 
     def _kfmt(n):
@@ -4565,12 +4724,25 @@ def prikazi_komercijalu():
         except Exception:
             return str(n)
 
+    def _kpi(cells):
+        _h = '<div style="display:grid;grid-template-columns:repeat(' + str(len(cells)) + ',1fr);gap:12px;margin:8px 0 14px;">'
+        for _n, _k, _bg, _bd, _cn, _ck in cells:
+            _h += ('<div style="background:' + _bg + ';border:1px solid ' + _bd + ';border-radius:12px;padding:13px 16px;">'
+                   '<div style="font-size:21px;font-weight:800;color:' + _cn + ';">' + str(_n) + '</div>'
+                   '<div style="font-size:11.5px;color:' + _ck + ';margin-top:2px;">' + _k + '</div></div>')
+        return _h + '</div>'
+    _P = ("#faf7ff", "#e9d5ff", "#7c3aed", "#8b7fa8")
+    _G = ("#f0fdf4", "#bbf7d0", "#16a34a", "#5b8c6b")
+    _O = ("#fffbeb", "#fde68a", "#b45309", "#9a7b3a")
+    _R = ("#fff7f7", "#fecaca", "#dc2626", "#9b6b6b")
+
     _ku = st.session_state.get("komerc_user", "Komercijala")
-    _h1, _h2 = st.columns([7.5, 1.15])
+    _h1, _h2 = st.columns([7.2, 1.35])
     with _h1:
-        st.markdown('<div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;">'
-                    '<span style="font-size:21px;font-weight:800;color:#1f2430;">VAPE Porudžbine</span>'
-                    '<span style="font-size:13px;color:#9aa0ad;">· ' + _h_escape(_ku) + '</span></div>',
+        st.markdown('<div style="display:flex;align-items:center;gap:10px;margin-bottom:2px;">'
+                    '<div style="width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,#7c3aed,#a855f7);"></div>'
+                    '<span style="font-size:20px;font-weight:800;color:#1f2430;">VAPE Porudžbine</span>'
+                    '<span style="font-size:12.5px;color:#9aa0ad;">· ' + _h_escape(_ku) + '</span></div>',
                     unsafe_allow_html=True)
     with _h2:
         if st.button("Odjava", key="kom_odjava", use_container_width=True):
@@ -4583,134 +4755,581 @@ def prikazi_komercijalu():
         return
 
     _pub = sb_meseci()
-    _keys = [m["key"] for m in _pub]
-    if not _keys:
+    _mkeys = sorted({m["key"] for m in _pub}, reverse=True)
+    if not _mkeys:
         st.info("Još nema objavljenih podataka.")
         return
-    _keys = sorted(set(_keys), reverse=True)
-    _lbls = [mesec_label(k) for k in _keys]
-    _c1, _c2 = st.columns([1, 3])
-    with _c1:
-        _sel = st.selectbox("Mesec", _lbls, index=0, key="kom_mes")
-    mesec_key = _keys[_lbls.index(_sel)]
-
     try:
         _kf = sb_komitenti_full()
     except Exception:
         _kf = {}
 
-    # Skupi sve objekte prosleđene komercijali (obična i nedeljna prijava)
-    _stavke_all = []
-    for _sis in sb_sisteme(mesec_key):
-        _pod = sb_ucitaj(mesec_key, _sis)
-        if not _pod or not _pod.get("stavke"):
-            continue
-        _po = {}
-        for s in _pod["stavke"]:
-            _po.setdefault(int(s["idk"]), []).append(s)
-        _meta_k = _pod.get("meta") or {}
-        if _meta_k.get("nedeljni"):
-            _dani_k = int(_meta_k.get("nedeljni_dani", 7) or 7)
-            _cut_k = _admin_presek(_meta_k, mesec_key)
-            _ah_k = (_meta_k.get("admin_hist") or {})
-            for _idk, _info in (_meta_k.get("nedeljni_prijave") or {}).items():
-                try:
-                    _ik = int(_idk)
-                except Exception:
+    # tekući mesec = najnoviji objavljeni
+    _mes_now = _mkeys[0]
+
+    def _naz(idk):
+        return (_kf.get(int(idk), {}) or {}).get("naziv", "") or ("ID " + str(idk))
+
+    def _kontakt_html(idk):
+        _ki = _kf.get(int(idk), {}) or {}
+        _b = []
+        if _ki.get("telefon"): _b.append("📞 " + _h_escape(str(_ki["telefon"])))
+        if _ki.get("email"): _b.append("✉️ " + _h_escape(str(_ki["email"])))
+        if _ki.get("mesto"): _b.append("📍 " + _h_escape(str(_ki["mesto"])))
+        return "&nbsp;&nbsp;·&nbsp;&nbsp;".join(_b)
+
+    # --- Ko je prosleđen komercijali (za sve mesece koje gledamo) ---
+    def _prosledjeni(mesec_key):
+        """{idk: {sistem, ko, at, napomena, nedeljni}} — objekti prosleđeni komercijali."""
+        out = {}
+        for _sis in sb_sisteme(mesec_key):
+            _pod = sb_ucitaj(mesec_key, _sis)
+            if not _pod or not _pod.get("stavke"):
+                continue
+            _meta = _pod.get("meta") or {}
+            if _meta.get("nedeljni"):
+                for _k, _info in (_meta.get("nedeljni_prijave") or {}).items():
+                    try:
+                        out[int(_k)] = {"sistem": _sis, "ko": (_info or {}).get("ko", ""),
+                                        "at": (_info or {}).get("at", ""),
+                                        "napomena": (_info or {}).get("napomena", ""), "nedeljni": True}
+                    except Exception:
+                        pass
+                continue
+            for _idk, _v in sb_load_obrada(mesec_key, _sis).items():
+                if "Obavestila direktorku" not in (_v.get("reakcije") or []):
                     continue
-                _lst = _po.get(_ik) or []
-                _pm = _treb_posle_preseka(_ah_k.get(str(_ik), []) or [], _cut_k) if _cut_k else {}
-                _pa = []
-                for s in _lst:
-                    _lg = int(s.get('lager', 0) or 0) + int(_pm.get(int(s.get('ida', -1)), 0) or 0)
-                    _pr = int(s.get('pred', 0) or 0)
-                    if _pr > 0 and _lg < _pr * _dani_k / 30.0:
-                        _pa.append(str(s.get('naziv', '')) + " (lager " + str(_lg) + ")")
-                _stavke_all.append({"sis": _sis, "idk": _ik, "tip": "nedeljni",
-                                    "zona": "zuto", "problem": len(_pa), "arts": _pa,
-                                    "treba": 0, "porucio": 0,
-                                    "nap": (_info or {}).get("napomena", ""),
-                                    "ko": (_info or {}).get("ko", ""), "at": (_info or {}).get("at", "")})
-            continue
-        _obr = sb_load_obrada(mesec_key, _sis)
-        for _idk, _v in _obr.items():
-            if "Obavestila direktorku" not in (_v.get("reakcije") or []):
+                _dn = (_v.get("dnevnik") or {}).get("komercijala") or []
+                out[int(_idk)] = {"sistem": _sis,
+                                  "ko": (_v.get("reakcije_ko") or {}).get("Obavestila direktorku", ""),
+                                  "at": (_dn[-1].get("at", "") if _dn else ""),
+                                  "napomena": _v.get("napomena", "") or "", "nedeljni": False}
+        return out
+
+    def _stavke_objekta(mesec_key, sistem, idk):
+        _pod = sb_ucitaj(mesec_key, sistem)
+        if not _pod or not _pod.get("stavke"):
+            return [], {}
+        _lst = [s for s in _pod["stavke"] if int(s.get("idk", -1)) == int(idk)]
+        return _lst, (_pod.get("meta") or {})
+
+    def _sistem_objekta(mesec_key, idk):
+        for _sis in sb_sisteme(mesec_key):
+            _pod = sb_ucitaj(mesec_key, _sis)
+            if not _pod or not _pod.get("stavke"):
                 continue
-            _lst = _po.get(int(_idk))
-            if not _lst:
+            for s in _pod["stavke"]:
+                if int(s.get("idk", -1)) == int(idk):
+                    return _sis
+        return ""
+
+    _tab1, _tab2, _tab3 = st.tabs(["🚚 Moja ruta", "📋 Objekat — popis i porudžbina",
+                                   "✅ Kontrola od administracije"])
+
+    # =================================================================
+    # KARTICA 1 — MOJA RUTA (DAN)
+    # =================================================================
+    with _tab1:
+        _d1, _d2, _d3, _d4 = st.columns([1.1, 0.9, 0.9, 1.4])
+        with _d1:
+            _datum = st.date_input("Datum rute", value=_now().date(), key="kom_datum", format="DD.MM.YYYY")
+        _dan = sb_ruta_dan_get(_datum, _ku)
+        with _d2:
+            _st_txt = _dt_kratko(_dan.get("start_at", "")) if _dan.get("start_at") else "—"
+            st.markdown('<div style="font-size:12.5px;color:#6b7280;margin:6px 0 2px;">Start rute</div>'
+                        '<div style="font-weight:700;font-size:15px;">' + _h_escape(_st_txt.split(" ")[-1] if _st_txt != "—" else "—") + '</div>',
+                        unsafe_allow_html=True)
+            if not _dan.get("start_at"):
+                if st.button("▶ Startuj rutu", key="kom_start", use_container_width=True):
+                    sb_ruta_dan_set(_datum, _ku, start_at=_now().isoformat())
+                    st.rerun()
+        with _d3:
+            _kr_txt = _dt_kratko(_dan.get("kraj_at", "")) if _dan.get("kraj_at") else "—"
+            st.markdown('<div style="font-size:12.5px;color:#6b7280;margin:6px 0 2px;">Završetak</div>'
+                        '<div style="font-weight:700;font-size:15px;">' + _h_escape(_kr_txt.split(" ")[-1] if _kr_txt != "—" else "—") + '</div>',
+                        unsafe_allow_html=True)
+            if _dan.get("start_at") and not _dan.get("kraj_at"):
+                if st.button("⏹ Završi rutu", key="kom_kraj", use_container_width=True):
+                    sb_ruta_dan_set(_datum, _ku, kraj_at=_now().isoformat())
+                    st.rerun()
+        with _d4:
+            if _dan.get("kraj_at"):
+                st.markdown('<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:9px 13px;'
+                            'font-size:12.5px;color:#166534;font-weight:600;margin-top:22px;">✅ Ruta završena</div>',
+                            unsafe_allow_html=True)
+            elif _dan.get("start_at"):
+                st.markdown('<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:9px 13px;'
+                            'font-size:12.5px;color:#92400e;font-weight:600;margin-top:22px;">🚚 Ruta u toku</div>',
+                            unsafe_allow_html=True)
+
+        _ruta = sb_ruta_objekti(_datum, _ku)
+        _u_ruti = set(int(r.get("idk") or 0) for r in _ruta)
+
+        # --- Dodaj objekat u rutu ---
+        st.markdown("<div style='font-weight:700;font-size:14px;margin:14px 0 4px;'>Dodaj objekat u rutu</div>",
+                    unsafe_allow_html=True)
+        _a1, _a2, _a3 = st.columns([1.2, 3, 1.1])
+        with _a1:
+            _sis_opts = ["(svi sistemi)"] + list(sb_sisteme(_mes_now))
+            _a_sis = st.selectbox("Sistem", _sis_opts, key="kom_add_sis")
+        with _a2:
+            _kand = []
+            for _s in ([_a_sis] if _a_sis != "(svi sistemi)" else sb_sisteme(_mes_now)):
+                _pod = sb_ucitaj(_mes_now, _s)
+                if not _pod or not _pod.get("stavke"):
+                    continue
+                for _idk in sorted({int(x["idk"]) for x in _pod["stavke"]}):
+                    if _idk not in _u_ruti:
+                        _kand.append((_idk, _s, _naz(_idk)))
+            _kand.sort(key=lambda x: x[2])
+            _opts = ["— izaberi objekat —"] + [x[2] for x in _kand]
+            _pick = st.selectbox("Objekat", _opts, key="kom_add_obj")
+        with _a3:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            if st.button("+ Dodaj u rutu", key="kom_add_btn", type="primary", use_container_width=True,
+                         disabled=(_pick == "— izaberi objekat —")):
+                _sel = next((x for x in _kand if x[2] == _pick), None)
+                if _sel:
+                    try:
+                        _pr = _prosledjeni(_mes_now).get(int(_sel[0]), {})
+                        sb_ruta_obj_save(_datum, _ku, _sel[0], mesec=_mes_now, sistem=_sel[1],
+                                         status="nov", prosledjen_od=_pr.get("ko", ""))
+                        st.success("Dodato u rutu: " + str(_sel[2]))
+                        st.rerun()
+                    except Exception as _e:
+                        st.error("Greška: " + str(_e))
+
+        # --- KPI + lista rute ---
+        _n_zav = sum(1 for r in _ruta if r.get("status") == "zavrsen")
+        _n_tok = sum(1 for r in _ruta if r.get("status") == "u_toku")
+        _n_nov = len(_ruta) - _n_zav - _n_tok
+        st.markdown(_kpi([(len(_ruta), "Objekata u ruti") + _P, (_n_zav, "Završeno") + _G,
+                          (_n_tok, "U toku") + _O, (_n_nov, "Nije obrađeno") + _R]),
+                    unsafe_allow_html=True)
+
+        if not _ruta:
+            st.info("Ruta za ovaj dan je prazna — dodaj objekte gore.")
+        else:
+            _prosl_now = _prosledjeni(_mes_now)
+            _ruta.sort(key=lambda r: (r.get("status") == "zavrsen", _naz(r.get("idk"))))
+            for r in _ruta:
+                _idk = int(r.get("idk") or 0)
+                _stat = r.get("status") or "nov"
+                _chip = ('<span class="kchip k-grn">✓ Završeno</span>' if _stat == "zavrsen"
+                         else ('<span class="kchip k-org">U toku</span>' if _stat == "u_toku"
+                               else '<span class="kchip k-gry">Nije obrađeno</span>'))
+                _extra = ""
+                if r.get("trebovao"):
+                    _extra = ('<span class="kchip k-grn" style="margin-left:6px;">porudžbina '
+                              + _kfmt(r.get("poslato_kom", 0)) + ' kom</span>')
+                if _idk in _prosl_now:
+                    _extra += '<span class="kchip k-vio" style="margin-left:6px;">prosleđen od administracije</span>'
+                _c1, _c2 = st.columns([6.2, 1.3])
+                with _c1:
+                    st.markdown('<div class="kom-card" style="margin-bottom:4px;">' + _chip + _extra
+                                + '<div class="kom-nm" style="margin-top:6px;">' + _h_escape(_naz(_idk)) + '</div>'
+                                + '<div class="kom-ad">' + (_kontakt_html(_idk) or str(r.get("sistem") or "")) + '</div>'
+                                + '</div>', unsafe_allow_html=True)
+                with _c2:
+                    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+                    if st.button("Otvori", key="kom_open_" + str(_idk), use_container_width=True):
+                        st.session_state["kom_sel_idk"] = _idk
+                        st.session_state["kom_sel_datum"] = str(_datum)
+                        st.rerun()
+                    if _stat != "zavrsen":
+                        if st.button("Ukloni", key="kom_del_" + str(_idk), use_container_width=True):
+                            sb_ruta_obj_del(_datum, _ku, _idk)
+                            st.rerun()
+            if st.session_state.get("kom_sel_idk"):
+                st.success('Objekat je otvoren — pređi na karticu „Objekat — popis i porudžbina“.')
+
+    # =================================================================
+    # KARTICA 2 — OBJEKAT (POPIS I PORUDŽBINA)
+    # =================================================================
+    with _tab2:
+        _datum2 = st.session_state.get("kom_sel_datum") or str(_now().date())
+        _ruta2 = sb_ruta_objekti(_datum2, _ku)
+        if not _ruta2:
+            st.info('Nema objekata u ruti za ' + _rok_fmt(_datum2) + '. Dodaj ih na kartici „Moja ruta“.')
+        else:
+            _ids = [int(r.get("idk") or 0) for r in _ruta2]
+            _labels = [_naz(i) for i in _ids]
+            _sel_id = st.session_state.get("kom_sel_idk")
+            _idx = _ids.index(_sel_id) if _sel_id in _ids else 0
+            _pick2 = st.selectbox("Objekat iz rute (" + _rok_fmt(_datum2) + ")", _labels, index=_idx, key="kom_obj_pick")
+            _oid = _ids[_labels.index(_pick2)]
+            _rec = next((r for r in _ruta2 if int(r.get("idk") or 0) == _oid), {})
+            _zakljucano = (_rec.get("status") == "zavrsen")
+            _mes_o = _rec.get("mesec") or _mes_now
+            _sis_o = _rec.get("sistem") or _sistem_objekta(_mes_o, _oid)
+            _stavke_o, _meta_o = _stavke_objekta(_mes_o, _sis_o, _oid)
+            _mes_par = float(_meta_o.get("meseci") or 1.0)
+
+            st.markdown('<div class="kom-card"><div class="kom-nm">' + _h_escape(_naz(_oid)) + '</div>'
+                        '<div class="kom-ad">' + (_kontakt_html(_oid) or "") + '</div>'
+                        '<div class="kom-ad">' + _h_escape(str(_sis_o)) + ' · ruta ' + _h_escape(_rok_fmt(_datum2))
+                        + ' · ' + _h_escape(_ku) + '</div></div>', unsafe_allow_html=True)
+
+            if _zakljucano:
+                st.markdown('<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:11px 16px;'
+                            'font-size:13px;color:#166534;font-weight:600;margin-bottom:12px;">🔒 Izveštaj je završen '
+                            + (("(" + _dt_kratko(_rec.get("zavrseno_at", "")) + ")") if _rec.get("zavrseno_at") else "")
+                            + " — izmene više nisu moguće.</div>", unsafe_allow_html=True)
+
+            # --- Ažuriraj iz admina (prethodne porudžbine) ---
+            _hk = "komhist_" + str(_oid)
+            _hh = st.session_state.get(_hk) or {}
+            _u1, _u2 = st.columns([1.5, 3])
+            with _u1:
+                if st.button("🔄 Ažuriraj iz admina", key="kom_hist_" + str(_oid), use_container_width=True):
+                    with st.spinner("Povlačim porudžbine iz admina…"):
+                        try:
+                            _od = (_now().date() - datetime.timedelta(days=190)).strftime("%d.%m.%Y")
+                            _do = _now().date().strftime("%d.%m.%Y")
+                            _lst_h, _err_h = admin_istorija_komitenta(_oid, _naz(_oid), _od, _do)
+                        except Exception as _eh:
+                            _lst_h, _err_h = [], str(_eh)
+                    st.session_state[_hk] = {"lst": _lst_h, "err": _err_h, "at": _now().isoformat()}
+                    st.rerun()
+            with _u2:
+                if _hh.get("at"):
+                    st.caption("🔄 Poslednji put ažurirano iz admina: " + _dt_kratko(_hh["at"]))
+                else:
+                    st.caption("Klikni da se povuku prethodne porudžbine ovog objekta iz admina.")
+
+            # --- Crveno upozorenje: trebovao POSLE prosleđivanja ---
+            _pr_info = _prosledjeni(_mes_o).get(int(_oid), {})
+            _pr_at = _pr_info.get("at") or ""
+            if _pr_at and _hh.get("lst"):
+                _pd = None
+                try:
+                    _pd = datetime.datetime.fromisoformat(str(_pr_at)).date()
+                except Exception:
+                    try:
+                        _pd = datetime.datetime.strptime(str(_pr_at)[:10], "%d.%m.%Y").date()
+                    except Exception:
+                        _pd = None
+                _posle = []
+                if _pd:
+                    for _o in (_hh.get("lst") or []):
+                        try:
+                            _dd = datetime.datetime.strptime(str(_o.get("datum", "")).split(" ")[0], "%d.%m.%Y").date()
+                        except Exception:
+                            continue
+                        if _dd >= _pd:
+                            _posle.append(_o)
+                if _posle:
+                    _det = "; ".join(("#" + str(_o.get("id", "")) + " od " + str(_o.get("datum", "")).split(" ")[0]
+                                      + (" · " + str(_o.get("status", "")) if _o.get("status") else ""))
+                                     for _o in _posle[:3])
+                    st.markdown('<div style="background:#fef2f2;border:1.6px solid #fca5a5;border-radius:12px;'
+                                'padding:12px 16px;font-size:13.5px;color:#b42318;font-weight:700;margin-bottom:12px;">'
+                                '⚠️ Molimo vas obratite pažnju — objekat je trebovao robu <u>nakon</u> što vam je '
+                                'prosleđen na pregled!'
+                                '<div style="font-weight:500;font-size:12.5px;margin-top:5px;">' + _h_escape(_det)
+                                + '</div></div>', unsafe_allow_html=True)
+
+            # --- Popis lagera ---
+            _bez = st.checkbox("Objekat ne dozvoljava popis lagera", value=bool(_rec.get("bez_popisa")),
+                               key="kom_bez_" + str(_oid), disabled=_zakljucano)
+            _popis_saved = dict(_rec.get("popis") or {})
+            _por_saved = dict(_rec.get("porudzbina") or {})
+
+            # već poručeno posle preseka (za varijantu bez popisa — kao kod administracije)
+            _cut_o = _admin_presek(_meta_o, _mes_o)
+            _pm_o = {}
+            if _hh.get("lst") and _cut_o:
+                _pm_o = _treb_posle_preseka(_hh.get("lst") or [], _cut_o)
+            elif isinstance(_meta_o, dict):
+                _ah = (_meta_o.get("admin_hist") or {}).get(str(int(_oid))) or []
+                if _ah and _cut_o:
+                    _pm_o = _treb_posle_preseka(_ah, _cut_o)
+
+            _arts = [s for s in _stavke_o if int(s.get("pred", 0) or 0) > 0 or int(s.get("kol", 0) or 0) > 0]
+            _arts.sort(key=lambda s: (-int(s.get("pred", 0) or 0)))
+            if not _arts:
+                st.warning("Za ovaj objekat nema artikala u izveštaju za " + mesec_label(_mes_o) + ".")
+            else:
+                _rows_e = []
+                for s in _arts:
+                    _ida = int(s.get("ida", 0))
+                    _pred_per = int(round(int(s.get("pred", 0) or 0) * _mes_par))
+                    _lag_sys = int(s.get("lager", 0) or 0)
+                    _por_ranije = int(_pm_o.get(_ida, 0) or 0)
+                    if _bez:
+                        _popis_v = _lag_sys + _por_ranije          # realni lager iz sistema
+                        _predlog = max(int(s.get("kol", 0) or 0) - _por_ranije, 0)
+                    else:
+                        _popis_v = int(_popis_saved.get(str(_ida), _lag_sys) or 0)
+                        _predlog = max(_pred_per - _popis_v, 0)
+                    _rows_e.append({"ida": _ida, "Artikal": str(s.get("naziv", "")),
+                                    "Lager u sistemu": _lag_sys,
+                                    "Popis na licu mesta": _popis_v,
+                                    "Predikcija (" + str(_mes_par).replace(".", ",") + " mes)": _pred_per,
+                                    "Predlog porudžbine": int(_por_saved.get(str(_ida), _predlog) or 0)})
+                _dfe = pd.DataFrame(_rows_e)
+                _pred_col = [c for c in _dfe.columns if c.startswith("Predikcija")][0]
+                _ed = st.data_editor(
+                    _dfe.drop(columns=["ida"]),
+                    key="kom_ed_" + str(_oid) + "_" + str(_datum2) + ("_b" if _bez else ""),
+                    hide_index=True, use_container_width=True,
+                    disabled=(["Artikal", "Lager u sistemu", _pred_col]
+                              + (["Popis na licu mesta"] if _bez else []))
+                             if not _zakljucano else True,
+                    column_config={
+                        "Artikal": st.column_config.TextColumn("Naziv artikla", width="large"),
+                        "Lager u sistemu": st.column_config.NumberColumn("Lager u sistemu", disabled=True),
+                        "Popis na licu mesta": st.column_config.NumberColumn("Popis na licu mesta", min_value=0, step=1),
+                        _pred_col: st.column_config.NumberColumn(_pred_col, disabled=True),
+                        "Predlog porudžbine": st.column_config.NumberColumn("Predlog porudžbine", min_value=0, step=1),
+                    })
+                _popis_new, _por_new = {}, {}
+                for _i, _r in enumerate(_rows_e):
+                    try:
+                        _popis_new[str(_r["ida"])] = int(_ed.iloc[_i]["Popis na licu mesta"] or 0)
+                        _por_new[str(_r["ida"])] = int(_ed.iloc[_i]["Predlog porudžbine"] or 0)
+                    except Exception:
+                        _popis_new[str(_r["ida"])] = int(_r["Popis na licu mesta"])
+                        _por_new[str(_r["ida"])] = int(_r["Predlog porudžbine"])
+                _uk_kom = sum(_por_new.values())
+                _n_art = sum(1 for x in _por_new.values() if x > 0)
+                _n_nula = sum(1 for _r in _rows_e if int(_r["Popis na licu mesta"]) == 0)
+                st.markdown(_kpi([(_kfmt(_uk_kom) + " kom", "Ukupno predlog") + _P,
+                                  (_n_art, "Artikala u porudžbini") + _G,
+                                  (_n_nula, "Artikala na nuli") + _R]), unsafe_allow_html=True)
+                if not _zakljucano:
+                    if st.button("💾 Sačuvaj popis", key="kom_save_" + str(_oid), use_container_width=False):
+                        try:
+                            sb_ruta_obj_save(_datum2, _ku, _oid, mesec=_mes_o, sistem=_sis_o,
+                                             status="u_toku", bez_popisa=bool(_bez),
+                                             popis=_popis_new, porudzbina=_por_new)
+                            st.success("Popis sačuvan.")
+                            st.rerun()
+                        except Exception as _e:
+                            st.error("Greška: " + str(_e))
+
+            # --- Prethodne porudžbine iz admina ---
+            with st.expander("📜 Prethodne porudžbine iz admina (poslednjih ~6 meseci)"):
+                if _hh.get("err") and not _hh.get("lst"):
+                    st.warning(_hh["err"])
+                elif not _hh.get("lst"):
+                    st.caption('Klikni „Ažuriraj iz admina“ gore da se povuku.')
+                else:
+                    _hr = []
+                    for _o in (_hh.get("lst") or []):
+                        _hr.append({"Datum": str(_o.get("datum", "")), "Broj": str(_o.get("id", "")),
+                                    "Status": str(_o.get("status", "")),
+                                    "Kom": int(sum(_to_int_kol(x.get("kol")) for x in (_o.get("stavke") or []))),
+                                    "Vrednost": str(_o.get("cena", ""))})
+                    st.dataframe(pd.DataFrame(_hr), hide_index=True, use_container_width=True)
+
+            # --- Slike i komentar ---
+            _slike = list(_rec.get("slike") or [])
+            st.markdown("<div style='font-weight:700;font-size:14px;margin:14px 0 4px;'>Slike</div>",
+                        unsafe_allow_html=True)
+            if _slike:
+                _sc = st.columns(min(len(_slike), 4))
+                for _i, _sl in enumerate(_slike[:4]):
+                    with _sc[_i]:
+                        st.markdown('<div style="font-size:11.5px;color:#9aa0ad;font-weight:700;">'
+                                    + ("PRE" if _sl.get("tip") == "pre" else "POSLE") + '</div>',
+                                    unsafe_allow_html=True)
+                        if _sl.get("url"):
+                            st.image(_sl["url"], use_container_width=True)
+            if not _zakljucano:
+                _f1, _f2 = st.columns(2)
+                with _f1:
+                    _up_pre = st.file_uploader("Slike PRE obilaska (do 2)", type=["jpg", "jpeg", "png"],
+                                               accept_multiple_files=True, key="kom_pre_" + str(_oid))
+                with _f2:
+                    _up_pos = st.file_uploader("Slike NAKON obilaska (do 2)", type=["jpg", "jpeg", "png"],
+                                               accept_multiple_files=True, key="kom_pos_" + str(_oid))
+                if st.button("📤 Otpremi slike", key="kom_upl_" + str(_oid)):
+                    _novi = list(_slike)
+                    try:
+                        for _tip, _files in (("pre", _up_pre or []), ("posle", _up_pos or [])):
+                            for _f in list(_files)[:2]:
+                                _b = _smanji_sliku(_f.getvalue())
+                                _nm = (str(_oid) + "_" + str(_datum2) + "_" + _tip + "_"
+                                       + _now().strftime("%H%M%S") + "_" + str(len(_novi)) + ".jpg")
+                                _url = sb_ruta_slika_upload(_b, _nm)
+                                _novi.append({"tip": _tip, "url": _url, "naziv": _f.name})
+                        sb_ruta_obj_save(_datum2, _ku, _oid, mesec=_mes_o, sistem=_sis_o, slike=_novi)
+                        st.success("Slike otpremljene.")
+                        st.rerun()
+                    except Exception as _e:
+                        st.error("Greška pri otpremanju: " + str(_e))
+
+            _kom_txt = st.text_area("Komentar sa terena", value=_rec.get("komentar", "") or "",
+                                    key="kom_txt_" + str(_oid), height=90, disabled=_zakljucano,
+                                    placeholder="npr. gondola prazna, obećali da poručuju u ponedeljak…")
+
+            # --- Akcije: prosledi u admin + završeno ---
+            if not _zakljucano:
+                _b1, _b2, _b3 = st.columns([1.6, 1.4, 3])
+                with _b1:
+                    _por_map = {}
+                    try:
+                        _por_map = _por_new
+                    except Exception:
+                        _por_map = dict(_rec.get("porudzbina") or {})
+                    _uk_send = sum(int(v or 0) for v in _por_map.values())
+                    if st.button("📤 Prosledi porudžbinu u admin", key="kom_send_" + str(_oid),
+                                 type="primary", use_container_width=True, disabled=(_uk_send <= 0)):
+                        _items = [{"idArticle": int(k), "quantity": int(v)} for k, v in _por_map.items() if int(v or 0) > 0]
+                        with st.spinner("Šaljem porudžbinu u admin…"):
+                            _ok, _msg = posalji_u_admin(int(_oid), _items)
+                        if _ok:
+                            try:
+                                sb_ruta_obj_save(_datum2, _ku, _oid, mesec=_mes_o, sistem=_sis_o,
+                                                 status="u_toku", porudzbina=_por_map, komentar=_kom_txt,
+                                                 trebovao=True, poslato_kom=int(_uk_send),
+                                                 poslato_admin_at=_now().isoformat(), admin_broj=str(_msg))
+                            except Exception:
+                                pass
+                            st.success("✅ Porudžbina je uspešno prosleđena u admin — "
+                                       + _kfmt(_uk_send) + " kom. " + str(_msg))
+                            st.rerun()
+                        else:
+                            st.error("❌ " + str(_msg))
+                with _b2:
+                    if st.button("✓ Završeno", key="kom_done_" + str(_oid), use_container_width=True):
+                        try:
+                            sb_ruta_obj_save(_datum2, _ku, _oid, mesec=_mes_o, sistem=_sis_o,
+                                             status="zavrsen", komentar=_kom_txt,
+                                             zavrseno_at=_now().isoformat())
+                            st.success("Izveštaj za ovaj objekat je završen i zaključan.")
+                            st.rerun()
+                        except Exception as _e:
+                            st.error("Greška: " + str(_e))
+                with _b3:
+                    st.caption("Kada klikneš Završeno, izveštaj za ovaj objekat se zaključava i više se ne menja.")
+                if _kom_txt != (_rec.get("komentar", "") or ""):
+                    if st.button("💾 Sačuvaj komentar", key="kom_savec_" + str(_oid)):
+                        sb_ruta_obj_save(_datum2, _ku, _oid, mesec=_mes_o, sistem=_sis_o, komentar=_kom_txt)
+                        st.rerun()
+
+    # =================================================================
+    # KARTICA 3 — KONTROLA OD ADMINISTRACIJE
+    # =================================================================
+    with _tab3:
+        _k1, _k2, _k3 = st.columns([1.1, 1.1, 2])
+        _mlbls = [mesec_label(k) for k in _mkeys]
+        with _k1:
+            _msel = st.selectbox("Mesec", _mlbls, index=0, key="kom_kmes")
+        _mk = _mkeys[_mlbls.index(_msel)]
+        with _k2:
+            _fsis = st.selectbox("Sistem", ["(svi sistemi)"] + list(sb_sisteme(_mk)), key="kom_ksis")
+        _rok_k = sb_rokovi_get(_mk).get("rok_kontrola")
+        _rok_proso = _rok_je_prosao(_rok_k) if _rok_k else False
+        _zamrznuto = _rok_proso or (_mk != _mes_now)
+        with _k3:
+            if _rok_k:
+                _bg = ("#fef2f2;border-color:#fecaca;color:#b42318" if _rok_proso
+                       else "#f0fdf4;border-color:#bbf7d0;color:#166534")
+                _t = ("Rok za kontrolu je istekao (" + _rok_fmt(_rok_k) + ") — mesec je zatvoren."
+                      if _rok_proso else "Rok za kontrolu: " + _rok_fmt(_rok_k))
+                st.markdown('<div style="background:' + _bg + ';border:1px solid;border-radius:10px;padding:9px 14px;'
+                            'font-size:12.5px;font-weight:600;margin-top:22px;">⏰ ' + _t + '</div>',
+                            unsafe_allow_html=True)
+            else:
+                st.markdown('<div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:10px;padding:9px 14px;'
+                            'font-size:12.5px;color:#5b21b6;margin-top:22px;">Rok za kontrolu još nije postavljen '
+                            '(postavlja direktor).</div>', unsafe_allow_html=True)
+
+        _prosl = _prosledjeni(_mk)
+        _obil = sb_ruta_mesec(_mk)
+        _redovi = []
+        for _idk, _info in _prosl.items():
+            if _fsis != "(svi sistemi)" and str(_info.get("sistem", "")) != _fsis:
                 continue
-            nivo, n_nula, izgub = hitnost_objekta(_lst)
-            _stavke_all.append({
-                "sis": _sis, "idk": int(_idk), "tip": "obican", "zona": nivo,
-                "problem": n_nula, "arts": [],
-                "treba": sum(int(a.get("kol", 0) or 0) for a in _lst),
-                "porucio": sum(int(x or 0) for x in (_v.get("njihova") or {}).values()),
-                "nap": _v.get("napomena", "") or "",
-                "ko": (_v.get("reakcije_ko") or {}).get("Obavestila direktorku", ""), "at": ""})
+            _ob = _obil.get(int(_idk))
+            if _ob and _ob.get("status") == "zavrsen":
+                _st = "zavrsen"
+            elif _ob:
+                _st = "u_ruti"
+            else:
+                _st = "neobradjen" if _zamrznuto else "ceka"
+            _redovi.append({"idk": int(_idk), "info": _info, "ob": _ob or {}, "st": _st})
 
-    _uk = len(_stavke_all)
-    _uk_treba = sum(r["treba"] for r in _stavke_all)
-    _uk_por = sum(r["porucio"] for r in _stavke_all)
-    st.markdown('<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:10px 0 16px;">'
-                '<div style="background:#fff7f7;border:1px solid #fecaca;border-radius:12px;padding:15px 18px;">'
-                '<div style="font-size:22px;font-weight:800;color:#dc2626;">' + str(_uk) + '</div>'
-                '<div style="font-size:12px;color:#9b6b6b;margin-top:3px;">Objekata prosleđeno komercijali</div></div>'
-                '<div style="background:#faf7ff;border:1px solid #e9d5ff;border-radius:12px;padding:15px 18px;">'
-                '<div style="font-size:22px;font-weight:800;color:#7c3aed;">' + _kfmt(_uk_treba) + '</div>'
-                '<div style="font-size:12px;color:#8b7fa8;margin-top:3px;">Ukupno treba da poruče (kom)</div></div>'
-                '<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:15px 18px;">'
-                '<div style="font-size:22px;font-weight:800;color:#16a34a;">' + _kfmt(_uk_por) + '</div>'
-                '<div style="font-size:12px;color:#5b8c6b;margin-top:3px;">Poručili (kom)</div></div></div>',
-                unsafe_allow_html=True)
+        _n_z = sum(1 for r in _redovi if r["st"] == "zavrsen")
+        _n_c = sum(1 for r in _redovi if r["st"] in ("ceka", "u_ruti"))
+        _n_n = sum(1 for r in _redovi if r["st"] == "neobradjen")
+        st.markdown(_kpi([(len(_redovi), "Prosleđeno komercijali") + _P,
+                          (_n_z, "Završeno (bili u ruti)") + _G,
+                          (_n_c, "Čeka obilazak") + _O,
+                          (_n_n, "Neobrađeno (rok istekao)") + _R]), unsafe_allow_html=True)
 
-    if not _stavke_all:
-        st.success("Nema objekata prosleđenih komercijali za ovaj mesec.")
-        return
+        if _zamrznuto:
+            st.markdown('<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:12px;padding:11px 16px;'
+                        'font-size:13px;color:#b42318;margin-bottom:12px;">🔒 <b>' + _h_escape(_msel)
+                        + ' je zatvoren</b> — prikaz je samo za pregled. Objekti se više ne mogu dodavati u rutu, '
+                        'a ono što nije obiđeno do roka trajno stoji kao <b>Neobrađeno</b>.</div>',
+                        unsafe_allow_html=True)
 
-    st.markdown("<div style='font-weight:700;font-size:15px;margin:4px 0 8px;'>Objekti koje je administracija "
-                "prosledila komercijali</div>", unsafe_allow_html=True)
-    _stavke_all.sort(key=lambda r: (HIT_RANG.get(r["zona"], 3), -r["treba"]))
-    for r in _stavke_all:
-        _ki = _kf.get(int(r["idk"]), {}) or {}
-        _naz = _ki.get("naziv", "") or ("ID " + str(r["idk"]))
-        _bc = "#ef4444" if r["zona"] == "crveno" else ("#f59e0b" if r["zona"] == "zuto" else "#22c55e")
-        _cb = []
-        if _ki.get("telefon"): _cb.append("📞 " + _h_escape(str(_ki["telefon"])))
-        if _ki.get("email"): _cb.append("✉️ " + _h_escape(str(_ki["email"])))
-        _kv = ('<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:10px 0;">'
-               '<div style="background:#faf9fd;border-radius:10px;padding:8px 12px;">'
-               '<div style="font-size:10.5px;color:#9aa0ad;text-transform:uppercase;font-weight:700;">Treba da poruči</div>'
-               '<div style="font-size:16px;font-weight:800;color:#7c3aed;">' + _kfmt(r["treba"]) + ' kom</div></div>'
-               '<div style="background:#faf9fd;border-radius:10px;padding:8px 12px;">'
-               '<div style="font-size:10.5px;color:#9aa0ad;text-transform:uppercase;font-weight:700;">Poručio</div>'
-               '<div style="font-size:16px;font-weight:800;color:'
-               + ("#16a34a" if r["porucio"] > 0 else "#dc2626") + ';">' + _kfmt(r["porucio"]) + ' kom</div></div></div>'
-               ) if r["tip"] == "obican" else ""
-        _arts = ""
-        if r["arts"]:
-            _arts = ('<div style="background:#faf9fd;border-radius:10px;padding:9px 12px;margin:8px 0;">'
-                     '<div style="font-size:10.5px;color:#9aa0ad;text-transform:uppercase;font-weight:700;margin-bottom:3px;">Artikli u problemu</div>'
-                     + "".join('<div style="font-size:12.5px;color:#4b5563;padding:2px 0;">• ' + _h_escape(a) + '</div>'
-                               for a in r["arts"][:8]) + '</div>')
-        st.markdown('<div style="background:#fff;border:1px solid #efeaf7;border-left:4px solid ' + _bc + ';'
-                    'border-radius:14px;padding:16px 18px;margin-bottom:12px;box-shadow:0 2px 12px rgba(80,40,140,.05);">'
-                    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;">'
-                    '<span style="font-weight:700;font-size:14.5px;">' + _h_escape(_naz) + '</span>'
-                    '<span style="font-size:12px;color:#9aa0ad;">· ' + _h_escape(str(r["sis"]))
-                    + (' (sistemski)' if r["tip"] == "nedeljni" else '') + '</span>'
-                    '<span style="margin-left:auto;font-size:12px;font-weight:700;color:' + _bc + ';">'
-                    + str(r["problem"]) + ' art. u problemu</span></div>'
-                    + (('<div style="font-size:12.5px;color:#6b7280;margin-bottom:4px;">'
-                        + "&nbsp;&nbsp;·&nbsp;&nbsp;".join(_cb) + '</div>') if _cb else '')
-                    + _kv + _arts
-                    + (('<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:9px;padding:8px 12px;'
-                        'font-size:12.5px;color:#78500a;"><b style="color:#4b5563;">Napomena:</b> '
-                        + _h_escape(r["nap"])
-                        + (('<span style="color:#9aa0ad;"> · ' + _h_escape(str(r["ko"])) + '</span>') if r["ko"] else '')
-                        + '</div>') if r["nap"] else '')
-                    + '</div>', unsafe_allow_html=True)
-
-    st.caption("Ovo je prva verzija pregleda za komercijalu — dogovorićemo kako tačno treba da izgleda.")
+        if not _redovi:
+            st.success("Nema objekata prosleđenih komercijali za " + _msel
+                       + ("" if _fsis == "(svi sistemi)" else " (sistem: " + _fsis + ")") + ".")
+        else:
+            _rang = {"neobradjen": 0, "ceka": 1, "u_ruti": 2, "zavrsen": 3}
+            _redovi.sort(key=lambda r: (_rang.get(r["st"], 9), _naz(r["idk"])))
+            for r in _redovi:
+                _idk = r["idk"]; _info = r["info"]; _ob = r["ob"]
+                _chip = {"zavrsen": '<span class="kchip k-grn">✓ Završeno</span>',
+                         "u_ruti": '<span class="kchip k-org">U ruti (nije završen)</span>',
+                         "ceka": '<span class="kchip k-org">⏳ Čeka obilazak</span>',
+                         "neobradjen": '<span class="kchip k-red">✗ Neobrađeno</span>'}[r["st"]]
+                if _zamrznuto:
+                    _chip = _chip.replace("k-grn", "k-gry").replace("k-org", "k-gry").replace("k-red", "k-gry")
+                _line2 = "Prosledila: " + _h_escape(str(_info.get("ko", "") or "administracija"))
+                if _info.get("at"):
+                    _line2 += " · " + _h_escape(_dt_kratko(_info["at"]) or str(_info["at"]))
+                if _ob.get("datum"):
+                    _line2 += " · obiđeno " + _h_escape(_rok_fmt(str(_ob.get("datum")))) + " (" + _h_escape(str(_ob.get("ko", ""))) + ")"
+                elif r["st"] == "neobradjen":
+                    _line2 += " · nije bio u ruti do roka" + ((" (" + _rok_fmt(_rok_k) + ")") if _rok_k else "")
+                else:
+                    _line2 += " · još nije bio u ruti"
+                _bad = ""
+                if _ob:
+                    if _ob.get("trebovao"):
+                        _bad += ('<span class="kchip k-grn">✓ Trebovao — ' + _kfmt(_ob.get("poslato_kom", 0))
+                                 + ' kom, prosleđeno u admin</span> ')
+                    elif _ob.get("status") == "zavrsen":
+                        _bad += '<span class="kchip k-red">✗ Nije trebovao</span> '
+                    if _ob.get("bez_popisa"):
+                        _bad += '<span class="kchip k-org">objekat ne dozvoljava popis</span> '
+                _nap_h = ""
+                if _info.get("napomena"):
+                    _nap_h = ('<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:9px;padding:8px 12px;'
+                              'font-size:12.5px;color:#78500a;margin-top:9px;"><b style="color:#4b5563;">Napomena administracije:</b> '
+                              + _h_escape(_info["napomena"]) + '</div>')
+                if _ob.get("komentar"):
+                    _nap_h += ('<div style="background:#faf9fd;border:1px solid #efeaf7;border-radius:9px;padding:8px 12px;'
+                               'font-size:12.5px;color:#4b5563;margin-top:7px;"><b>Komentar sa terena:</b> '
+                               + _h_escape(_ob["komentar"]) + '</div>')
+                _cc1, _cc2 = st.columns([6.2, 1.3])
+                with _cc1:
+                    st.markdown('<div class="kom-card" style="' + ("opacity:.75;" if _zamrznuto else "") + '">'
+                                + _chip + '<div class="kom-nm" style="margin-top:6px;">' + _h_escape(_naz(_idk)) + '</div>'
+                                + '<div class="kom-ad">' + _h_escape(str(_info.get("sistem", ""))) + '</div>'
+                                + '<div class="kom-ad">' + _line2 + '</div>'
+                                + (('<div style="margin-top:8px;">' + _bad + '</div>') if _bad else "")
+                                + _nap_h + '</div>', unsafe_allow_html=True)
+                with _cc2:
+                    if (not _zamrznuto) and (r["st"] == "ceka"):
+                        st.markdown("<div style='height:22px;'></div>", unsafe_allow_html=True)
+                        if st.button("+ U rutu", key="kom_k2r_" + str(_idk), use_container_width=True):
+                            try:
+                                sb_ruta_obj_save(_now().date(), _ku, _idk, mesec=_mk,
+                                                 sistem=_info.get("sistem", ""), status="nov",
+                                                 prosledjen_od=_info.get("ko", ""))
+                                st.session_state["kom_sel_idk"] = _idk
+                                st.session_state["kom_sel_datum"] = str(_now().date())
+                                st.success("Dodato u današnju rutu.")
+                                st.rerun()
+                            except Exception as _e:
+                                st.error("Greška: " + str(_e))
 
 
 def prikazi_direktore():
@@ -5369,13 +5988,15 @@ def prikazi_direktore():
             _dpz = st.date_input("Rok — Izveštaj potraživanja", value=_dflt(_post.get("rok_potraz")),
                                  key="rok_potraz_in", format="DD.MM.YYYY")
         with _r6:
-            st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+            _dkn = st.date_input("Rok — Kontrola komercijale", value=_dflt(_post.get("rok_kontrola")),
+                                 key="rok_kontrola_in", format="DD.MM.YYYY")
         _nap = st.text_area("Napomena (za izveštaj prodaje — šta osvežiti, na šta obratiti pažnju)",
                             value=_post.get("napomena") or "", key="rok_nap_in", height=80)
         if st.button("💾 Sačuvaj rokove", key="rok_save", type="primary"):
             try:
                 sb_rokovi_set(_rsel, _da.isoformat(), _ds.isoformat(), _dp.isoformat(), _nap,
-                              rok_syx=_dsx.isoformat(), rok_potraz=_dpz.isoformat())
+                              rok_syx=_dsx.isoformat(), rok_potraz=_dpz.isoformat(),
+                              rok_kontrola=_dkn.isoformat())
                 st.success("Rokovi za " + mesec_label(_rsel) + " sačuvani.")
                 st.rerun()
             except Exception as _e:
@@ -5394,6 +6015,7 @@ def prikazi_direktore():
                               "Izveštaj prodaje": _rok_fmt(_v.get("rok_prodaja")),
                               "SYX": _rok_fmt(_v.get("rok_syx")),
                               "Potraživanja": _rok_fmt(_v.get("rok_potraz")),
+                              "Kontrola komercijale": _rok_fmt(_v.get("rok_kontrola")),
                               "Napomena": (_v.get("napomena") or "")[:50]})
             st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
         return
