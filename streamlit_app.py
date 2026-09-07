@@ -692,12 +692,12 @@ def sb_bulk_ubaci(mesec_key, sistem, ids, ko=""):
     cli = _sb()
     if cli is None:
         raise RuntimeError("Supabase nije podešen.")
-    _now = _now().isoformat()
+    _at = _now().isoformat()
     _kod = {"Ubačena porudžbina": ko} if ko else {}
     rows = [{"mesec": mesec_key, "sistem": sistem, "idk": int(i),
              "reakcije": ["Ubačena porudžbina"], "trebovali": True, "trebovali_tip": "nas",
              "njihova": {}, "napomena": "", "reakcije_ko": dict(_kod), "azurirao": ko or "",
-             "azurirano": _now} for i in ids]
+             "azurirano": _at} for i in ids]
     if rows:
         try:
             cli.table("obrada").upsert(rows, on_conflict="mesec,sistem,idk").execute()
