@@ -27,6 +27,21 @@ ADMIN_PASSWORD_2 = _cfg("ADMIN_PASSWORD_2", "aman2025")  # administracija 2 (kol
 DIREKTOR_PASSWORD = _cfg("DIREKTOR_PASSWORD", "2026vape")  # direktori (pregled izveštaja)
 KOMERCIJALA_PASSWORD = _cfg("KOMERCIJALA_PASSWORD", "komerc2026")     # komercijala 1
 KOMERCIJALA_PASSWORD_2 = _cfg("KOMERCIJALA_PASSWORD_2", "komerc2027")  # komercijala 2
+
+# --- korisnicka imena (prijava: ime + sifra) ---
+APP_KORISNIK          = _cfg("APP_KORISNIK", "analitika")
+ADMIN_KORISNIK        = _cfg("ADMIN_KORISNIK", "aleksandraapatovic")
+ADMIN_KORISNIK_2      = _cfg("ADMIN_KORISNIK_2", "zoranahromis")
+DIREKTOR_KORISNIK     = _cfg("DIREKTOR_KORISNIK", "direktor")
+KOMERCIJALA_KORISNIK  = _cfg("KOMERCIJALA_KORISNIK", "komercijala1")
+KOMERCIJALA_KORISNIK_2 = _cfg("KOMERCIJALA_KORISNIK_2", "komercijala2")
+
+# --- imena koja se prikazuju i upisuju u dnevnik ---
+ADMIN_IME        = _cfg("ADMIN_IME", "Aleksandra Apatović")
+ADMIN_IME_2      = _cfg("ADMIN_IME_2", "Zorana Hromiš")
+KOMERCIJALA_IME  = _cfg("KOMERCIJALA_IME", "Komercijala 1")
+KOMERCIJALA_IME_2 = _cfg("KOMERCIJALA_IME_2", "Komercijala 2")
+
 SUPABASE_URL   = _cfg("SUPABASE_URL", "")
 SUPABASE_KEY   = _cfg("SUPABASE_KEY", "")
 
@@ -561,11 +576,14 @@ def _reak_short(r):
             "Ubačena porudžbina": "\U0001F4E6 Ubačena porudžbina"}.get(r, r)
 
 def _ko_kratko(name):
-    """Kratka oznaka administracije: 'Administracija 1' -> 'A1'."""
+    """Kratka oznaka: 'Aleksandra Apatović' -> 'AA', 'Administracija 1' -> 'A1'."""
     n = str(name or "").strip()
     _m = {"Administracija 1": "A1", "Administracija 2": "A2"}
     if n in _m:
         return _m[n]
+    _d = [d for d in n.split() if d]
+    if len(_d) >= 2:
+        return (_d[0][:1] + _d[1][:1]).upper()
     return n[:10] if n else ""
 
 def _reak_short_ko(r, ko_map):
@@ -1804,43 +1822,46 @@ def check_password():
             Dobrodošli 👋
         </h2>
         <p style="color:#8b8fa0; font-size:14px; margin:0;">
-            Unesite šifru za pristup sistemu
+            Unesite korisničko ime i šifru
         </p>
     </div>
     """, unsafe_allow_html=True)
-    pwd = st.text_input("Šifra", type="password", placeholder="Unesite šifru...", label_visibility="collapsed")
+    usr = st.text_input("Korisničko ime", placeholder="Korisničko ime",
+                        label_visibility="collapsed")
+    pwd = st.text_input("Šifra", type="password", placeholder="Šifra",
+                        label_visibility="collapsed")
     btn = st.button("Prijavi se", use_container_width=True)
     if btn:
-        if pwd == APP_PASSWORD:
+        _u = (usr or "").strip().lower().replace(" ", "")
+        # (korisnicko ime, sifra, uloga, ime za prikaz, nalog za mejl)
+        _nalozi = [
+            (str(APP_KORISNIK).lower(), APP_PASSWORD, "analitika", None, ""),
+            (str(ADMIN_KORISNIK).lower(), ADMIN_PASSWORD, "administracija", ADMIN_IME, "1"),
+            (str(ADMIN_KORISNIK_2).lower(), ADMIN_PASSWORD_2, "administracija", ADMIN_IME_2, "2"),
+            (str(DIREKTOR_KORISNIK).lower(), DIREKTOR_PASSWORD, "direktori", None, ""),
+            (str(KOMERCIJALA_KORISNIK).lower(), KOMERCIJALA_PASSWORD, "komercijala",
+             KOMERCIJALA_IME, ""),
+            (str(KOMERCIJALA_KORISNIK_2).lower(), KOMERCIJALA_PASSWORD_2, "komercijala",
+             KOMERCIJALA_IME_2, ""),
+        ]
+        _nadjen = None
+        for _ku, _kp, _rola, _ime, _nalog in _nalozi:
+            # ako je ime uneto -> mora da se poklopi; ako je prazno -> vazi samo sifra
+            if pwd == _kp and (not _u or _u == _ku):
+                _nadjen = (_rola, _ime, _nalog)
+                break
+        if _nadjen:
+            _rola, _ime, _nalog = _nadjen
             st.session_state.authenticated = True
-            st.session_state.role = "analitika"
-            st.rerun()
-        elif pwd == ADMIN_PASSWORD:
-            st.session_state.authenticated = True
-            st.session_state.role = "administracija"
-            st.session_state.admin_user = "Administracija 1"
-            st.rerun()
-        elif pwd == ADMIN_PASSWORD_2:
-            st.session_state.authenticated = True
-            st.session_state.role = "administracija"
-            st.session_state.admin_user = "Administracija 2"
-            st.rerun()
-        elif pwd == DIREKTOR_PASSWORD:
-            st.session_state.authenticated = True
-            st.session_state.role = "direktori"
-            st.rerun()
-        elif pwd == KOMERCIJALA_PASSWORD:
-            st.session_state.authenticated = True
-            st.session_state.role = "komercijala"
-            st.session_state.komerc_user = "Komercijala 1"
-            st.rerun()
-        elif pwd == KOMERCIJALA_PASSWORD_2:
-            st.session_state.authenticated = True
-            st.session_state.role = "komercijala"
-            st.session_state.komerc_user = "Komercijala 2"
+            st.session_state.role = _rola
+            st.session_state.mail_nalog = _nalog
+            if _rola == "administracija":
+                st.session_state.admin_user = _ime
+            elif _rola == "komercijala":
+                st.session_state.komerc_user = _ime
             st.rerun()
         else:
-            st.error("Pogrešna šifra")
+            st.error("Pogrešno korisničko ime ili šifra")
     st.markdown("""
     <div style="text-align:center; margin-top:28px;">
         <p style="color:#b9b3c9; font-size:12px; margin:0;">
@@ -2704,20 +2725,41 @@ def posalji_u_admin(id_kupca, items):
 
 
 # ---- SMTP: slanje mejla objektu (sa prilogom) ----
-def _smtp_cfg():
+def _mail_nalog():
+    """Koji SMTP nalog koristi trenutno prijavljeni korisnik ('1', '2' ili '')."""
+    try:
+        return str(st.session_state.get("mail_nalog", "") or "")
+    except Exception:
+        return ""
+
+
+def _smtp_kljuc(ime, nalog, default=None):
+    """Prvo trazi npr. SMTP_USER_1, pa tek onda zajednicki SMTP_USER."""
+    if nalog:
+        v = _cfg(ime + "_" + str(nalog), None)
+        if v not in (None, ""):
+            return v
+    return _cfg(ime, default)
+
+
+def _smtp_cfg(nalog=None):
+    n = _mail_nalog() if nalog is None else str(nalog or "")
+    _user = _smtp_kljuc("SMTP_USER", n, "")
+    _ime = ADMIN_IME if n == "1" else (ADMIN_IME_2 if n == "2" else "Vape Shop")
     return {
-        "host": _cfg("SMTP_HOST", ""),
-        "port": int(_cfg("SMTP_PORT", 587) or 587),
-        "user": _cfg("SMTP_USER", ""),
-        "password": _cfg("SMTP_PASSWORD", ""),
-        "from_email": _cfg("SMTP_FROM", "") or _cfg("SMTP_USER", ""),
-        "from_name": _cfg("SMTP_FROM_NAME", "Vape Shop"),
-        "use_ssl": bool(_cfg("SMTP_USE_SSL", False)),
+        "nalog": n,
+        "host": _smtp_kljuc("SMTP_HOST", n, ""),
+        "port": int(_smtp_kljuc("SMTP_PORT", n, 587) or 587),
+        "user": _user,
+        "password": _smtp_kljuc("SMTP_PASSWORD", n, ""),
+        "from_email": _smtp_kljuc("SMTP_FROM", n, "") or _user,
+        "from_name": _smtp_kljuc("SMTP_FROM_NAME", n, _ime),
+        "use_ssl": bool(_smtp_kljuc("SMTP_USE_SSL", n, False)),
     }
 
 
-def smtp_dostupan():
-    c = _smtp_cfg()
+def smtp_dostupan(nalog=None):
+    c = _smtp_cfg(nalog)
     return bool(c["host"] and c["user"] and c["password"])
 
 
@@ -2736,7 +2778,10 @@ def posalji_mejl_sa_prilogom(to_email, subject, body, attach_bytes=None, attach_
     from email.utils import formataddr
     cfg = _smtp_cfg()
     if not smtp_dostupan():
-        raise RuntimeError("Slanje mejlova nije podešeno (dodaj SMTP_HOST / SMTP_USER / SMTP_PASSWORD u Secrets).")
+        _n = cfg.get("nalog") or ""
+        _suf = ("_" + _n) if _n else ""
+        raise RuntimeError("Slanje mejlova nije podešeno za ovog korisnika — dodaj u Secrets: "
+                           "SMTP_HOST" + _suf + " / SMTP_USER" + _suf + " / SMTP_PASSWORD" + _suf + ".")
     to_email = (to_email or "").strip()
     if not to_email or "@" not in to_email:
         raise RuntimeError("Objekat nema ispravnu email adresu u šifarniku komitenata.")
@@ -3121,7 +3166,8 @@ def render_statistika(mesec_key, sel_lbl):
     # poređaj: prvo imenovani (A1, A2...), pa „Bez oznake"
     _users = sorted(agg.keys(), key=lambda u: (u == "Bez oznake", u))
     _cols = st.columns(max(1, min(len(_users), 3)))
-    _clr = {"Administracija 1": "#7c3aed", "Administracija 2": "#ec4899"}
+    _clr = {"Administracija 1": "#7c3aed", "Administracija 2": "#ec4899",
+            str(ADMIN_IME): "#7c3aed", str(ADMIN_IME_2): "#ec4899"}
     for _i, _u in enumerate(_users):
         _d = agg[_u]
         _c = _clr.get(_u, "#64748b")
@@ -3250,7 +3296,7 @@ def prikazi_administraciju():
     with _hc2:
         st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
         if st.button("Odjava", key="adm_odjava", use_container_width=True):
-            for _k in ("authenticated", "role", "admin_user"):
+            for _k in ("authenticated", "role", "admin_user", "mail_nalog"):
                 st.session_state.pop(_k, None)
             st.rerun()
         if st.button("🔄 Ažuriraj iz admina", key="refresh_all_admin",
@@ -3773,7 +3819,8 @@ def prikazi_administraciju():
                     except Exception as _me:
                         st.error("Slanje nije uspelo: " + str(_me))
         if not smtp_dostupan():
-            st.caption("ℹ️ Slanje mejlova nije podešeno (SMTP u Secrets). Možeš da preuzmeš prilog i pošalješ ručno.")
+            st.caption("ℹ️ Slanje mejlova nije podešeno za tvoj nalog (SMTP u Secrets). "
+                       "Možeš da preuzmeš prilog i pošalješ ručno.")
         elif _mail_meta.get("at"):
             st.caption("📧 Poslednji put poslato: " + str(_mail_meta.get("at"))
                        + (" · " + str(_mail_meta.get("ko")) if _mail_meta.get("ko") else "")
@@ -4356,7 +4403,10 @@ def prikazi_administraciju():
                     else:
                         _confirm_body()
                 if not smtp_dostupan():
-                    st.caption("✉️ Slanje mejla nije podešeno u Secrets.")
+                    _nn = _mail_nalog()
+                    st.caption("✉️ Slanje mejla nije podešeno za tvoj nalog (Secrets: SMTP_USER"
+                               + (("_" + _nn) if _nn else "") + " / SMTP_PASSWORD"
+                               + (("_" + _nn) if _nn else "") + ").")
                 elif not _mail_to:
                     st.caption("Objekat nema email u šifarniku komitenata.")
                 elif not _exp_rows:
@@ -4534,7 +4584,12 @@ def prikazi_administraciju():
                    "pa klikni Pošalji izabranima. Slanje radi sve isto kao pojedinačno slanje mejla "
                    "(šalje Excel prilog i automatski upali reakciju Poslala sam mejl). Šalje se samo objektima sa emailom i dodatnom porudžbinom.")
         if not smtp_dostupan():
-            st.warning("✉️ Slanje mejlova nije podešeno u Secrets (SMTP_HOST / SMTP_USER / SMTP_PASSWORD).")
+            _n = _mail_nalog()
+            _suf = ("_" + _n) if _n else ""
+            st.warning("✉️ Slanje mejlova nije podešeno za tvoj nalog — dodaj u Secrets: "
+                       "SMTP_HOST" + _suf + " / SMTP_USER" + _suf + " / SMTP_PASSWORD" + _suf + ".")
+        else:
+            st.caption("✉️ Mejlovi se šalju sa: " + str(_smtp_cfg().get("from_email", "")))
         _selk = "bulk_sel_" + str(sistem) + "_" + str(mesec_key)
         _verk = "bulk_ver_" + str(sistem) + "_" + str(mesec_key)
         if _selk not in st.session_state:
@@ -4818,7 +4873,7 @@ def prikazi_komercijalu():
                     unsafe_allow_html=True)
     with _h2:
         if st.button("Odjava", key="kom_odjava", use_container_width=True):
-            for _k in ("authenticated", "role", "komerc_user"):
+            for _k in ("authenticated", "role", "komerc_user", "mail_nalog"):
                 st.session_state.pop(_k, None)
             st.rerun()
         if st.button("🔄 Ažuriraj iz admina", key="kom_refresh_all",
@@ -5565,7 +5620,7 @@ def prikazi_direktore():
     with _h2:
         st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
         if st.button("Odjava", key="dir_odjava", use_container_width=True):
-            for _k in ("authenticated", "role", "admin_user"):
+            for _k in ("authenticated", "role", "admin_user", "mail_nalog"):
                 st.session_state.pop(_k, None)
             st.rerun()
 
@@ -7632,7 +7687,7 @@ render_header("Predikcija prodaje · Profitabilnost · OOS analiza · Efekti akc
 _co = st.columns([6, 1])
 with _co[1]:
     if st.button("🔓 Odjava", key="ana_odjava"):
-        for _k in ("authenticated", "role", "admin_user"):
+        for _k in ("authenticated", "role", "admin_user", "mail_nalog"):
             st.session_state.pop(_k, None)
         st.rerun()
 
