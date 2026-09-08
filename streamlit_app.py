@@ -2776,6 +2776,13 @@ def _nedeljni_prilog_pdf(payload):
             _prod = [int(x or 0) for x in (_primer.get("prodaja", []) or [])]
             if not _mes or len(_mes) != len(_prod):
                 _mes = [str(i + 1) for i in range(len(_prod))]
+            _god = set()
+            for _m in _mes:
+                _d = str(_m).split()
+                if len(_d) >= 2 and _d[-1].isdigit() and len(_d[-1]) == 4:
+                    _god.add(_d[-1])
+            if len(_god) == 1:
+                _mes = [" ".join(str(_m).split()[:-1]) or str(_m) for _m in _mes]
             _fig, _ax = _plt.subplots(figsize=(4.5, 1.55))
             _mx = max(_prod + [1])
             _cols = ["#b9d3f3"] * len(_prod)
@@ -2811,11 +2818,24 @@ def _nedeljni_prilog_pdf(payload):
         _lev = [Paragraph("<b>" + _esc(_primer.get("art", "")) + "</b>", TD),
                 Paragraph(_esc(_primer.get("obj", "")), PS),
                 Spacer(1, 6)]
-        _mes_pr0 = int(_primer.get("mes", 0) or 0) or (int(_primer.get("ned", 0) or 0) * 30 // 7)
-        for _lbl, _val, _hit in (("Prodaja (prosek mesečno)", str(_mes_pr0) + " kom", False),
-                                 ("Potrebno za " + _perl, str(int(_primer.get("pred7", 0) or 0)) + " kom", False),
-                                 ("Lager danas", str(int(_primer.get("lager", 0) or 0)) + " kom",
-                                  int(_primer.get("lager", 0) or 0) <= 0)):
+        _ser0 = [int(x or 0) for x in (_primer.get("prodaja", []) or [])]
+        _last0 = _ser0[-1] if _ser0 else 0
+        _zad3 = _ser0[-3:] if len(_ser0) >= 3 else _ser0
+        _avg3 = int(round(sum(_zad3) / float(len(_zad3)))) if _zad3 else 0
+        _lbl_last = ""
+        try:
+            _mm0 = list(_primer.get("meseci", []) or [])
+            if len(_mm0) == len(_ser0) and _mm0:
+                _lbl_last = str(_mm0[-1])
+        except Exception:
+            _lbl_last = ""
+        _redovi = [("Prodaja u poslednjem mesecu" + ((" (" + _lbl_last + ")") if _lbl_last else ""),
+                    str(_last0) + " kom", False),
+                   ("Prosek poslednja " + str(len(_zad3)) + " meseca", str(_avg3) + " kom", False),
+                   ("Potrebno za " + _perl, str(int(_primer.get("pred7", 0) or 0)) + " kom", False),
+                   ("Lager danas", str(int(_primer.get("lager", 0) or 0)) + " kom",
+                    int(_primer.get("lager", 0) or 0) <= 0)]
+        for _lbl, _val, _hit in _redovi:
             _col = "#c0392b" if _hit else "#1a2130"
             _lev.append(Table([[Paragraph('<font size="8.4" color="#4b5563">' + _lbl + '</font>', TD),
                                 Paragraph('<font size="8.4" color="' + _col + '"><b>' + _val + '</b></font>', TDr)]],
@@ -2835,10 +2855,14 @@ def _nedeljni_prilog_pdf(payload):
                                  ("TOPPADDING", (0, 0), (-1, -1), 9),
                                  ("BOTTOMPADDING", (0, 0), (-1, -1), 9)]))
         _prim_el.append(_pt)
-        _mes_pr = _mes_pr0
-        _zak = ("Artikal se stabilno prodaje <b>oko " + str(_mes_pr) + " komada mesečno</b>, a polica je prazna. "
-                "Dok se ne dopuni, taj objekat gubi <b>oko " + str(int(_primer.get("ned", 0) or 0))
-                + " komada nedeljno</b> samo na ovom artiklu — isto važi i za ostale artikle iz tabele.")
+        _lg0 = int(_primer.get("lager", 0) or 0)
+        _tr0 = int(_primer.get("pred7", 0) or 0)
+        _zak = ("U poslednjem mesecu prodato je <b>" + str(_last0) + " komada</b>"
+                + (", prosek poslednja " + str(len(_zad3)) + " meseca je <b>" + str(_avg3)
+                   + " komada</b>" if len(_zad3) > 1 else "")
+                + ", a na lageru je <b>" + str(_lg0) + " komada</b>. Da bi objekat pokrio prodaju za "
+                + _perl + ", potrebno je <b>" + str(_tr0) + " komada</b> — isto važi i za ostale "
+                "artikle iz tabele.")
         _zt = Table([[Paragraph('<font color="#8f2018">' + _zak + '</font>', TD)]], colWidths=[W])
         _zt.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fdf1f0")),
                                  ("LINEBEFORE", (0, 0), (0, -1), 2.5, CRIT),
