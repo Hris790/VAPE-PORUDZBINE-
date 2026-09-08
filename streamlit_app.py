@@ -3202,6 +3202,76 @@ def smtp_dostupan(nalog=None):
     return bool(c["host"] and c["user"] and c["password"])
 
 
+def _imap_cfg(nalog=None):
+    """Podaci za IMAP (da se poslati mejl upiše u folder Poslato).
+    Podrazumevano isti server i nalog kao SMTP; može se pregaziti sa IMAP_HOST_n / IMAP_PORT_n."""
+    c = _smtp_cfg(nalog)
+    n = c.get("nalog") or ""
+    _h = _smtp_kljuc("IMAP_HOST", n, "") or ""
+    if not _h:
+        _h = str(c.get("host") or "")
+        if _h.lower().startswith("smtp."):
+            _h = "imap." + _h[5:]
+    try:
+        _p = int(_smtp_kljuc("IMAP_PORT", n, 993) or 993)
+    except Exception:
+        _p = 993
+    return {"host": _h, "port": _p, "user": c.get("user", ""), "password": c.get("password", "")}
+
+
+def _nadji_poslato_folder(imap):
+    """Pronađi folder za poslatu poštu (razlikuje se po serveru i jeziku)."""
+    try:
+        _ok, _lst = imap.list()
+        if _ok != "OK" or not _lst:
+            return None
+        _kand = []
+        for _raw in _lst:
+            try:
+                _lin = _raw.decode("utf-8", "ignore") if isinstance(_raw, bytes) else str(_raw)
+            except Exception:
+                continue
+            _ime = _lin.split(' "', 2)[-1].strip().strip('"')
+            if not _ime:
+                continue
+            if "\\Sent" in _lin:
+                return _ime
+            _low = _ime.lower()
+            if ("sent" in _low or "poslat" in _low or "poslano" in _low):
+                _kand.append(_ime)
+        return _kand[0] if _kand else None
+    except Exception:
+        return None
+
+
+def _upisi_u_poslato(msg, nalog=None):
+    """Upiši kopiju poslatog mejla u folder Poslato, da se vidi u Outlooku.
+    Vraća (True, ime_foldera) ili (False, razlog). Nikad ne baca izuzetak."""
+    if str(_cfg("SMTP_KOPIJA", "1")).strip().lower() in ("0", "false", "ne", "off"):
+        return (False, "isključeno u podešavanjima")
+    import imaplib, time as _t
+    c = _imap_cfg(nalog)
+    if not (c["host"] and c["user"] and c["password"]):
+        return (False, "IMAP nije podešen")
+    try:
+        _im = imaplib.IMAP4_SSL(c["host"], c["port"], timeout=20)
+        _im.login(c["user"], c["password"])
+        _f = _nadji_poslato_folder(_im)
+        if not _f:
+            _im.logout()
+            return (False, "ne mogu da nađem folder za poslatu poštu")
+        _im.append(_f, "\\Seen", imaplib.Time2Internaldate(_t.time()),
+                   msg.as_string().encode("utf-8"))
+        _im.logout()
+        return (True, _f)
+    except Exception as _e:
+        try:
+            _im.logout()
+        except Exception:
+            pass
+        return (False, str(_e)[:160])
+
+
 def smtp_test(nalog=None):
     """Proveri SMTP nalog bez slanja mejla: poveži se i prijavi.
     Vraća (True, poruka) ili (False, razlog)."""
@@ -3219,8 +3289,26 @@ def smtp_test(nalog=None):
             srv.ehlo()
         srv.login(cfg["user"], cfg["password"])
         srv.quit()
-        return (True, "Veza radi — mejlovi će ići sa " + str(cfg["from_email"])
+        _por = ("Veza radi — mejlovi će ići sa " + str(cfg["from_email"])
                 + " (" + str(cfg["host"]) + ":" + str(cfg["port"]) + ").")
+        # provera da li kopija može da se upiše u Poslato (da se vidi u Outlooku)
+        try:
+            import imaplib as _il
+            _ic = _imap_cfg(nalog)
+            if _ic["host"] and _ic["user"] and _ic["password"]:
+                _im = _il.IMAP4_SSL(_ic["host"], _ic["port"], timeout=20)
+                _im.login(_ic["user"], _ic["password"])
+                _fold = _nadji_poslato_folder(_im)
+                _im.logout()
+                if _fold:
+                    _por += " Kopija se upisuje u folder „" + str(_fold) + "“."
+                else:
+                    _por += " (Folder za poslatu poštu nije pronađen — kopije neće biti.)"
+            else:
+                _por += " (IMAP nije podešen — kopije u Poslato neće biti.)"
+        except Exception as _ie:
+            _por += " (Kopija u Poslato ne radi: " + str(_ie)[:90] + ")"
+        return (True, _por)
     except smtplib.SMTPAuthenticationError as _e:
         return (False, "Server odbija prijavu — pogrešno korisničko ime ili lozinka za "
                 + str(cfg["user"]) + ". (" + str(_e).split("\n")[0][:160] + ")")
@@ -3277,6 +3365,15 @@ def posalji_mejl_sa_prilogom(to_email, subject, body, attach_bytes=None, attach_
         server.login(cfg["user"], cfg["password"])
         server.sendmail(cfg["from_email"], recipients, msg.as_string())
         server.quit()
+        # kopija u folder Poslato, da se mejl vidi i u Outlooku/webmailu
+        try:
+            _ok_kop, _kop = _upisi_u_poslato(msg)
+            try:
+                st.session_state["_zadnja_kopija"] = (bool(_ok_kop), str(_kop))
+            except Exception:
+                pass
+        except Exception:
+            pass
     except smtplib.SMTPAuthenticationError:
         raise RuntimeError("Prijava na SMTP nije uspela — proveri SMTP_USER/SMTP_PASSWORD (za Gmail mora App Password).")
     except Exception as _e:
@@ -4409,7 +4506,11 @@ def prikazi_administraciju():
                                                  poslato=True)
                         except Exception:
                             pass
-                        st.success("✅ Mejl poslat na " + _to_send + " · prilog: " + _prilog_ime)
+                        _kk = st.session_state.get("_zadnja_kopija")
+                        _dod = ""
+                        if _kk:
+                            _dod = ("  ·  kopija u „" + _kk[1] + "“") if _kk[0] else ""
+                        st.success("✅ Mejl poslat na " + _to_send + " · prilog: " + _prilog_ime + _dod)
                         st.rerun()
                     except Exception as _me:
                         st.error("Slanje nije uspelo: " + str(_me))
