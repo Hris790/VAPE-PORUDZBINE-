@@ -2803,6 +2803,8 @@ def _nedeljni_prilog_pdf(payload):
             _ax.spines["bottom"].set_color("#c3c2b7")
             _ax.set_axisbelow(True)
             _ax.yaxis.grid(True, color="#eef1f6", linewidth=0.8)
+            from matplotlib.ticker import MaxNLocator as _MNL0
+            _ax.yaxis.set_major_locator(_MNL0(integer=True, nbins=4))
             _bf = _io.BytesIO()
             _fig.savefig(_bf, format="png", dpi=200, facecolor="white",
                          bbox_inches="tight", pad_inches=0.05)
@@ -2856,13 +2858,21 @@ def _nedeljni_prilog_pdf(payload):
                                  ("BOTTOMPADDING", (0, 0), (-1, -1), 9)]))
         _prim_el.append(_pt)
         _lg0 = int(_primer.get("lager", 0) or 0)
-        _tr0 = int(_primer.get("pred7", 0) or 0)
-        _zak = ("U poslednjem mesecu prodato je <b>" + str(_last0) + " komada</b>"
-                + (", prosek poslednja " + str(len(_zad3)) + " meseca je <b>" + str(_avg3)
-                   + " komada</b>" if len(_zad3) > 1 else "")
-                + ", a na lageru je <b>" + str(_lg0) + " komada</b>. Da bi objekat pokrio prodaju za "
-                + _perl + ", potrebno je <b>" + str(_tr0) + " komada</b> — isto važi i za ostale "
-                "artikle iz tabele.")
+        _n_mes0 = sum(1 for _x in _ser0 if int(_x or 0) > 0)
+        _zak = ("Ovaj artikal se prodaje redovno: prodaju ima u <b>" + str(_n_mes0) + " od "
+                + str(len(_ser0)) + " meseci</b>, poslednjeg meseca"
+                + ((" (" + _lbl_last + ")") if _lbl_last else "") + " <b>" + str(_last0)
+                + " komada</b> — a danas ga u objektu <b>nema</b>. "
+                "Svaka nedelja bez robe znači oko <b>" + str(int(_primer.get("ned", 0) or 0))
+                + " komada neostvarene prodaje</b>, i to samo na ovom jednom artiklu. "
+                "U celom sistemu je ovako prazno <b>" + str(_art0) + " artikala</b>.")
+        if _lg0 > 0:
+            _zak = ("Ovaj artikal se prodaje redovno: prodaju ima u <b>" + str(_n_mes0) + " od "
+                    + str(len(_ser0)) + " meseci</b>, poslednjeg meseca"
+                    + ((" (" + _lbl_last + ")") if _lbl_last else "") + " <b>" + str(_last0)
+                    + " komada</b> — a na lageru je ostalo svega <b>" + str(_lg0)
+                    + " komada</b>, što nije dovoljno ni za " + _perl + ". "
+                    "U celom sistemu je na nuli <b>" + str(_art0) + " artikala</b>.")
         _zt = Table([[Paragraph('<font color="#8f2018">' + _zak + '</font>', TD)]], colWidths=[W])
         _zt.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fdf1f0")),
                                  ("LINEBEFORE", (0, 0), (0, -1), 2.5, CRIT),
@@ -4106,10 +4116,14 @@ def prikazi_administraciju():
                     _pl = {"obj": _nz_s, "art": a["naziv"], "meseci": _mes_naz, "prodaja": _ser,
                            "ned": int(round(_pr * 7 / 30.0)), "mes": _pr, "lager": _lg,
                            "pred7": int(round(_pr * _dani / 30.0))}
-                    if _pr > _candA_sc:
-                        _candA_sc = _pr; _candA = _pl
-                    if _lg <= 0 and _pr > _cand0_sc:
-                        _cand0_sc = _pr; _cand0 = _pl
+                    # najbolji primer = onaj koji se prodaje u NAJVIŠE meseci (duga, jasna istorija),
+                    # pa tek onda onaj sa najvećom ukupnom prodajom
+                    _n_mes = sum(1 for _x in _ser if int(_x or 0) > 0)
+                    _sc = _n_mes * 10000 + int(sum(_ser))
+                    if _sc > _candA_sc:
+                        _candA_sc = _sc; _candA = _pl
+                    if _lg <= 0 and _sc > _cand0_sc:
+                        _cand0_sc = _sc; _cand0 = _pl
             _n0_obj = sum(1 for a in p["arts"] if int(a.get("lager", 0) or 0) <= 0)
             _mj_obj = sum(int(a.get("manjak7", 0) or 0) for a in p["arts"])
             _red_obj.append({"ime": _nz_s, "na_nuli": _n0_obj,
