@@ -3216,32 +3216,61 @@ def _imap_cfg(nalog=None):
         _p = int(_smtp_kljuc("IMAP_PORT", n, 993) or 993)
     except Exception:
         _p = 993
-    return {"host": _h, "port": _p, "user": c.get("user", ""), "password": c.get("password", "")}
+    return {"host": _h, "port": _p, "user": c.get("user", ""), "password": c.get("password", ""),
+            "nalog": n}
+
+
+def _imap_folderi(imap):
+    """Vrati listu (ime_foldera, zastavice) iz IMAP LIST odgovora, ispravno isparsirano."""
+    import re as _re
+    _out = []
+    try:
+        _ok, _lst = imap.list()
+        if _ok != "OK" or not _lst:
+            return _out
+    except Exception:
+        return _out
+    _rx = _re.compile(r'^\((?P<flags>[^)]*)\)\s+(?:"(?P<delim>[^"]*)"|NIL)\s+(?P<name>.+)$')
+    for _raw in _lst:
+        try:
+            _lin = _raw.decode("utf-8", "ignore") if isinstance(_raw, bytes) else str(_raw)
+        except Exception:
+            continue
+        _lin = _lin.strip()
+        _m = _rx.match(_lin)
+        if _m:
+            _ime = _m.group("name").strip()
+            _fl = _m.group("flags") or ""
+        else:
+            # rezerva: uzmi sve posle poslednjeg navodnika-para
+            _d = _lin.split()
+            _ime = _d[-1] if _d else ""
+            _fl = ""
+        if len(_ime) >= 2 and _ime[0] == '"' and _ime[-1] == '"':
+            _ime = _ime[1:-1]
+        _ime = _ime.strip()
+        if _ime:
+            _out.append((_ime, _fl))
+    return _out
 
 
 def _nadji_poslato_folder(imap):
     """Pronađi folder za poslatu poštu (razlikuje se po serveru i jeziku)."""
-    try:
-        _ok, _lst = imap.list()
-        if _ok != "OK" or not _lst:
-            return None
-        _kand = []
-        for _raw in _lst:
-            try:
-                _lin = _raw.decode("utf-8", "ignore") if isinstance(_raw, bytes) else str(_raw)
-            except Exception:
-                continue
-            _ime = _lin.split(' "', 2)[-1].strip().strip('"')
-            if not _ime:
-                continue
-            if "\\Sent" in _lin:
-                return _ime
-            _low = _ime.lower()
-            if ("sent" in _low or "poslat" in _low or "poslano" in _low):
-                _kand.append(_ime)
-        return _kand[0] if _kand else None
-    except Exception:
+    _f = _imap_folderi(imap)
+    if not _f:
         return None
+    for _ime, _fl in _f:
+        if "\\Sent" in _fl:
+            return _ime
+    for _ime, _fl in _f:
+        _low = _ime.lower()
+        if _low.endswith("sent") or _low.endswith("sent items") or _low.endswith("sent mail"):
+            return _ime
+    for _ime, _fl in _f:
+        _low = _ime.lower()
+        if "poslat" in _low or "poslano" in _low or "sent" in _low:
+            return _ime
+    return None
 
 
 def _upisi_u_poslato(msg, nalog=None):
@@ -3256,7 +3285,9 @@ def _upisi_u_poslato(msg, nalog=None):
     try:
         _im = imaplib.IMAP4_SSL(c["host"], c["port"], timeout=20)
         _im.login(c["user"], c["password"])
-        _f = _nadji_poslato_folder(_im)
+        _f = _smtp_kljuc("IMAP_SENT", c.get("nalog") or _mail_nalog(), "") or ""
+        if not _f:
+            _f = _nadji_poslato_folder(_im)
         if not _f:
             _im.logout()
             return (False, "ne mogu da nađem folder za poslatu poštu")
@@ -3886,6 +3917,47 @@ def prikazi_administraciju():
             st.session_state["_req_refresh_admin"] = True
         if st.button("📝 Predaj izveštaj", key="predaj_izvestaj", use_container_width=True):
             st.session_state["_req_predaj"] = True
+
+    with st.expander("✉️ Podešavanje mejla (provera slanja)", expanded=False):
+        _mc = _smtp_cfg()
+        if not smtp_dostupan():
+            _nn0 = _mail_nalog()
+            _sf0 = ("_" + _nn0) if _nn0 else ""
+            st.warning("Slanje mejlova nije podešeno za tvoj nalog — u Secrets fale "
+                       "SMTP_HOST" + _sf0 + " / SMTP_USER" + _sf0 + " / SMTP_PASSWORD" + _sf0 + ".")
+        else:
+            st.caption("Šalje se sa: **" + str(_mc.get("from_email", "")) + "**  ·  server "
+                       + str(_mc.get("host", "")) + ":" + str(_mc.get("port", "")))
+        _ec1, _ec2, _ec3 = st.columns(3)
+        with _ec1:
+            if st.button("🔌 Proveri vezu", key="mail_test_veza", use_container_width=True):
+                _ok0, _por0 = smtp_test()
+                (st.success if _ok0 else st.error)(("✅ " if _ok0 else "❌ ") + _por0)
+        with _ec2:
+            if st.button("📁 Prikaži foldere", key="mail_test_folderi", use_container_width=True):
+                try:
+                    import imaplib as _il3
+                    _ic3 = _imap_cfg()
+                    _im3 = _il3.IMAP4_SSL(_ic3["host"], _ic3["port"], timeout=20)
+                    _im3.login(_ic3["user"], _ic3["password"])
+                    _fs3 = _imap_folderi(_im3)
+                    _sel3 = _nadji_poslato_folder(_im3)
+                    _im3.logout()
+                    if _fs3:
+                        st.info("Folderi na serveru:\n\n"
+                                + "\n".join("• " + _n3 + ("  ← ovde idu kopije" if _n3 == _sel3 else "")
+                                            for _n3, _ in _fs3))
+                    else:
+                        st.error("Server nije vratio nijedan folder.")
+                except Exception as _le3:
+                    st.error("Ne mogu da pročitam foldere: " + str(_le3)[:200])
+        with _ec3:
+            if st.button("📥 Probni upis u Poslato", key="mail_test_upis", use_container_width=True):
+                _ok3, _f3 = imap_test_upis()
+                if _ok3:
+                    st.success("✅ Probna poruka upisana u „" + str(_f3) + "“. Proveri Poslato.")
+                else:
+                    st.error("❌ " + str(_f3))
 
     if not sb_dostupan():
         st.error("Veza sa bazom trenutno nije podešena. Javi se analitičaru.")
@@ -5324,6 +5396,25 @@ def prikazi_administraciju():
                         st.success("✅ " + _por)
                     else:
                         st.error("❌ " + _por)
+                if st.button("📁 Prikaži foldere",
+                             key="imap_list_" + str(sistem) + "_" + str(mesec_key),
+                             use_container_width=True):
+                    try:
+                        import imaplib as _il2
+                        _ic2 = _imap_cfg()
+                        _im2 = _il2.IMAP4_SSL(_ic2["host"], _ic2["port"], timeout=20)
+                        _im2.login(_ic2["user"], _ic2["password"])
+                        _fs = _imap_folderi(_im2)
+                        _sel = _nadji_poslato_folder(_im2)
+                        _im2.logout()
+                        if _fs:
+                            st.info("Folderi na serveru:\n\n"
+                                    + "\n".join("• " + _n2 + (("  ← koristi se" if _n2 == _sel else ""))
+                                                for _n2, _ in _fs))
+                        else:
+                            st.error("Server nije vratio nijedan folder.")
+                    except Exception as _le:
+                        st.error("Ne mogu da pročitam foldere: " + str(_le)[:200])
                 if st.button("📥 Probni upis u Poslato",
                              key="imap_test_" + str(sistem) + "_" + str(mesec_key),
                              use_container_width=True):
