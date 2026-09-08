@@ -3202,6 +3202,36 @@ def smtp_dostupan(nalog=None):
     return bool(c["host"] and c["user"] and c["password"])
 
 
+def smtp_test(nalog=None):
+    """Proveri SMTP nalog bez slanja mejla: poveži se i prijavi.
+    Vraća (True, poruka) ili (False, razlog)."""
+    import smtplib
+    cfg = _smtp_cfg(nalog)
+    if not (cfg["host"] and cfg["user"] and cfg["password"]):
+        return (False, "Nije podešeno — fale SMTP_HOST / SMTP_USER / SMTP_PASSWORD za ovaj nalog.")
+    try:
+        if cfg["use_ssl"]:
+            srv = smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=20)
+        else:
+            srv = smtplib.SMTP(cfg["host"], cfg["port"], timeout=20)
+            srv.ehlo()
+            srv.starttls()
+            srv.ehlo()
+        srv.login(cfg["user"], cfg["password"])
+        srv.quit()
+        return (True, "Veza radi — mejlovi će ići sa " + str(cfg["from_email"])
+                + " (" + str(cfg["host"]) + ":" + str(cfg["port"]) + ").")
+    except smtplib.SMTPAuthenticationError as _e:
+        return (False, "Server odbija prijavu — pogrešno korisničko ime ili lozinka za "
+                + str(cfg["user"]) + ". (" + str(_e).split("\n")[0][:160] + ")")
+    except smtplib.SMTPNotSupportedError as _e:
+        return (False, "Server ne podržava traženi način prijave. Probaj port 465 uz "
+                       "SMTP_USE_SSL. (" + str(_e)[:160] + ")")
+    except Exception as _e:
+        return (False, "Ne mogu da se povežem na " + str(cfg["host"]) + ":" + str(cfg["port"])
+                + " — " + str(_e)[:200])
+
+
 MEJL_TEKST_DEFAULT = ("U prilogu vam šaljem predlog trebovanja u skladu sa Vašim lagerom. "
                        "Molim da što pre trebujete robu!")
 
@@ -5154,7 +5184,19 @@ def prikazi_administraciju():
             st.warning("✉️ Slanje mejlova nije podešeno za tvoj nalog — dodaj u Secrets: "
                        "SMTP_HOST" + _suf + " / SMTP_USER" + _suf + " / SMTP_PASSWORD" + _suf + ".")
         else:
-            st.caption("✉️ Mejlovi se šalju sa: " + str(_smtp_cfg().get("from_email", "")))
+            _tc1, _tc2 = st.columns([3, 1])
+            with _tc1:
+                st.caption("✉️ Mejlovi se šalju sa: " + str(_smtp_cfg().get("from_email", ""))
+                           + "  ·  server: " + str(_smtp_cfg().get("host", "")) + ":"
+                           + str(_smtp_cfg().get("port", "")))
+            with _tc2:
+                if st.button("🔌 Proveri vezu", key="smtp_test_" + str(sistem) + "_" + str(mesec_key),
+                             use_container_width=True):
+                    _ok, _por = smtp_test()
+                    if _ok:
+                        st.success("✅ " + _por)
+                    else:
+                        st.error("❌ " + _por)
         _selk = "bulk_sel_" + str(sistem) + "_" + str(mesec_key)
         _verk = "bulk_ver_" + str(sistem) + "_" + str(mesec_key)
         if _selk not in st.session_state:
