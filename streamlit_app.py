@@ -4585,9 +4585,11 @@ def prikazi_administraciju():
                     st.error("Upiši ispravan mejl nadležnog.")
                 else:
                     try:
-                        posalji_mejl_sa_prilogom(
-                            _to_send, _subj_send, _body_send, attach_bytes=_pdf_bytes_n,
-                            attach_filename=_prilog_ime)
+                        with st.spinner("✉️ Šaljem mejl na " + _to_send
+                                        + " … (zna da potraje do 2 minuta, ne zatvaraj stranu)"):
+                            posalji_mejl_sa_prilogom(
+                                _to_send, _subj_send, _body_send, attach_bytes=_pdf_bytes_n,
+                                attach_filename=_prilog_ime)
                         try:
                             sb_nedeljni_mail_set(mesec_key, sistem, _to_send,
                                                  ko=st.session_state.get("admin_user", "Administracija"),
@@ -5131,10 +5133,17 @@ def prikazi_administraciju():
                         _subj = ("VAPE SHOP - " + str(_naziv_kom or ("ID " + str(sel_id)))
                                  + " - PORUDŽBINA - " + _now().strftime("%d.%m.%Y."))
                         _fname_mail = _fname if _exp_rows else (str(sel_id) + ".xlsx")
-                        posalji_mejl_sa_prilogom(_mail_to, _subj, MEJL_TEKST_DEFAULT, _exp_xlsx, _fname_mail)
+                        import time as _tm1
+                        _t0 = _tm1.time()
+                        with st.spinner("✉️ Šaljem mejl na " + _mail_to
+                                        + " … (zna da potraje do 2 minuta, ne zatvaraj stranu)"):
+                            posalji_mejl_sa_prilogom(_mail_to, _subj, MEJL_TEKST_DEFAULT,
+                                                     _exp_xlsx, _fname_mail)
+                        _traj = int(round(_tm1.time() - _t0))
                         _kk1 = st.session_state.get("_zadnja_kopija")
                         st.session_state[_sk_mail] = {"ok": True, "msg": "Poslato na " + _mail_to,
-                                                      "kopija": _kk1}
+                                                      "kopija": _kk1, "traj": _traj,
+                                                      "kada": _now().strftime("%d.%m.%Y %H:%M:%S")}
                         # Auto: zabeleži mejl u dnevnik (ko + vreme) + upali „Poslala sam mejl"
                         try:
                             _cur_u = st.session_state.get("admin_user", "Administracija")
@@ -5206,6 +5215,10 @@ def prikazi_administraciju():
                     if _mhtml:
                         st.markdown('<div style="margin:-4px 0 4px;">' + _mhtml + '</div>', unsafe_allow_html=True)
                 _mres = st.session_state.get(_sk_mail)
+                if _mres and _mres.get("ok") and _mres.get("kada"):
+                    st.caption("🕒 Poslato " + str(_mres.get("kada"))
+                               + (" · trajalo " + str(_mres.get("traj")) + " s"
+                                  if _mres.get("traj") is not None else ""))
                 _kop1 = (_mres or {}).get("kopija")
                 if _kop1:
                     if _kop1[0]:
@@ -5550,7 +5563,7 @@ def prikazi_administraciju():
                    + ((" · nema dodatne porudžbine: " + str(_n_sel_no_rows)) if _n_sel_no_rows else ""))
         if st.button("📧 Pošalji izabranima (" + str(_n_sel_ok) + ")", key="bulk_send", type="primary",
                      use_container_width=True, disabled=(_n_sel_ok == 0 or not smtp_dostupan() or _zakljucan)):
-            _bprog = st.progress(0, "Šaljem mejlove...")
+            _bprog = st.progress(0, "✉️ Pripremam slanje…")
             _to_send = [r for r in _view_rows if r["idk"] in _sel_ids and r["_email_ok"] and r["_has_rows"]]
             _cur_u = st.session_state.get("admin_user", "Administracija")
             _n_ok = 0; _n_fail = 0
@@ -5575,6 +5588,9 @@ def prikazi_administraciju():
                                             "predikcija": int(round(int(a.get("pred", 0) or 0) * _bmeseci)),
                                             "dodatna": _bdod2})
                 _bsk2 = "mailsent_" + str(sistem) + "_" + str(_bidk2)
+                _bprog.progress(int(_bi / len(_to_send) * 100),
+                                "✉️ Šaljem " + str(_bi + 1) + "/" + str(len(_to_send))
+                                + " — " + str(_bnaziv2)[:40] + " …")
                 try:
                     _bxlsx2 = _objekat_order_xlsx(_bnaziv2, _bidk2, _sel_lbl, _bexp_rows2, meseci=meta.get("meseci") if isinstance(meta, dict) else None)
                     import re as _refn2
@@ -5595,7 +5611,8 @@ def prikazi_administraciju():
                 except Exception as _be:
                     st.session_state[_bsk2] = {"ok": False, "msg": str(_be)}
                     _n_fail += 1
-                _bprog.progress(int((_bi + 1) / len(_to_send) * 100), "Poslato " + str(_bi + 1) + "/" + str(len(_to_send)) + "...")
+                _bprog.progress(int((_bi + 1) / len(_to_send) * 100),
+                                "✅ Poslato " + str(_bi + 1) + "/" + str(len(_to_send)))
             _bprog.empty()
             _kkb = st.session_state.get("_zadnja_kopija")
             if _kkb and not _kkb[0]:
