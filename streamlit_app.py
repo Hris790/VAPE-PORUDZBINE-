@@ -3918,47 +3918,6 @@ def prikazi_administraciju():
         if st.button("📝 Predaj izveštaj", key="predaj_izvestaj", use_container_width=True):
             st.session_state["_req_predaj"] = True
 
-    with st.expander("✉️ Podešavanje mejla (provera slanja)", expanded=False):
-        _mc = _smtp_cfg()
-        if not smtp_dostupan():
-            _nn0 = _mail_nalog()
-            _sf0 = ("_" + _nn0) if _nn0 else ""
-            st.warning("Slanje mejlova nije podešeno za tvoj nalog — u Secrets fale "
-                       "SMTP_HOST" + _sf0 + " / SMTP_USER" + _sf0 + " / SMTP_PASSWORD" + _sf0 + ".")
-        else:
-            st.caption("Šalje se sa: **" + str(_mc.get("from_email", "")) + "**  ·  server "
-                       + str(_mc.get("host", "")) + ":" + str(_mc.get("port", "")))
-        _ec1, _ec2, _ec3 = st.columns(3)
-        with _ec1:
-            if st.button("🔌 Proveri vezu", key="mail_test_veza", use_container_width=True):
-                _ok0, _por0 = smtp_test()
-                (st.success if _ok0 else st.error)(("✅ " if _ok0 else "❌ ") + _por0)
-        with _ec2:
-            if st.button("📁 Prikaži foldere", key="mail_test_folderi", use_container_width=True):
-                try:
-                    import imaplib as _il3
-                    _ic3 = _imap_cfg()
-                    _im3 = _il3.IMAP4_SSL(_ic3["host"], _ic3["port"], timeout=20)
-                    _im3.login(_ic3["user"], _ic3["password"])
-                    _fs3 = _imap_folderi(_im3)
-                    _sel3 = _nadji_poslato_folder(_im3)
-                    _im3.logout()
-                    if _fs3:
-                        st.info("Folderi na serveru:\n\n"
-                                + "\n".join("• " + _n3 + ("  ← ovde idu kopije" if _n3 == _sel3 else "")
-                                            for _n3, _ in _fs3))
-                    else:
-                        st.error("Server nije vratio nijedan folder.")
-                except Exception as _le3:
-                    st.error("Ne mogu da pročitam foldere: " + str(_le3)[:200])
-        with _ec3:
-            if st.button("📥 Probni upis u Poslato", key="mail_test_upis", use_container_width=True):
-                _ok3, _f3 = imap_test_upis()
-                if _ok3:
-                    st.success("✅ Probna poruka upisana u „" + str(_f3) + "“. Proveri Poslato.")
-                else:
-                    st.error("❌ " + str(_f3))
-
     if not sb_dostupan():
         st.error("Veza sa bazom trenutno nije podešena. Javi se analitičaru.")
         return
@@ -4597,8 +4556,7 @@ def prikazi_administraciju():
                         except Exception:
                             pass
                         _kk = st.session_state.get("_zadnja_kopija")
-                        _dod = ("  ·  kopija u „" + _kk[1] + "“") if (_kk and _kk[0]) else ""
-                        st.success("✅ Mejl poslat na " + _to_send + " · prilog: " + _prilog_ime + _dod)
+                        st.success("✅ Mejl poslat na " + _to_send + " · prilog: " + _prilog_ime)
                         if _kk and not _kk[0]:
                             st.warning("Mejl je poslat, ali kopija nije upisana u Poslato: "
                                        + str(_kk[1]))
@@ -5216,16 +5174,11 @@ def prikazi_administraciju():
                         st.markdown('<div style="margin:-4px 0 4px;">' + _mhtml + '</div>', unsafe_allow_html=True)
                 _mres = st.session_state.get(_sk_mail)
                 if _mres and _mres.get("ok") and _mres.get("kada"):
-                    st.caption("🕒 Poslato " + str(_mres.get("kada"))
-                               + (" · trajalo " + str(_mres.get("traj")) + " s"
-                                  if _mres.get("traj") is not None else ""))
+                    st.caption("🕒 Poslato " + str(_mres.get("kada")))
                 _kop1 = (_mres or {}).get("kopija")
-                if _kop1:
-                    if _kop1[0]:
-                        st.caption("📂 Kopija upisana u folder „" + str(_kop1[1]) + "“.")
-                    else:
-                        st.warning("Mejl je poslat, ali kopija nije upisana u Poslato: "
-                                   + str(_kop1[1]))
+                if _kop1 and not _kop1[0]:
+                    st.warning("Mejl je poslat, ali kopija nije upisana u Poslato: "
+                               + str(_kop1[1]))
                 if _mres and not _mres.get("ok"):
                     st.error("❌ " + _mres["msg"])
             with _ecol3:
@@ -5396,47 +5349,8 @@ def prikazi_administraciju():
             st.warning("✉️ Slanje mejlova nije podešeno za tvoj nalog — dodaj u Secrets: "
                        "SMTP_HOST" + _suf + " / SMTP_USER" + _suf + " / SMTP_PASSWORD" + _suf + ".")
         else:
-            _tc1, _tc2 = st.columns([3, 1])
-            with _tc1:
-                st.caption("✉️ Mejlovi se šalju sa: " + str(_smtp_cfg().get("from_email", ""))
-                           + "  ·  server: " + str(_smtp_cfg().get("host", "")) + ":"
-                           + str(_smtp_cfg().get("port", "")))
-            with _tc2:
-                if st.button("🔌 Proveri vezu", key="smtp_test_" + str(sistem) + "_" + str(mesec_key),
-                             use_container_width=True):
-                    _ok, _por = smtp_test()
-                    if _ok:
-                        st.success("✅ " + _por)
-                    else:
-                        st.error("❌ " + _por)
-                if st.button("📁 Prikaži foldere",
-                             key="imap_list_" + str(sistem) + "_" + str(mesec_key),
-                             use_container_width=True):
-                    try:
-                        import imaplib as _il2
-                        _ic2 = _imap_cfg()
-                        _im2 = _il2.IMAP4_SSL(_ic2["host"], _ic2["port"], timeout=20)
-                        _im2.login(_ic2["user"], _ic2["password"])
-                        _fs = _imap_folderi(_im2)
-                        _sel = _nadji_poslato_folder(_im2)
-                        _im2.logout()
-                        if _fs:
-                            st.info("Folderi na serveru:\n\n"
-                                    + "\n".join("• " + _n2 + (("  ← koristi se" if _n2 == _sel else ""))
-                                                for _n2, _ in _fs))
-                        else:
-                            st.error("Server nije vratio nijedan folder.")
-                    except Exception as _le:
-                        st.error("Ne mogu da pročitam foldere: " + str(_le)[:200])
-                if st.button("📥 Probni upis u Poslato",
-                             key="imap_test_" + str(sistem) + "_" + str(mesec_key),
-                             use_container_width=True):
-                    _ok2, _f2 = imap_test_upis()
-                    if _ok2:
-                        st.success("✅ Probna poruka upisana u folder „" + str(_f2)
-                                   + "“. Otvori webmail (ne Outlook) i proveri da li je tamo.")
-                    else:
-                        st.error("❌ Upis nije uspeo: " + str(_f2))
+            st.caption("✉️ Mejlovi se šalju sa: " + str(_smtp_cfg().get("from_email", "")))
+
         _selk = "bulk_sel_" + str(sistem) + "_" + str(mesec_key)
         _verk = "bulk_ver_" + str(sistem) + "_" + str(mesec_key)
         if _selk not in st.session_state:
@@ -5618,8 +5532,6 @@ def prikazi_administraciju():
             if _kkb and not _kkb[0]:
                 st.warning("Mejlovi su poslati, ali kopije nisu upisane u folder Poslato: "
                            + str(_kkb[1]))
-            elif _kkb and _kkb[0]:
-                st.caption("📂 Kopije su upisane u folder „" + str(_kkb[1]) + "“.")
             if _n_fail == 0:
                 st.success("✅ Poslato " + str(_n_ok) + " mejlova. Status je zabeležen (vidljiv i posle odjave).")
             else:
