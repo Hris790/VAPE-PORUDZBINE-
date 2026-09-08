@@ -42,6 +42,30 @@ ADMIN_IME_2      = _cfg("ADMIN_IME_2", "Zorana Hromiš")
 KOMERCIJALA_IME  = _cfg("KOMERCIJALA_IME", "Komercijala 1")
 KOMERCIJALA_IME_2 = _cfg("KOMERCIJALA_IME_2", "Komercijala 2")
 
+
+def _norm_korisnik(s):
+    """Sve svede na mala slova bez razmaka, tacaka i nasih kvacica."""
+    t = str(s or "").strip().lower()
+    for _a, _b in (("š", "s"), ("đ", "dj"), ("č", "c"), ("ć", "c"), ("ž", "z")):
+        t = t.replace(_a, _b)
+    for _z in (" ", ".", "-", "_"):
+        t = t.replace(_z, "")
+    return t
+
+
+def _aliasi(*vrednosti):
+    """Prihvatljiva korisnicka imena: i skraceno ime, i puno ime, i mejl (ceo ili do @)."""
+    out = set()
+    for v in vrednosti:
+        v = str(v or "").strip()
+        if not v:
+            continue
+        out.add(_norm_korisnik(v))
+        if "@" in v:
+            out.add(_norm_korisnik(v.split("@")[0]))
+    out.discard("")
+    return out
+
 SUPABASE_URL   = _cfg("SUPABASE_URL", "")
 SUPABASE_KEY   = _cfg("SUPABASE_KEY", "")
 
@@ -1826,28 +1850,30 @@ def check_password():
         </p>
     </div>
     """, unsafe_allow_html=True)
-    usr = st.text_input("Korisničko ime", placeholder="Korisničko ime",
+    usr = st.text_input("Korisničko ime", placeholder="Korisničko ime ili mejl",
                         label_visibility="collapsed")
     pwd = st.text_input("Šifra", type="password", placeholder="Šifra",
                         label_visibility="collapsed")
     btn = st.button("Prijavi se", use_container_width=True)
     if btn:
-        _u = (usr or "").strip().lower().replace(" ", "")
-        # (korisnicko ime, sifra, uloga, ime za prikaz, nalog za mejl)
+        _u = _norm_korisnik(usr)
+        # (spisak prihvacenih imena, sifra, uloga, ime za prikaz, nalog za mejl)
         _nalozi = [
-            (str(APP_KORISNIK).lower(), APP_PASSWORD, "analitika", None, ""),
-            (str(ADMIN_KORISNIK).lower(), ADMIN_PASSWORD, "administracija", ADMIN_IME, "1"),
-            (str(ADMIN_KORISNIK_2).lower(), ADMIN_PASSWORD_2, "administracija", ADMIN_IME_2, "2"),
-            (str(DIREKTOR_KORISNIK).lower(), DIREKTOR_PASSWORD, "direktori", None, ""),
-            (str(KOMERCIJALA_KORISNIK).lower(), KOMERCIJALA_PASSWORD, "komercijala",
-             KOMERCIJALA_IME, ""),
-            (str(KOMERCIJALA_KORISNIK_2).lower(), KOMERCIJALA_PASSWORD_2, "komercijala",
-             KOMERCIJALA_IME_2, ""),
+            (_aliasi(APP_KORISNIK), APP_PASSWORD, "analitika", None, ""),
+            (_aliasi(ADMIN_KORISNIK, ADMIN_IME, _cfg("SMTP_USER_1", "")),
+             ADMIN_PASSWORD, "administracija", ADMIN_IME, "1"),
+            (_aliasi(ADMIN_KORISNIK_2, ADMIN_IME_2, _cfg("SMTP_USER_2", "")),
+             ADMIN_PASSWORD_2, "administracija", ADMIN_IME_2, "2"),
+            (_aliasi(DIREKTOR_KORISNIK), DIREKTOR_PASSWORD, "direktori", None, ""),
+            (_aliasi(KOMERCIJALA_KORISNIK, KOMERCIJALA_IME), KOMERCIJALA_PASSWORD,
+             "komercijala", KOMERCIJALA_IME, ""),
+            (_aliasi(KOMERCIJALA_KORISNIK_2, KOMERCIJALA_IME_2), KOMERCIJALA_PASSWORD_2,
+             "komercijala", KOMERCIJALA_IME_2, ""),
         ]
         _nadjen = None
         for _ku, _kp, _rola, _ime, _nalog in _nalozi:
             # ako je ime uneto -> mora da se poklopi; ako je prazno -> vazi samo sifra
-            if pwd == _kp and (not _u or _u == _ku):
+            if pwd == _kp and (not _u or _u in _ku):
                 _nadjen = (_rola, _ime, _nalog)
                 break
         if _nadjen:
@@ -2744,15 +2770,25 @@ def _smtp_kljuc(ime, nalog, default=None):
 
 def _smtp_cfg(nalog=None):
     n = _mail_nalog() if nalog is None else str(nalog or "")
-    _user = _smtp_kljuc("SMTP_USER", n, "")
     _ime = ADMIN_IME if n == "1" else (ADMIN_IME_2 if n == "2" else "Vape Shop")
+    # Ako za ovaj nalog postoji svoj SMTP_USER, onda i lozinka mora da bude njegova —
+    # ne sme da se povuce zajednicka (to bi bila tudja lozinka i prijava ne bi uspela).
+    _svoj = _cfg("SMTP_USER_" + n, "") if n else ""
+    if _svoj:
+        _user = _svoj
+        _pwd = _cfg("SMTP_PASSWORD_" + n, "") or ""
+        _from = _cfg("SMTP_FROM_" + n, "") or _user
+    else:
+        _user = _cfg("SMTP_USER", "")
+        _pwd = _cfg("SMTP_PASSWORD", "")
+        _from = _cfg("SMTP_FROM", "") or _user
     return {
         "nalog": n,
         "host": _smtp_kljuc("SMTP_HOST", n, ""),
         "port": int(_smtp_kljuc("SMTP_PORT", n, 587) or 587),
         "user": _user,
-        "password": _smtp_kljuc("SMTP_PASSWORD", n, ""),
-        "from_email": _smtp_kljuc("SMTP_FROM", n, "") or _user,
+        "password": _pwd,
+        "from_email": _from,
         "from_name": _smtp_kljuc("SMTP_FROM_NAME", n, _ime),
         "use_ssl": bool(_smtp_kljuc("SMTP_USE_SSL", n, False)),
     }
