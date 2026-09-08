@@ -2628,8 +2628,7 @@ def _nedeljni_prilog_pdf(payload):
       sistem, datum, dani, lager_datum, dodatne_do,
       objekti_red: [{'ime','na_nuli','kriticnih','manjak'}, ...],
       art_na_nuli, obj_sa_nulom, izgub7,
-      primer: {obj, art, meseci:[lbl], prodaja:[int], ned, lager, pred7} | None,
-      top_arts: [{'obj','art','lager','pred','manjak'}, ...]   (rezerva ako nema grafika)
+      primer: {obj, art, meseci:[lbl], prodaja:[int], ned, mes, lager, pred7} | None
     Vraća bajtove PDF-a."""
     import io as _io
     from reportlab.lib.pagesizes import A4
@@ -2659,7 +2658,6 @@ def _nedeljni_prilog_pdf(payload):
     _obj0 = int(payload.get("obj_sa_nulom", 0) or 0)
     _izg = int(payload.get("izgub7", 0) or 0)
     _primer = payload.get("primer") or None
-    _top = list(payload.get("top_arts", []) or [])
 
     def _esc(t):
         return (str(t or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
@@ -2752,6 +2750,7 @@ def _nedeljni_prilog_pdf(payload):
                   Paragraph("<b>" + str(_art0) + "</b>", TDr),
                   Paragraph("<b>" + str(sum(int(o.get("kriticnih", 0) or 0) for o in _red)) + "</b>", TDr),
                   Paragraph("<b>~" + str(_izg) + " kom</b>", TDr)])
+    _gust = 4 if len(_red) <= 12 else (3 if len(_red) <= 18 else 2)
     _ot = Table(_data, colWidths=[W * 0.52, W * 0.16, W * 0.15, W * 0.17], repeatRows=1)
     _ot.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), NAVY),
@@ -2761,9 +2760,9 @@ def _nedeljni_prilog_pdf(payload):
         ("LINEBELOW", (0, 1), (-1, -2), 0.4, colors.HexColor("#eef1f6")),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]))
+        ("TOPPADDING", (0, 0), (-1, -1), _gust), ("BOTTOMPADDING", (0, 0), (-1, -1), _gust)]))
     el.append(_ot)
-    el.append(Spacer(1, 15))
+    el.append(Spacer(1, 12 if len(_red) <= 12 else 9))
 
     # ---------- primer ----------
     _slika = None
@@ -2777,7 +2776,7 @@ def _nedeljni_prilog_pdf(payload):
             _prod = [int(x or 0) for x in (_primer.get("prodaja", []) or [])]
             if not _mes or len(_mes) != len(_prod):
                 _mes = [str(i + 1) for i in range(len(_prod))]
-            _fig, _ax = _plt.subplots(figsize=(4.5, 1.75))
+            _fig, _ax = _plt.subplots(figsize=(4.5, 1.55))
             _mx = max(_prod + [1])
             _cols = ["#b9d3f3"] * len(_prod)
             for _i in range(max(len(_prod) - 2, 0), len(_prod)):
@@ -2825,7 +2824,7 @@ def _nedeljni_prilog_pdf(payload):
                                                 ("RIGHTPADDING", (0, 0), (-1, -1), 0),
                                                 ("TOPPADDING", (0, 0), (-1, -1), 1.5),
                                                 ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5)])))
-        _im = Image(_slika, width=W * 0.55, height=W * 0.55 * (1.75 / 4.5))
+        _im = Image(_slika, width=W * 0.55, height=W * 0.55 * (1.55 / 4.5))
         _pt = Table([[_lev, [Paragraph("Prodaja po mesecima", PS), Spacer(1, 3), _im]]],
                     colWidths=[W * 0.42, W * 0.58])
         _pt.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -2849,75 +2848,8 @@ def _nedeljni_prilog_pdf(payload):
                                  ("BOTTOMPADDING", (0, 0), (-1, -1), 7)]))
         _prim_el.append(Spacer(1, 8))
         _prim_el.append(_zt)
-    elif _top:
-        # nema mesečne serije — crtamo grafik iz onoga što uvek imamo:
-        # koliko je na lageru vs koliko treba za period, za najkritičnije artikle
-        _prim_el.append(Paragraph("NAJKRITIČNIJI ARTIKLI — LAGER NASPRAM POTREBE", SEC))
-        _sl2 = None
-        try:
-            import matplotlib
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as _plt
-            import numpy as _np
-            _plt.rcParams["font.family"] = "DejaVu Sans"
-            _t6 = _top[:6][::-1]
-            _lbl = []
-            for _a in _t6:
-                _nm = str(_a.get("art", ""))
-                _lbl.append((_nm[:34] + "…") if len(_nm) > 35 else _nm)
-            _lg = [int(_a.get("lager", 0) or 0) for _a in _t6]
-            _tr = [int(_a.get("lager", 0) or 0) + int(_a.get("manjak", 0) or 0) for _a in _t6]
-            _y = _np.arange(len(_t6)); _h = 0.36
-            _fig, _ax = _plt.subplots(figsize=(7.4, 2.25))
-            _ax.barh(_y + _h / 2, _tr, _h, label="Potrebno za " + _perl, color="#b9d3f3")
-            _ax.barh(_y - _h / 2, _lg, _h, label="Lager danas", color="#c0392b")
-            _mx = max(_tr + [1])
-            for _i in range(len(_t6)):
-                _ax.text(_tr[_i] + _mx * 0.02, _y[_i] + _h / 2, str(_tr[_i]), va="center",
-                         fontsize=7.4, color="#4b5563", fontweight="bold")
-                _ax.text(_lg[_i] + _mx * 0.02, _y[_i] - _h / 2, str(_lg[_i]), va="center",
-                         fontsize=7.4, color="#c0392b", fontweight="bold")
-            _ax.set_yticks(_y); _ax.set_yticklabels(_lbl, fontsize=7.4, color="#1a2130")
-            _ax.set_xlim(0, _mx * 1.16)
-            _ax.set_xlabel("komada", fontsize=7.4, color="#4b5563")
-            _ax.tick_params(labelsize=7.4, colors="#4b5563", length=0)
-            for _sp in ("top", "right", "left"):
-                _ax.spines[_sp].set_visible(False)
-            _ax.spines["bottom"].set_color("#c3c2b7")
-            _ax.set_axisbelow(True)
-            _ax.xaxis.grid(True, color="#eef1f6", linewidth=0.8)
-            from matplotlib.ticker import MaxNLocator as _MNL
-            _ax.xaxis.set_major_locator(_MNL(integer=True))
-            _ax.legend(fontsize=7.6, frameon=False, ncol=2, loc="lower right",
-                       bbox_to_anchor=(1.0, 1.0), labelcolor="#4b5563")
-            _bf2 = _io.BytesIO()
-            _fig.savefig(_bf2, format="png", dpi=200, facecolor="white",
-                         bbox_inches="tight", pad_inches=0.05)
-            _plt.close(_fig)
-            _bf2.seek(0)
-            _sl2 = _bf2
-        except Exception:
-            _sl2 = None
-        if _sl2 is not None:
-            _prim_el.append(Image(_sl2, width=W, height=W * (2.25 / 7.4)))
-            _uk_manjak = sum(int(_a.get("manjak", 0) or 0) for _a in _top[:6])
-            _zt2 = Table([[Paragraph('<font color="#8f2018">Crvena traka je ono što danas stoji na polici, '
-                                     'svetla je ono što treba za ' + _perl + '. Na ovih šest artikala '
-                                     'nedostaje <b>' + str(_uk_manjak) + ' komada</b>. Ostali objekti i artikli su u tabeli iznad.'
-                                     '</font>', TD)]], colWidths=[W])
-            _zt2.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fdf1f0")),
-                                      ("LINEBEFORE", (0, 0), (0, -1), 2.5, CRIT),
-                                      ("LEFTPADDING", (0, 0), (-1, -1), 10),
-                                      ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                                      ("TOPPADDING", (0, 0), (-1, -1), 7),
-                                      ("BOTTOMPADDING", (0, 0), (-1, -1), 7)]))
-            _prim_el.append(Spacer(1, 6))
-            _prim_el.append(_zt2)
     if _prim_el:
-        if _slika is not None:
-            el.append(KeepTogether(_prim_el))
-        else:
-            el.extend(_prim_el)
+        el.append(KeepTogether(_prim_el))
 
     # ---------- podnožje ----------
     def _foot(canv, doc):
@@ -4119,6 +4051,7 @@ def prikazi_administraciju():
                 _ser_rez, _lab_rez = ({}, [])
             if _lab_rez and not _mes_naz:
                 _mes_naz = _lab_rez
+        _izvor_serije = ("objava" if not _treba_rez else ("analitika" if _ser_rez else "nema"))
         _cand0 = None; _cand0_sc = -1       # kandidati sa lagerom 0
         _candA = None; _candA_sc = -1       # svi problem artikli (fallback)
         _ima_serije = False
@@ -4277,13 +4210,19 @@ def prikazi_administraciju():
                                    "— ravan spisak sa filterom, za pivot. Ukupno "
                                    + str(_predlog_uk) + " kom za " + str(len(_grupe_ok)) + " objekata.")
                     else:
-                        st.caption("Prilog je jedna strana: uvodni tekst sa imenima objekata, broj artikala na "
-                                   "lageru 0, izgubljena prodaja i primer sa grafikom prodaje artikla.")
-                        if not _mes_naz:
-                            st.caption("ℹ️ Grafik prodaje u primeru se pojavljuje tek kad je sistem objavljen "
-                                       "novom verzijom aplikacije (tada se upisuje mesečna prodaja po artiklu). "
-                                       "Dok se to ne uradi, umesto grafika ide tabela „Najkritičniji artikli“ — "
-                                       "izveštaj je i tako kompletan.")
+                        st.caption("Prilog je jedna strana: uvod, tri ključna broja, tabela objekata sa "
+                                   "problemom i primer sa grafikom prodaje artikla.")
+                        if _primer_pl:
+                            st.caption("📈 Grafik prodaje po mesecima je u prilogu (podaci: "
+                                       + ("iz objave" if _izvor_serije == "objava"
+                                          else "rekonstruisano iz analitika Excel-a") + ").")
+                        else:
+                            st.warning("📉 Grafika nema — uz ovaj sistem nije sačuvana mesečna prodaja po "
+                                       "artiklu" + (", a ni analitika Excel uz objavu."
+                                                    if _izvor_serije == "nema"
+                                                    else ", i u analitika Excel-u nema poklapanja.")
+                                       + " Rešenje: u kartici Objava izveštaja ponovo objavi ovaj sistem za "
+                                         "ovaj mesec (isti fajl, isti parametri) — grafik se odmah pojavljuje.")
         except Exception as _pe:
             st.error("Greška pri pravljenju priloga: " + str(_pe))
 
