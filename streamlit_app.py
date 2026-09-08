@@ -2434,6 +2434,56 @@ def _objekat_order_xlsx(naziv, idk, mesec_lbl, rows, meseci=None):
 
 
 @st.cache_data(ttl=300, show_spinner=False)
+def _cene_iz_analitike(mesec_key, sistem):
+    """Prodajna cena po komadu za svaki artikal, iz analitika Excel-a sačuvanog pri objavi
+    (list „Analiza akcije“: prihod / prodato kom). Vraća {id_artikla: cena_po_komadu}."""
+    import base64 as _b64, io as _io
+    try:
+        _b = sb_ucitaj_xlsx(mesec_key, sistem)
+        if not _b:
+            return {}
+        from openpyxl import load_workbook as _lw
+        _wb = _lw(_io.BytesIO(_b64.b64decode(_b)), data_only=True, read_only=True)
+        _ws = None
+        for _n in _wb.sheetnames:
+            if "analiza akcije" in str(_n).strip().lower():
+                _ws = _wb[_n]
+                break
+        if _ws is None:
+            return {}
+        _rows = _ws.iter_rows(values_only=True)
+        _h = next(_rows, None)
+        if not _h:
+            return {}
+        _ix = {}
+        for _i, _v in enumerate(_h):
+            _t = str(_v or "").replace("\n", " ").strip().lower()
+            if _t.startswith("id artikla"):
+                _ix["ida"] = _i
+            elif _t.startswith("prodato"):
+                _ix["kom"] = _i
+            elif _t.startswith("prihod akcija"):
+                _ix["prihod"] = _i
+        if not all(_k in _ix for _k in ("ida", "kom", "prihod")):
+            return {}
+        _out = {}
+        for _r in _rows:
+            if not _r:
+                continue
+            try:
+                _ida = int(_r[_ix["ida"]])
+                _kom = float(_r[_ix["kom"]] or 0)
+                _pri = float(_r[_ix["prihod"]] or 0)
+            except Exception:
+                continue
+            if _kom > 0 and _pri > 0:
+                _out[_ida] = _pri / _kom
+        return _out
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def _serije_prodaje_iz_analitike(mesec_key, sistem):
     """Rekonstruiši mesečnu prodaju po (objekat, artikal) iz analitika Excel-a koji je
     sačuvan pri objavi sistema. Koristi se kad stavke nemaju 'prodaja_mesecno'
@@ -2690,7 +2740,7 @@ def _nedeljni_prilog_pdf(payload):
                             ("TOPPADDING", (0, 0), (-1, -1), 9),
                             ("BOTTOMPADDING", (0, 0), (-1, -1), 9)]))
     el.append(_t)
-    el.append(Spacer(1, 11))
+    el.append(Spacer(1, 8))
 
     # ---------- uvod ----------
     if _lager_datum:
@@ -2703,7 +2753,7 @@ def _nedeljni_prilog_pdf(payload):
     _uv += ("<b>" + str(len(_red)) + " objekata</b> koji sa trenutnim zalihama ne mogu da pokriju "
             "prodaju ni za narednih <b>" + _perl + "</b>.")
     el.append(Paragraph(_uv, P))
-    el.append(Spacer(1, 10))
+    el.append(Spacer(1, 8))
 
     # ---------- tri broja ----------
     def _kart(broj, tekst, boja, bg):
@@ -2714,7 +2764,11 @@ def _nedeljni_prilog_pdf(payload):
                      colWidths=[W / 3.0 - 4])
     _c1 = _kart(str(_art0), "artikala je na lageru <b>0</b>", "#c0392b", None)
     _c2 = _kart(str(_obj0), "objekata ima bar jedan artikal na nuli", "#b45309", None)
-    _c3 = _kart("~" + str(_izg) + " kom", "procena izgubljene prodaje za " + _perl, "#1f3a5f", None)
+    _rsd = int(payload.get("izgub_rsd", 0) or 0)
+    _c3_txt = "izgubljena prodaja za " + _perl
+    if _rsd > 0:
+        _c3_txt += "<br/><b>\u2248 " + f"{_rsd:,}".replace(",", ".") + " RSD prometa</b>"
+    _c3 = _kart("~" + str(_izg) + " kom", _c3_txt, "#1f3a5f", None)
     for _c, _bg, _bc in ((_c1, "#fdf1f0", "#c0392b"), (_c2, "#fdf6e6", "#b45309"), (_c3, "#f4f7fb", "#1f3a5f")):
         _c.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(_bg)),
                                 ("LINEABOVE", (0, 0), (-1, 0), 2.2, colors.HexColor(_bc)),
@@ -2732,7 +2786,7 @@ def _nedeljni_prilog_pdf(payload):
                              ("TOPPADDING", (0, 0), (-1, -1), 0),
                              ("BOTTOMPADDING", (0, 0), (-1, -1), 0)]))
     el.append(_kt)
-    el.append(Spacer(1, 15))
+    el.append(Spacer(1, 10))
 
     # ---------- tabela objekata ----------
     el.append(Paragraph("OBJEKTI SA PROBLEMOM", SEC))
@@ -2750,7 +2804,7 @@ def _nedeljni_prilog_pdf(payload):
                   Paragraph("<b>" + str(_art0) + "</b>", TDr),
                   Paragraph("<b>" + str(sum(int(o.get("kriticnih", 0) or 0) for o in _red)) + "</b>", TDr),
                   Paragraph("<b>~" + str(_izg) + " kom</b>", TDr)])
-    _gust = 4 if len(_red) <= 12 else (3 if len(_red) <= 18 else 2)
+    _gust = 4 if len(_red) <= 10 else (2 if len(_red) <= 18 else 1.5)
     _ot = Table(_data, colWidths=[W * 0.52, W * 0.16, W * 0.15, W * 0.17], repeatRows=1)
     _ot.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), NAVY),
@@ -2762,7 +2816,7 @@ def _nedeljni_prilog_pdf(payload):
         ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
         ("TOPPADDING", (0, 0), (-1, -1), _gust), ("BOTTOMPADDING", (0, 0), (-1, -1), _gust)]))
     el.append(_ot)
-    el.append(Spacer(1, 12 if len(_red) <= 12 else 9))
+    el.append(Spacer(1, 10 if len(_red) <= 12 else 7))
 
     # ---------- primer ----------
     _slika = None
@@ -2783,7 +2837,7 @@ def _nedeljni_prilog_pdf(payload):
                     _god.add(_d[-1])
             if len(_god) == 1:
                 _mes = [" ".join(str(_m).split()[:-1]) or str(_m) for _m in _mes]
-            _fig, _ax = _plt.subplots(figsize=(4.5, 1.55))
+            _fig, _ax = _plt.subplots(figsize=(4.5, 1.42))
             _mx = max(_prod + [1])
             _cols = ["#b9d3f3"] * len(_prod)
             for _i in range(max(len(_prod) - 2, 0), len(_prod)):
@@ -2846,7 +2900,7 @@ def _nedeljni_prilog_pdf(payload):
                                                 ("RIGHTPADDING", (0, 0), (-1, -1), 0),
                                                 ("TOPPADDING", (0, 0), (-1, -1), 1.5),
                                                 ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5)])))
-        _im = Image(_slika, width=W * 0.55, height=W * 0.55 * (1.55 / 4.5))
+        _im = Image(_slika, width=W * 0.55, height=W * 0.55 * (1.42 / 4.5))
         _pt = Table([[_lev, [Paragraph("Prodaja po mesecima", PS), Spacer(1, 3), _im]]],
                     colWidths=[W * 0.42, W * 0.58])
         _pt.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -2880,24 +2934,40 @@ def _nedeljni_prilog_pdf(payload):
                                  ("RIGHTPADDING", (0, 0), (-1, -1), 10),
                                  ("TOPPADDING", (0, 0), (-1, -1), 7),
                                  ("BOTTOMPADDING", (0, 0), (-1, -1), 7)]))
-        _prim_el.append(Spacer(1, 8))
+        _prim_el.append(Spacer(1, 6))
         _prim_el.append(_zt)
     if _prim_el:
         el.append(KeepTogether(_prim_el))
 
     # ---------- podnožje ----------
+    _zahtev = str(payload.get("zahtev", "") or "")
+    if _zahtev:
+        _zt3 = Table([[Paragraph('<font color="#14532d"><b>Molimo dopunu od oko ' + _zahtev
+                                 + ' komada</b> na navedenim objektima, kako bi objekti zadržali '
+                                   'kontinuitet prodaje.</font>', TD)]], colWidths=[W])
+        _zt3.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#eaf5ee")),
+                                  ("LINEBEFORE", (0, 0), (0, -1), 2.5, colors.HexColor("#157347")),
+                                  ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                                  ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                                  ("TOPPADDING", (0, 0), (-1, -1), 7),
+                                  ("BOTTOMPADDING", (0, 0), (-1, -1), 7)]))
+        el.append(Spacer(1, 8))
+        el.append(_zt3)
+
     def _foot(canv, doc):
         canv.saveState()
         canv.setFont(FN, 7)
         canv.setFillColor(MUT)
-        canv.drawCentredString(A4[0] / 2.0, 11 * mm,
-                               "Automatski generisano · VapeShop sistemski izveštaj · "
-                               "procena na osnovu prodaje i realnog lagera")
+        _fp = ("Automatski generisano · VapeShop sistemski izveštaj · "
+               "procena na osnovu prodaje i realnog lagera")
+        if _rsd > 0:
+            _fp += " · RSD je procena po prodajnoj ceni objekta"
+        canv.drawCentredString(A4[0] / 2.0, 8.5 * mm, _fp)
         canv.restoreState()
 
     _buf = _io.BytesIO()
     _doc = SimpleDocTemplate(_buf, pagesize=A4, leftMargin=17.5 * mm, rightMargin=17.5 * mm,
-                             topMargin=15 * mm, bottomMargin=17 * mm,
+                             topMargin=12 * mm, bottomMargin=14 * mm,
                              title="Problem sa lagerom - " + _sis)
     _doc.build(el, onFirstPage=_foot, onLaterPages=_foot)
     return _buf.getvalue()
@@ -4152,11 +4222,25 @@ def prikazi_administraciju():
             _lager_datum = ""
         _red_obj.sort(key=lambda r: (-int(r.get("manjak", 0) or 0), -int(r.get("na_nuli", 0) or 0),
                                      str(r.get("ime", ""))))
+        # procena izgubljenog prometa objekata (prodajna cena po komadu iz analitika Excel-a)
+        _izgub_rsd = 0
+        try:
+            _cene = _cene_iz_analitike(mesec_key, sistem)
+            if _cene:
+                for _pp in _prob:
+                    for _aa in _pp["arts"]:
+                        _c1 = _cene.get(int(_aa.get("ida", -1)), 0)
+                        if _c1:
+                            _izgub_rsd += int(_aa.get("manjak7", 0) or 0) * _c1
+                _izgub_rsd = int(round(_izgub_rsd))
+        except Exception:
+            _izgub_rsd = 0
         _svi_art.sort(key=lambda r: (-int(r.get("manjak", 0) or 0), -int(r.get("pred", 0) or 0)))
         _payload_n = {"sistem": str(sistem), "datum": _now().strftime("%d.%m.%Y."), "dani": _dani,
                       "lager_datum": _lager_datum, "dodatne_do": _now().strftime("%d.%m.%Y."),
                       "objekti_imena": _imena, "objekti_red": _red_obj, "top_arts": _svi_art[:6],
-                      "art_na_nuli": _art_na_nuli,
+                      "art_na_nuli": _art_na_nuli, "izgub_rsd": _izgub_rsd,
+                      "zahtev": str(_izgub7) if _izgub7 > 0 else "",
                       "obj_sa_nulom": _obj_sa_nulom, "izgub7": _izgub7, "primer": _primer_pl}
 
         # ===== Izbor šta se šalje: izveštaj o problemu ili predlog porudžbine =====
