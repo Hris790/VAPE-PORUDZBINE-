@@ -3272,6 +3272,22 @@ def _upisi_u_poslato(msg, nalog=None):
         return (False, str(_e)[:160])
 
 
+def imap_test_upis(nalog=None):
+    """Stvarno upiše probnu poruku u folder Poslato i vrati (True, folder) ili (False, razlog).
+    Služi da se vidi da li kopija zaista stiže u sanduče."""
+    from email.mime.text import MIMEText
+    from email.utils import formataddr, formatdate
+    c = _smtp_cfg(nalog)
+    _m = MIMEText("Probna poruka iz aplikacije VAPE — Porudžbine.\n"
+                  "Sluzi samo da se proveri da li se poslati mejlovi upisuju u folder Poslato.\n"
+                  "Ovu poruku slobodno obriši.", "plain", "utf-8")
+    _m["Subject"] = "PROBA — upis u Poslato"
+    _m["From"] = formataddr((str(c.get("from_name", "")), str(c.get("from_email", ""))))
+    _m["To"] = str(c.get("from_email", ""))
+    _m["Date"] = formatdate(localtime=True)
+    return _upisi_u_poslato(_m, nalog)
+
+
 def smtp_test(nalog=None):
     """Proveri SMTP nalog bez slanja mejla: poveži se i prijavi.
     Vraća (True, poruka) ili (False, razlog)."""
@@ -4507,10 +4523,11 @@ def prikazi_administraciju():
                         except Exception:
                             pass
                         _kk = st.session_state.get("_zadnja_kopija")
-                        _dod = ""
-                        if _kk:
-                            _dod = ("  ·  kopija u „" + _kk[1] + "“") if _kk[0] else ""
+                        _dod = ("  ·  kopija u „" + _kk[1] + "“") if (_kk and _kk[0]) else ""
                         st.success("✅ Mejl poslat na " + _to_send + " · prilog: " + _prilog_ime + _dod)
+                        if _kk and not _kk[0]:
+                            st.warning("Mejl je poslat, ali kopija nije upisana u Poslato: "
+                                       + str(_kk[1]))
                         st.rerun()
                     except Exception as _me:
                         st.error("Slanje nije uspelo: " + str(_me))
@@ -5298,6 +5315,15 @@ def prikazi_administraciju():
                         st.success("✅ " + _por)
                     else:
                         st.error("❌ " + _por)
+                if st.button("📥 Probni upis u Poslato",
+                             key="imap_test_" + str(sistem) + "_" + str(mesec_key),
+                             use_container_width=True):
+                    _ok2, _f2 = imap_test_upis()
+                    if _ok2:
+                        st.success("✅ Probna poruka upisana u folder „" + str(_f2)
+                                   + "“. Otvori webmail (ne Outlook) i proveri da li je tamo.")
+                    else:
+                        st.error("❌ Upis nije uspeo: " + str(_f2))
         _selk = "bulk_sel_" + str(sistem) + "_" + str(mesec_key)
         _verk = "bulk_ver_" + str(sistem) + "_" + str(mesec_key)
         if _selk not in st.session_state:
