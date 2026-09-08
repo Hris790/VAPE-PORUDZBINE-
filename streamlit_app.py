@@ -5060,7 +5060,9 @@ def prikazi_administraciju():
                                  + " - PORUDŽBINA - " + _now().strftime("%d.%m.%Y."))
                         _fname_mail = _fname if _exp_rows else (str(sel_id) + ".xlsx")
                         posalji_mejl_sa_prilogom(_mail_to, _subj, MEJL_TEKST_DEFAULT, _exp_xlsx, _fname_mail)
-                        st.session_state[_sk_mail] = {"ok": True, "msg": "Poslato na " + _mail_to}
+                        _kk1 = st.session_state.get("_zadnja_kopija")
+                        st.session_state[_sk_mail] = {"ok": True, "msg": "Poslato na " + _mail_to,
+                                                      "kopija": _kk1}
                         # Auto: zabeleži mejl u dnevnik (ko + vreme) + upali „Poslala sam mejl"
                         try:
                             _cur_u = st.session_state.get("admin_user", "Administracija")
@@ -5132,6 +5134,13 @@ def prikazi_administraciju():
                     if _mhtml:
                         st.markdown('<div style="margin:-4px 0 4px;">' + _mhtml + '</div>', unsafe_allow_html=True)
                 _mres = st.session_state.get(_sk_mail)
+                _kop1 = (_mres or {}).get("kopija")
+                if _kop1:
+                    if _kop1[0]:
+                        st.caption("📂 Kopija upisana u folder „" + str(_kop1[1]) + "“.")
+                    else:
+                        st.warning("Mejl je poslat, ali kopija nije upisana u Poslato: "
+                                   + str(_kop1[1]))
                 if _mres and not _mres.get("ok"):
                     st.error("❌ " + _mres["msg"])
             with _ecol3:
@@ -5497,6 +5506,12 @@ def prikazi_administraciju():
                     _n_fail += 1
                 _bprog.progress(int((_bi + 1) / len(_to_send) * 100), "Poslato " + str(_bi + 1) + "/" + str(len(_to_send)) + "...")
             _bprog.empty()
+            _kkb = st.session_state.get("_zadnja_kopija")
+            if _kkb and not _kkb[0]:
+                st.warning("Mejlovi su poslati, ali kopije nisu upisane u folder Poslato: "
+                           + str(_kkb[1]))
+            elif _kkb and _kkb[0]:
+                st.caption("📂 Kopije su upisane u folder „" + str(_kkb[1]) + "“.")
             if _n_fail == 0:
                 st.success("✅ Poslato " + str(_n_ok) + " mejlova. Status je zabeležen (vidljiv i posle odjave).")
             else:
