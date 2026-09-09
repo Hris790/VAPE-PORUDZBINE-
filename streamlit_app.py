@@ -2391,7 +2391,7 @@ def _objekat_order_xlsx(naziv, idk, mesec_lbl, rows, meseci=None):
     _ws.title = "Porudžbina"
     _thin = _SD(style="thin", color="E5E0F0")
     _bord = _BD(left=_thin, right=_thin, top=_thin, bottom=_thin)
-    _pred_lbl = "Predikcija" + ((" (" + str(meseci).replace(".", ",") + " mes)") if meseci else "")
+    _pred_lbl = "Predikcija"
     _ncols = 5
     _last = "E"
     # Naslov (koji objekat / mesec)
@@ -4093,7 +4093,7 @@ def prikazi_administraciju():
     stavke = podaci["stavke"]
     meta = podaci.get("meta", {}) or {}
     _mes_kol = meta.get("meseci")
-    _por_lbl = ("Porudžbina (" + str(_mes_kol).replace(".", ",") + " mes)") if _mes_kol else "Porudžbina"
+    _por_lbl = "Porudžbina"
 
     # --- Vrati zapamćene prethodne porudžbine iz admina (posle osvežavanja stranice) ---
     # Ako u ovoj sesiji još nisu učitane, popuni iz meta.admin_hist da „posle 01." i
@@ -5096,7 +5096,7 @@ def prikazi_administraciju():
                 _rows_adf.append({
                     " ": _sd(_realni),
                     "Artikal": str(a["naziv"]),
-                    "Predikcija": int(a.get("pred", 0)),
+                    "Predikcija": int(round(int(a.get("pred", 0) or 0) * float(_mes_kol or 1.0))),
                     "Lager (izv.)": _lg,
                     "Posle 01.": _por,
                     "Realni lager": _realni,
@@ -5112,7 +5112,11 @@ def prikazi_administraciju():
                             '(zelena kolona Dodatna por.).</div>', unsafe_allow_html=True)
             _colcfg = {
                 " ": st.column_config.TextColumn(" ", width="small"),
-                "Predikcija": st.column_config.NumberColumn("Predikcija (mesec)", help="Predviđena prodaja za mesec dana"),
+                "Predikcija": st.column_config.NumberColumn(
+                    "Predikcija",
+                    help=("Predviđena prodaja za period porudžbine ("
+                          + str(_mes_kol).replace(".", ",") + " mes)") if _mes_kol
+                         else "Predviđena prodaja"),
                 "Lager (izv.)": st.column_config.NumberColumn("Lager (izveštaj)", help="Lager iz izveštaja — presek na 01. u mesecu"),
                 "Posle 01.": st.column_config.NumberColumn("Posle 01.", help="Koliko je već trebovano iz admina posle 01. u mesecu"),
                 "Realni lager": st.column_config.NumberColumn("Realni lager", help="Lager (izveštaj) + poručeno posle 01."),
@@ -5144,9 +5148,8 @@ def prikazi_administraciju():
 
             # --- Izvoz za objekat (mejl): kružić + naziv + lager + predikcija + dodatna por. ---
             # U aplikaciji ostaju sve kolone (gore); ovaj Excel je samo za slanje objektu.
-            _meseci_par = float(_mes_kol) if _mes_kol else 1.0
             _exp_rows = [{"kruzic": r[" "], "naziv": r["Artikal"], "lager": r["Realni lager"],
-                          "predikcija": int(round(int(r.get("Predikcija", 0) or 0) * _meseci_par)),
+                          "predikcija": int(r.get("Predikcija", 0) or 0),
                           "dodatna": r["Dodatna por."]}
                          for r in _rows_adf if int(r.get("Dodatna por.", 0) or 0) > 0]
             # --- Excel za preuzimanje + Prosledi mejl (automatski, sa prilogom) ---
@@ -5464,13 +5467,20 @@ def prikazi_administraciju():
             _bobr = obrada_map.get(_bidk, {}) or {}
             _bmail_sent = "Poslala sam mejl" in (_bobr.get("reakcije") or [])
             _bmail_ko = (_bobr.get("reakcije_ko") or {}).get("Poslala sam mejl", "")
+            _bmej_lst = ((_bobr.get("dnevnik") or {}).get("mejlovi") or [])
+            _bmail_n = len(_bmej_lst) if _bmej_lst else (1 if _bmail_sent else 0)
             _bulk_rows.append({
                 "idk": _bidk, "Naziv": _bnaziv, "Email": _bemail or "(nema mejla)",
                 "zona_txt": _bz[3], "zona_dot": _bz[2], "Stavki": _bstavki,
-                "mail_sent": _bmail_sent, "mail_ko": _bmail_ko,
+                "mail_sent": _bmail_sent, "mail_ko": _bmail_ko, "mail_n": _bmail_n,
                 "_zona": o["nivo"], "_email_ok": bool(_bemail), "_has_rows": _bstavki > 0,
             })
+        GRUPNO_MAX = 2   # koliko puta objekat sme da dobije mejl grupnim slanjem
+        for _r0 in _bulk_rows:
+            _r0["_grupno_ok"] = int(_r0.get("mail_n", 0) or 0) < GRUPNO_MAX
         _n_sent_total = sum(1 for r in _bulk_rows if r["mail_sent"])
+        _n_iscrpljeno = sum(1 for r in _bulk_rows if not r["_grupno_ok"])
+        _n_drugi_krug = sum(1 for r in _bulk_rows if int(r.get("mail_n", 0) or 0) == 1)
         # KPI traka
         st.markdown('<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:2px 0 12px;">'
                     '<div style="background:#faf7ff;border:1px solid #e9d5ff;border-radius:12px;padding:12px 16px;">'
@@ -5480,8 +5490,8 @@ def prikazi_administraciju():
                     '<div style="font-size:20px;font-weight:800;color:#16a34a;">' + str(_n_sent_total) + '</div>'
                     '<div style="font-size:11.5px;color:#5b8c6b;">Mejl već poslat</div></div>'
                     '<div style="background:#fff7f7;border:1px solid #fecaca;border-radius:12px;padding:12px 16px;">'
-                    '<div style="font-size:20px;font-weight:800;color:#dc2626;">' + str(sum(1 for r in _bulk_rows if not r["mail_sent"] and r["_email_ok"] and r["_has_rows"])) + '</div>'
-                    '<div style="font-size:11.5px;color:#9b6b6b;">Za slanje (nije poslat)</div></div>'
+                    '<div style="font-size:20px;font-weight:800;color:#dc2626;">' + str(sum(1 for r in _bulk_rows if r["_grupno_ok"] and r["_email_ok"] and r["_has_rows"])) + '</div>'
+                    '<div style="font-size:11.5px;color:#9b6b6b;">Može grupno (1. ili 2. put)</div></div>'
                     '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:12px 16px;">'
                     '<div style="font-size:20px;font-weight:800;color:#b45309;">' + str(sum(1 for r in _bulk_rows if not r["_email_ok"])) + '</div>'
                     '<div style="font-size:11.5px;color:#9a7b3a;">Bez emaila</div></div></div>',
@@ -5494,8 +5504,8 @@ def prikazi_administraciju():
             _f_q = st.text_input("Pretraga (naziv ili email)", value="", key="bulk_f_q", placeholder="npr. Novi Sad ili mp123@…")
         _zmap = {"🔴 Hitno": "crveno", "🟡 Iskontrolisati": "zuto", "🟢 Dobra": "zeleno"}
         def _match(r):
-            if r["mail_sent"]:
-                return False   # već poslat mejl (grupno ili pojedinačno) — ne nudi se ponovo
+            if not r["_grupno_ok"]:
+                return False   # već dobio 2 mejla — grupno više ne može, samo pojedinačno
             if _f_zona in _zmap and r["_zona"] != _zmap[_f_zona]:
                 return False
             if _f_q.strip():
@@ -5504,9 +5514,15 @@ def prikazi_administraciju():
                     return False
             return True
         _view_rows = [r for r in _bulk_rows if _match(r)]
-        if _n_sent_total:
-            st.caption("ℹ️ " + str(_n_sent_total) + " objekata je već dobilo mejl (grupno ili pojedinačno) — "
-                       "oni se ne prikazuju ovde. Ponovno slanje je moguće samo pojedinačno, sa kartice objekta.")
+        if _n_drugi_krug or _n_iscrpljeno:
+            _p = []
+            if _n_drugi_krug:
+                _p.append(str(_n_drugi_krug) + " objekata je dobilo jedan mejl — njima se grupno "
+                          "može poslati još jednom (drugi krug)")
+            if _n_iscrpljeno:
+                _p.append(str(_n_iscrpljeno) + " objekata je dobilo dva mejla — oni se više ne "
+                          "prikazuju ovde, ponovno slanje je moguće samo pojedinačno sa kartice objekta")
+            st.caption("ℹ️ " + ". ".join(_p) + ".")
         # Kad se filter promeni — poništi izbor (da izbor uvek prati ono što je trenutno prikazano)
         _sig = str(_f_zona) + "|" + _f_q.strip().lower()
         _sigk = "bulk_sig_" + str(sistem) + "_" + str(mesec_key)
@@ -5537,7 +5553,9 @@ def prikazi_administraciju():
                 "Zona": r["zona_dot"],
                 "Naziv": r["Naziv"],
                 "Email": r["Email"],
-                "Mejl": (("✅ " + (_ko_kratko(r["mail_ko"]) if r["mail_ko"] else "poslat")) if r["mail_sent"] else "—"),
+                "Mejl": (("✅ " + str(r["mail_n"]) + "× "
+                          + (_ko_kratko(r["mail_ko"]) if r["mail_ko"] else "")).strip()
+                         if int(r.get("mail_n", 0) or 0) > 0 else "—"),
                 "Stavki": r["Stavki"],
             } for r in _view_rows])
             _h_editor = min(60 + 36 * len(_view_rows), 760)
