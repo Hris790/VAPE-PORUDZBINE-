@@ -3369,6 +3369,92 @@ def imap_test_upis(nalog=None):
     return _upisi_u_poslato(_m, nalog)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def vraceni_mejlovi(nalog=None, dana=30, _v=0):
+    """Pročitaj sanduče i nađi poruke koje su se vratile (Mail Delivery System).
+    Vraća {adresa_malim_slovima: {"kada": tekst, "razlog": tekst}}.
+    Nikad ne baca izuzetak — ako ne uspe, vraća prazno."""
+    import imaplib, email, re as _re
+    from email.utils import parsedate_to_datetime
+    import datetime as _dt
+    _out = {}
+    c = _imap_cfg(nalog)
+    if not (c["host"] and c["user"] and c["password"]):
+        return _out
+    try:
+        _im = imaplib.IMAP4_SSL(c["host"], c["port"], timeout=25)
+        _im.login(c["user"], c["password"])
+        _im.select("INBOX", readonly=True)
+        _od = (_now() - _dt.timedelta(days=int(dana or 30))).strftime("%d-%b-%Y")
+        _ids = []
+        for _kr in ('(SINCE "' + _od + '" FROM "MAILER-DAEMON")',
+                    '(SINCE "' + _od + '" FROM "postmaster")',
+                    '(SINCE "' + _od + '" SUBJECT "Undelivered")',
+                    '(SINCE "' + _od + '" SUBJECT "Delivery has failed")',
+                    '(SINCE "' + _od + '" SUBJECT "Undeliverable")'):
+            try:
+                _ok, _d = _im.search(None, _kr)
+                if _ok == "OK" and _d and _d[0]:
+                    _ids += _d[0].split()
+            except Exception:
+                pass
+        _ids = list(dict.fromkeys(_ids))[-400:]
+        _rx_adr = _re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+        for _i in _ids:
+            try:
+                _ok, _dat = _im.fetch(_i, "(RFC822)")
+                if _ok != "OK" or not _dat or not _dat[0]:
+                    continue
+                _msg = email.message_from_bytes(_dat[0][1])
+            except Exception:
+                continue
+            try:
+                _kada = parsedate_to_datetime(_msg.get("Date")).strftime("%d.%m.%Y %H:%M")
+            except Exception:
+                _kada = ""
+            _adrese, _razlog = [], ""
+            for _p in _msg.walk():
+                _ct = (_p.get_content_type() or "").lower()
+                if _ct == "message/delivery-status":
+                    try:
+                        _txt = _p.as_string()
+                    except Exception:
+                        continue
+                    for _m in _re.finditer(r"(?i)final-recipient:\s*[^;]*;\s*(\S+)", _txt):
+                        _adrese.append(_m.group(1).strip("<> "))
+                    _dc = _re.search(r"(?i)diagnostic-code:\s*(.+)", _txt)
+                    if _dc and not _razlog:
+                        _razlog = _dc.group(1).strip()[:160]
+            if not _adrese:
+                # rezerva: nađi adresu i razlog u tekstu poruke
+                _tel = ""
+                for _p in _msg.walk():
+                    if (_p.get_content_type() or "").lower() in ("text/plain", "text/html"):
+                        try:
+                            _tel += _p.get_payload(decode=True).decode("utf-8", "ignore")[:8000]
+                        except Exception:
+                            pass
+                _svi = [a2 for a2 in _rx_adr.findall(_tel)
+                        if not a2.lower().endswith(("loopia.se", "vapeshop.rs"))]
+                _adrese = _svi[:3]
+                _dc2 = _re.search(r"(?i)(5\d\d[ \-]5\.\d\.\d[^\n\r]{0,140}|550[^\n\r]{0,140})", _tel)
+                if _dc2 and not _razlog:
+                    _razlog = _dc2.group(1).strip()[:160]
+            for _a2 in _adrese:
+                _a2 = _ocisti_mejl(_a2).lower()
+                if _a2 and _mejl_ok(_a2) and not _a2.endswith("vapeshop.rs"):
+                    _st = _out.get(_a2)
+                    if not _st or (_kada and _kada > _st.get("kada", "")):
+                        _out[_a2] = {"kada": _kada, "razlog": _razlog or "poruka se vratila"}
+        _im.logout()
+    except Exception:
+        try:
+            _im.logout()
+        except Exception:
+            pass
+    return _out
+
+
 def smtp_test(nalog=None):
     """Proveri SMTP nalog bez slanja mejla: poveži se i prijavi.
     Vraća (True, poruka) ili (False, razlog)."""
@@ -3490,6 +3576,32 @@ def _potpis_html(nalog=None):
     return _h
 
 
+def _ocisti_mejl(adr):
+    """Sredi adresu iz šifarnika: izbaci razmake (i one pre @), < >, navodnike;
+    ako ih ima više razdvojenih zarezom/tačka-zarezom, uzmi prvu."""
+    import re as _re
+    _a = str(adr or "").strip()
+    if not _a:
+        return ""
+    _u = _re.search(r"<([^<>]+)>", _a)      # oblik: Ime <adresa@...>
+    if _u:
+        _a = _u.group(1)
+    for _z in ("<", ">", '"', "'"):
+        _a = _a.replace(_z, "")
+    for _z in (";", ","):
+        if _z in _a:
+            _a = _a.split(_z)[0]
+    _a = _re.sub(r"\s+", "", _a)
+    return _a
+
+
+def _mejl_ok(adr):
+    """Da li je adresa upotrebljiva za slanje."""
+    import re as _re
+    _a = _ocisti_mejl(adr)
+    return bool(_re.match(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$", _a))
+
+
 def posalji_mejl_sa_prilogom(to_email, subject, body, attach_bytes=None, attach_filename=None, cc_email=None):
     """Pošalji mejl preko SMTP naloga iz Secrets, sa opcionim Excel prilogom.
     Baca RuntimeError sa razumljivom porukom ako nešto fali."""
@@ -3505,9 +3617,13 @@ def posalji_mejl_sa_prilogom(to_email, subject, body, attach_bytes=None, attach_
         _suf = ("_" + _n) if _n else ""
         raise RuntimeError("Slanje mejlova nije podešeno za ovog korisnika — dodaj u Secrets: "
                            "SMTP_HOST" + _suf + " / SMTP_USER" + _suf + " / SMTP_PASSWORD" + _suf + ".")
-    to_email = (to_email or "").strip()
-    if not to_email or "@" not in to_email:
-        raise RuntimeError("Objekat nema ispravnu email adresu u šifarniku komitenata.")
+    _sirovo = str(to_email or "").strip()
+    to_email = _ocisti_mejl(to_email)
+    if not _mejl_ok(to_email):
+        raise RuntimeError("Neispravna email adresa u šifarniku komitenata: „" + _sirovo
+                           + "“. Ispravi je u šifarniku pa pokušaj ponovo.")
+    if cc_email:
+        cc_email = _ocisti_mejl(cc_email) or None
     import base64 as _b64s
     from email.mime.image import MIMEImage
     msg = MIMEMultipart("mixed")
@@ -5228,7 +5344,8 @@ def prikazi_administraciju():
             with _ecol2:
                 _mail_to = (_kinfo.get("email") or "").strip()
                 _sk_mail = "mailsent_" + str(sistem) + "_" + str(sel_id)
-                _can_mail = bool(_exp_xlsx) and bool(_mail_to) and smtp_dostupan() and not _zakljucan
+                _can_mail = (bool(_exp_xlsx) and _mejl_ok(_mail_to) and smtp_dostupan()
+                             and not _zakljucan)
                 _vec_poslat = "Poslala sam mejl" in (v.get("reakcije") or [])
                 _ck_mail = "_mailconf_" + str(sistem) + "_" + str(sel_id)
                 _dk_mail = "_dosend_" + str(sistem) + "_" + str(sel_id)
@@ -5307,6 +5424,9 @@ def prikazi_administraciju():
                                + (("_" + _nn) if _nn else "") + ").")
                 elif not _mail_to:
                     st.caption("Objekat nema email u šifarniku komitenata.")
+                elif not _mejl_ok(_mail_to):
+                    st.error("✉️ Email u šifarniku nije ispravan: „" + str(_mail_to) + "“. "
+                             "Najčešće je razmak pre @ ili pogrešan oblik — ispravi u šifarniku.")
                 elif not _exp_rows:
                     st.caption("Nema dodatne porudžbine za slanje.")
                 # Trajna zelena oznaka (iz baze) + sitni sivi dnevnik mejlova (ko + kada)
@@ -5351,6 +5471,17 @@ def prikazi_administraciju():
                                     st.session_state.pop(_ck_key, None)
                                     st.rerun()
                 _mres = st.session_state.get(_sk_mail)
+                if _mail_to and st.session_state.get("_vrac_v"):
+                    try:
+                        _vr1 = (vraceni_mejlovi(dana=30,
+                                                _v=st.session_state.get("_vrac_v", 0)) or {}
+                                ).get(_ocisti_mejl(_mail_to).lower())
+                    except Exception:
+                        _vr1 = None
+                    if _vr1:
+                        st.error("↩️ Mejl na ovu adresu se **vratio** ("
+                                 + str(_vr1.get("kada", "")) + ") — nije stigao do objekta. "
+                                 "Razlog: " + str(_vr1.get("razlog", "")))
                 _kop1 = (_mres or {}).get("kopija")
                 if _kop1 and not _kop1[0]:
                     st.warning("Mejl je poslat, ali kopija nije upisana u Poslato: "
@@ -5525,7 +5656,17 @@ def prikazi_administraciju():
             st.warning("✉️ Slanje mejlova nije podešeno za tvoj nalog — dodaj u Secrets: "
                        "SMTP_HOST" + _suf + " / SMTP_USER" + _suf + " / SMTP_PASSWORD" + _suf + ".")
         else:
-            st.caption("✉️ Mejlovi se šalju sa: " + str(_smtp_cfg().get("from_email", "")))
+            _vc1, _vc2 = st.columns([3, 1.2])
+            with _vc1:
+                st.caption("✉️ Mejlovi se šalju sa: " + str(_smtp_cfg().get("from_email", "")))
+            with _vc2:
+                if st.button("↩️ Proveri vraćene mejlove", key="vrac_chk", use_container_width=True):
+                    st.session_state["_vrac_v"] = st.session_state.get("_vrac_v", 0) + 1
+                    try:
+                        vraceni_mejlovi.clear()
+                    except Exception:
+                        pass
+                    st.rerun()
 
         _selk = "bulk_sel_" + str(sistem) + "_" + str(mesec_key)
         _verk = "bulk_ver_" + str(sistem) + "_" + str(mesec_key)
@@ -5557,8 +5698,17 @@ def prikazi_administraciju():
                 "idk": _bidk, "Naziv": _bnaziv, "Email": _bemail or "(nema mejla)",
                 "zona_txt": _bz[3], "zona_dot": _bz[2], "Stavki": _bstavki,
                 "mail_sent": _bmail_sent, "mail_ko": _bmail_ko, "mail_n": _bmail_n,
-                "_zona": o["nivo"], "_email_ok": bool(_bemail), "_has_rows": _bstavki > 0,
+                "_zona": o["nivo"], "_email_ok": _mejl_ok(_bemail), "_has_rows": _bstavki > 0,
             })
+        _vrac = {}
+        if st.session_state.get("_vrac_v"):
+            try:
+                _vrac = vraceni_mejlovi(dana=30, _v=st.session_state.get("_vrac_v", 0)) or {}
+            except Exception:
+                _vrac = {}
+        for _r1 in _bulk_rows:
+            _e1 = _ocisti_mejl(_r1.get("Email", "")).lower()
+            _r1["vraceno"] = _vrac.get(_e1) if _e1 else None
         GRUPNO_MAX = 2   # koliko puta objekat sme da dobije mejl grupnim slanjem
         for _r0 in _bulk_rows:
             _r0["_grupno_ok"] = int(_r0.get("mail_n", 0) or 0) < GRUPNO_MAX
@@ -5578,7 +5728,7 @@ def prikazi_administraciju():
                     '<div style="font-size:11.5px;color:#9b6b6b;">Može grupno (1. ili 2. put)</div></div>'
                     '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:12px 16px;">'
                     '<div style="font-size:20px;font-weight:800;color:#b45309;">' + str(sum(1 for r in _bulk_rows if not r["_email_ok"])) + '</div>'
-                    '<div style="font-size:11.5px;color:#9a7b3a;">Bez emaila</div></div></div>',
+                    '<div style="font-size:11.5px;color:#9a7b3a;">Bez ispravnog mejla</div></div></div>',
                     unsafe_allow_html=True)
         # Filteri (objekti kojima je mejl VEĆ poslat se ne prikazuju — ne mogu se ponovo slati grupno)
         _fc1, _fc3 = st.columns([1, 3])
@@ -5598,6 +5748,16 @@ def prikazi_administraciju():
                     return False
             return True
         _view_rows = [r for r in _bulk_rows if _match(r)]
+        _n_vrac = sum(1 for r in _bulk_rows if r.get("vraceno"))
+        if _n_vrac:
+            _lst = [r for r in _bulk_rows if r.get("vraceno")][:12]
+            st.error("↩️ **" + str(_n_vrac) + " mejlova se vratilo** — nisu stigli do objekta:\n\n"
+                     + "\n".join("• " + str(r["Naziv"])[:52] + " · " + str(r["Email"])
+                                 + " — " + str((r["vraceno"] or {}).get("razlog", ""))[:70]
+                                 for r in _lst)
+                     + (("\n\n… i još " + str(_n_vrac - len(_lst))) if _n_vrac > len(_lst) else ""))
+        elif st.session_state.get("_vrac_v"):
+            st.success("↩️ Nema vraćenih mejlova u poslednjih 30 dana.")
         if _n_drugi_krug or _n_iscrpljeno:
             _p = []
             if _n_drugi_krug:
@@ -5637,9 +5797,10 @@ def prikazi_administraciju():
                 "Zona": r["zona_dot"],
                 "Naziv": r["Naziv"],
                 "Email": r["Email"],
-                "Mejl": (("✅ " + str(r["mail_n"]) + "× "
-                          + (_ko_kratko(r["mail_ko"]) if r["mail_ko"] else "")).strip()
-                         if int(r.get("mail_n", 0) or 0) > 0 else "—"),
+                "Mejl": ("⚠️ VRAĆENO" if r.get("vraceno")
+                         else (("✅ " + str(r["mail_n"]) + "× "
+                                + (_ko_kratko(r["mail_ko"]) if r["mail_ko"] else "")).strip()
+                               if int(r.get("mail_n", 0) or 0) > 0 else "—")),
                 "Stavki": r["Stavki"],
             } for r in _view_rows])
             _h_editor = min(60 + 36 * len(_view_rows), 760)
