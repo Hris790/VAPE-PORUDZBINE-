@@ -652,6 +652,55 @@ def _dt_kratko(iso):
         return str(iso)
 
 
+def sb_obrada_ocisti(mesec_key, sistem, idk, sta="mejl"):
+    """Obriši dnevnik i reakciju za objekat — za čišćenje testnih zapisa.
+    sta: 'mejl' | 'poziv' | 'komercijala' | 'sve'. Ostalo (napomena, njihova,
+    trebovanje) se ne dira."""
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    try:
+        res = (cli.table("obrada")
+               .select("reakcije,trebovali_tip,njihova,napomena,reakcije_ko,dnevnik")
+               .eq("mesec", mesec_key).eq("sistem", sistem).eq("idk", int(idk)).limit(1).execute())
+        _r = res.data[0] if res.data else {}
+    except Exception:
+        _r = {}
+    if not _r:
+        return 0
+    reakcije = list(_r.get("reakcije") or [])
+    reakcije_ko = dict(_r.get("reakcije_ko") or {})
+    dnevnik = dict(_r.get("dnevnik") or {})
+    _mapa = {"mejl": ("mejlovi", "Poslala sam mejl"),
+             "poziv": ("pozivi", "Pozvala sam"),
+             "komercijala": ("komercijala", "Obavestila direktorku")}
+    _kljucevi = list(_mapa.keys()) if sta == "sve" else [sta]
+    _obrisano = 0
+    for _k in _kljucevi:
+        _dk, _reak = _mapa.get(_k, (None, None))
+        if not _dk:
+            continue
+        _obrisano += len(dnevnik.get(_dk) or [])
+        dnevnik.pop(_dk, None)
+        if _reak in reakcije:
+            reakcije.remove(_reak)
+            if _obrisano == 0:
+                _obrisano = 1     # stari zapis bez dnevnika
+        reakcije_ko.pop(_reak, None)
+    _row = {"mesec": mesec_key, "sistem": sistem, "idk": int(idk),
+            "reakcije": reakcije, "trebovali": bool(_r.get("trebovali_tip")),
+            "trebovali_tip": _r.get("trebovali_tip") or "", "njihova": _r.get("njihova") or {},
+            "napomena": _r.get("napomena") or "", "reakcije_ko": reakcije_ko, "dnevnik": dnevnik,
+            "azurirano": _now().isoformat()}
+    try:
+        cli.table("obrada").upsert(_row, on_conflict="mesec,sistem,idk").execute()
+    except Exception:
+        for _c in ("dnevnik", "reakcije_ko"):
+            _row.pop(_c, None)
+        cli.table("obrada").upsert(_row, on_conflict="mesec,sistem,idk").execute()
+    return _obrisano
+
+
 def sb_obrada_log(mesec_key, sistem, idk, kind, ko=""):
     """Zabeleži poziv ili mejl u dnevnik obrade (dnevnik.pozivi / dnevnik.mejlovi = lista {ko, at}).
     Uz to upali odgovarajuću reakciju (Pozvala sam / Poslala sam mejl) da se vidi u pregledu.
@@ -5267,6 +5316,40 @@ def prikazi_administraciju():
                     _mhtml = _dnevnik_lista_html(v.get("dnevnik") or {}, "mejl")
                     if _mhtml:
                         st.markdown('<div style="margin:-4px 0 4px;">' + _mhtml + '</div>', unsafe_allow_html=True)
+                    # --- čišćenje testnih zapisa (uključuje se u Secrets: DOZVOLI_CISCENJE = true) ---
+                    _moze_cistiti = (st.session_state.get("role") == "analitika"
+                                     or str(_cfg("DOZVOLI_CISCENJE", "")).strip().lower()
+                                     in ("1", "true", "da", "on"))
+                    if _moze_cistiti:
+                        _ck_key = "_cist_pot_" + str(sistem) + "_" + str(sel_id)
+                        if not st.session_state.get(_ck_key):
+                            if st.button("🧹 Obriši istoriju mejlova (test)",
+                                         key="cist_" + str(sistem) + "_" + str(sel_id)):
+                                st.session_state[_ck_key] = True
+                                st.rerun()
+                        else:
+                            st.warning("Obrisaće se **" + str(len(_mejlovi)) + "** zapisa o mejlovima "
+                                       "za ovaj objekat i oznaka „Poslala sam mejl“. Pozivi i "
+                                       "napomene ostaju. Ovo se ne može vratiti.")
+                            _cc1, _cc2 = st.columns(2)
+                            with _cc1:
+                                if st.button("Da, obriši", key="cist_da_" + str(sistem) + "_" + str(sel_id),
+                                             type="primary", use_container_width=True):
+                                    try:
+                                        _n_ob = sb_obrada_ocisti(mesec_key, sistem, sel_id, "mejl")
+                                        sb_pregled.clear()
+                                        st.session_state.pop(_ck_key, None)
+                                        st.session_state.pop(_sk_mail, None)
+                                        st.session_state.pop("r2_" + str(sel_id), None)
+                                        st.success("Obrisano " + str(_n_ob) + " zapisa.")
+                                        st.rerun()
+                                    except Exception as _ce:
+                                        st.error("Brisanje nije uspelo: " + str(_ce))
+                            with _cc2:
+                                if st.button("Odustani", key="cist_ne_" + str(sistem) + "_" + str(sel_id),
+                                             use_container_width=True):
+                                    st.session_state.pop(_ck_key, None)
+                                    st.rerun()
                 _mres = st.session_state.get(_sk_mail)
                 _kop1 = (_mres or {}).get("kopija")
                 if _kop1 and not _kop1[0]:
