@@ -4621,8 +4621,8 @@ def prikazi_administraciju():
                     st.error("Upiši ispravan mejl nadležnog.")
                 else:
                     try:
-                        with st.spinner("✉️ Šaljem mejl na " + _to_send
-                                        + " … (zna da potraje do 2 minuta, ne zatvaraj stranu)"):
+                        with st.spinner("✉️ Slanje mejla u toku… (može da potraje do 2 minuta, "
+                                        "ne zatvaraj stranu)"):
                             posalji_mejl_sa_prilogom(
                                 _to_send, _subj_send, _body_send, attach_bytes=_pdf_bytes_n,
                                 attach_filename=_prilog_ime)
@@ -5168,17 +5168,13 @@ def prikazi_administraciju():
                         _subj = ("VAPE SHOP - " + str(_naziv_kom or ("ID " + str(sel_id)))
                                  + " - PORUDŽBINA - " + _now().strftime("%d.%m.%Y."))
                         _fname_mail = _fname if _exp_rows else (str(sel_id) + ".xlsx")
-                        import time as _tm1
-                        _t0 = _tm1.time()
-                        with st.spinner("✉️ Šaljem mejl na " + _mail_to
-                                        + " … (zna da potraje do 2 minuta, ne zatvaraj stranu)"):
+                        with st.spinner("✉️ Slanje mejla u toku… (može da potraje do 2 minuta, "
+                                        "ne zatvaraj stranu)"):
                             posalji_mejl_sa_prilogom(_mail_to, _subj, MEJL_TEKST_DEFAULT,
                                                      _exp_xlsx, _fname_mail)
-                        _traj = int(round(_tm1.time() - _t0))
                         _kk1 = st.session_state.get("_zadnja_kopija")
                         st.session_state[_sk_mail] = {"ok": True, "msg": "Poslato na " + _mail_to,
-                                                      "kopija": _kk1, "traj": _traj,
-                                                      "kada": _now().strftime("%d.%m.%Y %H:%M:%S")}
+                                                      "kopija": _kk1}
                         # Auto: zabeleži mejl u dnevnik (ko + vreme) + upali „Poslala sam mejl"
                         try:
                             _cur_u = st.session_state.get("admin_user", "Administracija")
@@ -5250,8 +5246,6 @@ def prikazi_administraciju():
                     if _mhtml:
                         st.markdown('<div style="margin:-4px 0 4px;">' + _mhtml + '</div>', unsafe_allow_html=True)
                 _mres = st.session_state.get(_sk_mail)
-                if _mres and _mres.get("ok") and _mres.get("kada"):
-                    st.caption("🕒 Poslato " + str(_mres.get("kada")))
                 _kop1 = (_mres or {}).get("kopija")
                 if _kop1 and not _kop1[0]:
                     st.warning("Mejl je poslat, ali kopija nije upisana u Poslato: "
