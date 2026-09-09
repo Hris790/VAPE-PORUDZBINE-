@@ -2397,7 +2397,8 @@ def _objekat_order_xlsx(naziv, idk, mesec_lbl, rows, meseci=None):
     # Naslov (koji objekat / mesec)
     _ws.merge_cells("A1:" + _last + "1")
     _t = _ws["A1"]
-    _t.value = ("Porudžbina · " + str(naziv or ("ID " + str(idk))) + " · " + str(mesec_lbl))
+    _t.value = ("Porudžbina · " + str(naziv or ("ID " + str(idk))) + " · "
+                + _now().strftime("%d.%m.%Y."))
     _t.font = _F(bold=True, size=13, color="3730A3")
     _t.alignment = _AL(horizontal="left", vertical="center")
     _ws.row_dimensions[1].height = 22
