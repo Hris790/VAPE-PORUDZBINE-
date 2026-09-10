@@ -5731,9 +5731,13 @@ def prikazi_administraciju():
                     '<div style="font-size:11.5px;color:#9a7b3a;">Bez ispravnog mejla</div></div></div>',
                     unsafe_allow_html=True)
         # Filteri (objekti kojima je mejl VEĆ poslat se ne prikazuju — ne mogu se ponovo slati grupno)
-        _fc1, _fc3 = st.columns([1, 3])
+        _fc1, _fc2, _fc3 = st.columns([1, 1.35, 2])
         with _fc1:
             _f_zona = st.selectbox("Zona", ["Sve zone", "🔴 Hitno", "🟡 Iskontrolisati", "🟢 Dobra"], key="bulk_f_zona")
+        with _fc2:
+            _f_mejl = st.selectbox("Status mejla",
+                                   ["Svi", "Nije poslat nijednom", "Poslat jednom (drugi krug)",
+                                    "Samo vraćeni"], key="bulk_f_mejl")
         with _fc3:
             _f_q = st.text_input("Pretraga (naziv ili email)", value="", key="bulk_f_q", placeholder="npr. Novi Sad ili mp123@…")
         _zmap = {"🔴 Hitno": "crveno", "🟡 Iskontrolisati": "zuto", "🟢 Dobra": "zeleno"}
@@ -5741,6 +5745,13 @@ def prikazi_administraciju():
             if not r["_grupno_ok"]:
                 return False   # već dobio 2 mejla — grupno više ne može, samo pojedinačno
             if _f_zona in _zmap and r["_zona"] != _zmap[_f_zona]:
+                return False
+            _mn = int(r.get("mail_n", 0) or 0)
+            if _f_mejl == "Nije poslat nijednom" and _mn != 0:
+                return False
+            if _f_mejl == "Poslat jednom (drugi krug)" and _mn != 1:
+                return False
+            if _f_mejl == "Samo vraćeni" and not r.get("vraceno"):
                 return False
             if _f_q.strip():
                 _qq = _f_q.strip().lower()
@@ -5768,7 +5779,7 @@ def prikazi_administraciju():
                           "prikazuju ovde, ponovno slanje je moguće samo pojedinačno sa kartice objekta")
             st.caption("ℹ️ " + ". ".join(_p) + ".")
         # Kad se filter promeni — poništi izbor (da izbor uvek prati ono što je trenutno prikazano)
-        _sig = str(_f_zona) + "|" + _f_q.strip().lower()
+        _sig = str(_f_zona) + "|" + str(_f_mejl) + "|" + _f_q.strip().lower()
         _sigk = "bulk_sig_" + str(sistem) + "_" + str(mesec_key)
         if st.session_state.get(_sigk) != _sig:
             st.session_state[_sigk] = _sig
