@@ -731,6 +731,8 @@ def sb_obrada_log(mesec_key, sistem, idk, kind, ko=""):
         reakcije_ko["Obavestila direktorku"] = reakcije_ko.get("Obavestila direktorku") or (ko or "")
     else:
         dnevnik.setdefault("mejlovi", []).append({"ko": ko or "", "at": _at})
+        # uspelo je — skloni crvenu oznaku o ranijem neuspehu
+        dnevnik.pop("greske", None)
         if "Poslala sam mejl" not in reakcije:
             reakcije.append("Poslala sam mejl")
         reakcije_ko["Poslala sam mejl"] = reakcije_ko.get("Poslala sam mejl") or (ko or "")
@@ -745,6 +747,32 @@ def sb_obrada_log(mesec_key, sistem, idk, kind, ko=""):
         for _c in ("dnevnik", "reakcije_ko", "azurirao"):
             _row.pop(_c, None)
         cli.table("obrada").upsert(_row, on_conflict="mesec,sistem,idk").execute()
+
+
+def sb_mejl_greska(mesec_key, sistem, idk, poruka, ko=""):
+    """Zapiši NEUSPELO slanje mejla u dnevnik (dnevnik.greske = lista {ko, at, sta}).
+
+    Važno: ovo se upisuje odmah, u bazu, pa ostaje zapisano i ako se strana
+    „izgubi“ usred grupnog slanja. Ne dira reakcije — objekat NE dobija oznaku
+    „Poslala sam mejl“, jer mejl nije ni otišao."""
+    cli = _sb()
+    if cli is None:
+        return False
+    try:
+        res = cli.table("obrada").select("dnevnik").eq("mesec", mesec_key).eq("sistem", sistem).eq("idk", int(idk)).limit(1).execute()
+        _r = res.data[0] if res.data else {}
+        dnevnik = dict(_r.get("dnevnik") or {})
+        _lst = list(dnevnik.get("greske") or [])
+        _lst.append({"ko": ko or "", "at": _now().isoformat(), "sta": str(poruka)[:300]})
+        dnevnik["greske"] = _lst[-20:]
+        if res.data:
+            cli.table("obrada").update({"dnevnik": dnevnik}).eq("mesec", mesec_key).eq("sistem", sistem).eq("idk", int(idk)).execute()
+        else:
+            cli.table("obrada").insert({"mesec": mesec_key, "sistem": sistem, "idk": int(idk),
+                                        "dnevnik": dnevnik}).execute()
+        return True
+    except Exception:
+        return False
 
 
 def _dnevnik_lista_html(dnevnik, kind):
@@ -3602,21 +3630,17 @@ def _mejl_ok(adr):
     return bool(_re.match(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$", _a))
 
 
-def posalji_mejl_sa_prilogom(to_email, subject, body, attach_bytes=None, attach_filename=None, cc_email=None):
-    """Pošalji mejl preko SMTP naloga iz Secrets, sa opcionim Excel prilogom.
-    Baca RuntimeError sa razumljivom porukom ako nešto fali."""
-    import smtplib
+def _napravi_poruku(cfg, to_email, subject, body, attach_bytes=None, attach_filename=None, cc_email=None):
+    """Sastavi MIME poruku (telo + potpis + logo + prilog).
+    Vraća (msg, spisak_primalaca, ociscena_adresa)."""
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
     from email.mime.base import MIMEBase
+    from email.mime.image import MIMEImage
     from email import encoders
-    from email.utils import formataddr
-    cfg = _smtp_cfg()
-    if not smtp_dostupan():
-        _n = cfg.get("nalog") or ""
-        _suf = ("_" + _n) if _n else ""
-        raise RuntimeError("Slanje mejlova nije podešeno za ovog korisnika — dodaj u Secrets: "
-                           "SMTP_HOST" + _suf + " / SMTP_USER" + _suf + " / SMTP_PASSWORD" + _suf + ".")
+    from email.utils import formataddr, formatdate, make_msgid
+    import base64 as _b64s
+
     _sirovo = str(to_email or "").strip()
     to_email = _ocisti_mejl(to_email)
     if not _mejl_ok(to_email):
@@ -3624,14 +3648,18 @@ def posalji_mejl_sa_prilogom(to_email, subject, body, attach_bytes=None, attach_
                            + "“. Ispravi je u šifarniku pa pokušaj ponovo.")
     if cc_email:
         cc_email = _ocisti_mejl(cc_email) or None
-    import base64 as _b64s
-    from email.mime.image import MIMEImage
+
     msg = MIMEMultipart("mixed")
     msg["From"] = formataddr((cfg["from_name"], cfg["from_email"]))
     msg["To"] = to_email
     if cc_email:
         msg["Cc"] = cc_email
     msg["Subject"] = subject
+    try:
+        msg["Date"] = formatdate(localtime=True)
+        msg["Message-ID"] = make_msgid(domain=str(cfg.get("from_email", "")).split("@")[-1] or None)
+    except Exception:
+        pass
 
     # telo: obična verzija + HTML verzija sa potpisom (i logom)
     _txt = str(body or "") + "\n\n--\n" + _potpis_tekst()
@@ -3662,30 +3690,222 @@ def posalji_mejl_sa_prilogom(to_email, subject, body, attach_bytes=None, attach_
         encoders.encode_base64(part)
         part.add_header("Content-Disposition", 'attachment; filename="' + str(attach_filename) + '"')
         msg.attach(part)
+
     recipients = [to_email] + ([cc_email] if cc_email else [])
-    try:
+    return (msg, recipients, to_email)
+
+
+class MejlOgranicenje(RuntimeError):
+    """Server je PRIVREMENO odbio slanje — dnevno/satno ograničenje broja
+    mejlova, previše veza sa iste adrese ili slično. Nije greška u adresi;
+    isti mejl će proći kasnije. Grupno slanje se u ovom slučaju zaustavlja,
+    da se server ne bi dodatno zaključao."""
+    pass
+
+
+class MejlSesija:
+    """Jedna SMTP (i jedna IMAP) veza za više mejlova zaredom.
+
+    Grupno slanje je ranije otvaralo novu vezu za svaki mejl (prijava + TLS
+    + upis u Poslato), pa je jedan mejl trajao i po minut-dva. Ovako se veza
+    otvori jednom i drži otvorena, pa je slanje višestruko brže."""
+
+    def __init__(self, nalog=None):
+        self.nalog = nalog
+        self.cfg = _smtp_cfg(nalog)
+        self._smtp_veza = None
+        self._imap_veza = None
+        self._sent_folder = None
+        self._imap_odustao = False
+        self._imap_razlog = ""
+
+    # ---------- SMTP ----------
+    def _smtp(self):
+        import smtplib
+        if self._smtp_veza is not None:
+            try:
+                self._smtp_veza.noop()
+                return self._smtp_veza
+            except Exception:
+                try:
+                    self._smtp_veza.close()
+                except Exception:
+                    pass
+                self._smtp_veza = None
+        cfg = self.cfg
         if cfg["use_ssl"]:
-            server = smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=30)
+            _s = smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=60)
         else:
-            server = smtplib.SMTP(cfg["host"], cfg["port"], timeout=30)
-            server.starttls()
-        server.login(cfg["user"], cfg["password"])
-        server.sendmail(cfg["from_email"], recipients, msg.as_string())
-        server.quit()
+            _s = smtplib.SMTP(cfg["host"], cfg["port"], timeout=60)
+            _s.starttls()
+        _s.login(cfg["user"], cfg["password"])
+        self._smtp_veza = _s
+        return _s
+
+    # ---------- IMAP (kopija u Poslato) ----------
+    def _imap(self):
+        if self._imap_odustao:
+            return (None, self._imap_razlog)
+        if str(_cfg("SMTP_KOPIJA", "1")).strip().lower() in ("0", "false", "ne", "off"):
+            self._imap_odustao = True
+            self._imap_razlog = "isključeno u podešavanjima"
+            return (None, self._imap_razlog)
+        import imaplib
+        if self._imap_veza is not None:
+            try:
+                self._imap_veza.noop()
+                return (self._imap_veza, self._sent_folder)
+            except Exception:
+                try:
+                    self._imap_veza.logout()
+                except Exception:
+                    pass
+                self._imap_veza = None
+        c = _imap_cfg(self.nalog)
+        if not (c["host"] and c["user"] and c["password"]):
+            self._imap_odustao = True
+            self._imap_razlog = "IMAP nije podešen"
+            return (None, self._imap_razlog)
+        try:
+            _im = imaplib.IMAP4_SSL(c["host"], c["port"], timeout=30)
+            _im.login(c["user"], c["password"])
+        except Exception as _e:
+            self._imap_odustao = True
+            self._imap_razlog = str(_e)[:160]
+            return (None, self._imap_razlog)
+        _f = self._sent_folder or _smtp_kljuc("IMAP_SENT", c.get("nalog") or _mail_nalog(), "") or ""
+        if not _f:
+            try:
+                _f = _nadji_poslato_folder(_im)
+            except Exception:
+                _f = ""
+        if not _f:
+            try:
+                _im.logout()
+            except Exception:
+                pass
+            self._imap_odustao = True
+            self._imap_razlog = "ne mogu da nađem folder za poslatu poštu"
+            return (None, self._imap_razlog)
+        self._imap_veza = _im
+        self._sent_folder = _f
+        return (_im, _f)
+
+    def _kopija(self, msg):
+        import imaplib, time as _t
+        _im, _f = self._imap()
+        if _im is None:
+            return (False, str(_f or "kopija nije upisana"))
+        try:
+            _im.append(_f, "\\Seen", imaplib.Time2Internaldate(_t.time()),
+                       msg.as_string().encode("utf-8"))
+            return (True, _f)
+        except Exception as _e:
+            # veza je možda pukla — jedan pokušaj sa novom
+            try:
+                self._imap_veza.logout()
+            except Exception:
+                pass
+            self._imap_veza = None
+            _im, _f = self._imap()
+            if _im is None:
+                return (False, str(_e)[:160])
+            try:
+                _im.append(_f, "\\Seen", imaplib.Time2Internaldate(_t.time()),
+                           msg.as_string().encode("utf-8"))
+                return (True, _f)
+            except Exception as _e2:
+                return (False, str(_e2)[:160])
+
+    # ---------- slanje ----------
+    def posalji(self, to_email, subject, body, attach_bytes=None, attach_filename=None, cc_email=None):
+        import smtplib
+        if not smtp_dostupan(self.nalog):
+            _n = self.cfg.get("nalog") or ""
+            _suf = ("_" + _n) if _n else ""
+            raise RuntimeError("Slanje mejlova nije podešeno za ovog korisnika — dodaj u Secrets: "
+                               "SMTP_HOST" + _suf + " / SMTP_USER" + _suf + " / SMTP_PASSWORD" + _suf + ".")
+        msg, recipients, to_email = _napravi_poruku(
+            self.cfg, to_email, subject, body, attach_bytes, attach_filename, cc_email)
+
+        _greska = None
+        for _pokusaj in (1, 2):
+            try:
+                _s = self._smtp()
+                _s.sendmail(self.cfg["from_email"], recipients, msg.as_string())
+                _greska = None
+                break
+            except smtplib.SMTPAuthenticationError:
+                raise RuntimeError("Prijava na SMTP nije uspela — proveri SMTP_USER/SMTP_PASSWORD "
+                                   "(za Gmail mora App Password).")
+            except smtplib.SMTPRecipientsRefused as _e:
+                raise RuntimeError("Server je odbio adresu primaoca: " + str(_e)[:160])
+            except smtplib.SMTPResponseException as _e:
+                _kod = int(getattr(_e, "smtp_code", 0) or 0)
+                _tekst = getattr(_e, "smtp_error", b"")
+                if isinstance(_tekst, bytes):
+                    _tekst = _tekst.decode("utf-8", "replace")
+                if 400 <= _kod < 500:
+                    # privremeno odbijanje: ograničenje broja mejlova, previše veza…
+                    raise MejlOgranicenje("Server je privremeno odbio slanje (kod " + str(_kod)
+                                          + "): " + str(_tekst)[:200])
+                raise RuntimeError("Server je odbio mejl (kod " + str(_kod) + "): " + str(_tekst)[:200])
+            except Exception as _e:
+                _greska = _e
+                try:
+                    self._smtp_veza.close()
+                except Exception:
+                    pass
+                self._smtp_veza = None
+        if _greska is not None:
+            raise RuntimeError("Slanje mejla nije uspelo: " + str(_greska))
+
         # kopija u folder Poslato, da se mejl vidi i u Outlooku/webmailu
         try:
-            _ok_kop, _kop = _upisi_u_poslato(msg)
+            _ok_kop, _kop = self._kopija(msg)
             try:
                 st.session_state["_zadnja_kopija"] = (bool(_ok_kop), str(_kop))
             except Exception:
                 pass
         except Exception:
             pass
-    except smtplib.SMTPAuthenticationError:
-        raise RuntimeError("Prijava na SMTP nije uspela — proveri SMTP_USER/SMTP_PASSWORD (za Gmail mora App Password).")
-    except Exception as _e:
-        raise RuntimeError("Slanje mejla nije uspelo: " + str(_e))
+        return True
 
+    def zatvori(self):
+        try:
+            if self._smtp_veza is not None:
+                self._smtp_veza.quit()
+        except Exception:
+            pass
+        self._smtp_veza = None
+        try:
+            if self._imap_veza is not None:
+                self._imap_veza.logout()
+        except Exception:
+            pass
+        self._imap_veza = None
+
+    # da može i u „with“ bloku
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        self.zatvori()
+        return False
+
+
+def posalji_mejl_sa_prilogom(to_email, subject, body, attach_bytes=None, attach_filename=None,
+                             cc_email=None, sesija=None):
+    """Pošalji mejl preko SMTP naloga iz Secrets, sa opcionim Excel prilogom.
+    Ako je prosleđena `sesija` (MejlSesija), koristi njenu već otvorenu vezu.
+    Baca RuntimeError sa razumljivom porukom ako nešto fali."""
+    if sesija is not None:
+        return sesija.posalji(to_email, subject, body, attach_bytes, attach_filename, cc_email)
+    _s = MejlSesija()
+    try:
+        return _s.posalji(to_email, subject, body, attach_bytes, attach_filename, cc_email)
+    finally:
+        _s.zatvori()
 
 # =====================================================================
 # ISTORIJA PORUDŽBINA IZ ADMINA (za detaljnu karticu)
@@ -5431,6 +5651,18 @@ def prikazi_administraciju():
                     st.caption("Nema dodatne porudžbine za slanje.")
                 # Trajna zelena oznaka (iz baze) + sitni sivi dnevnik mejlova (ko + kada)
                 _mejlovi = (v.get("dnevnik") or {}).get("mejlovi") or []
+                # Neuspela slanja — ostaju zapisana u bazi i posle „izgubljene“ strane
+                _greske = (v.get("dnevnik") or {}).get("greske") or []
+                if _greske:
+                    _g = _greske[-1]
+                    st.error("❌ Poslednji pokušaj slanja NIJE uspeo — "
+                             + _dt_kratko(_g.get("at", "")) + " · " + str(_g.get("sta", ""))[:200])
+                    if len(_greske) > 1:
+                        with st.expander("Raniji neuspeli pokušaji (" + str(len(_greske) - 1) + ")"):
+                            for _g2 in reversed(_greske[:-1]):
+                                st.caption(_dt_kratko(_g2.get("at", "")) + " · "
+                                           + (_ko_kratko(_g2.get("ko", "")) or "?") + " · "
+                                           + str(_g2.get("sta", ""))[:200])
                 if "Poslala sam mejl" in (v.get("reakcije") or []):
                     st.success("✅ Mejl je poslat objektu" + ((" · " + _mail_to) if _mail_to else "") + ".")
                     _mhtml = _dnevnik_lista_html(v.get("dnevnik") or {}, "mejl")
@@ -5838,12 +6070,33 @@ def prikazi_administraciju():
         st.caption("Izabrano: " + str(_n_sel) + " objekata · spremno za slanje: " + str(_n_sel_ok)
                    + ((" · bez mejla: " + str(_n_sel_no_email)) if _n_sel_no_email else "")
                    + ((" · nema dodatne porudžbine: " + str(_n_sel_no_rows)) if _n_sel_no_rows else ""))
+        _flash = st.session_state.pop("_bulk_flash", None)
+        if _flash:
+            if _flash[0] == "ok":
+                st.success(_flash[1])
+            else:
+                st.warning(_flash[1])
         if st.button("📧 Pošalji izabranima (" + str(_n_sel_ok) + ")", key="bulk_send", type="primary",
                      use_container_width=True, disabled=(_n_sel_ok == 0 or not smtp_dostupan() or _zakljucan)):
             _bprog = st.progress(0, "✉️ Pripremam slanje…")
-            _to_send = [r for r in _view_rows if r["idk"] in _sel_ids and r["_email_ok"] and r["_has_rows"]]
+            _to_send_svi = [r for r in _view_rows if r["idk"] in _sel_ids and r["_email_ok"] and r["_has_rows"]]
+            # Koliko mejlova po jednom kliku (da slanje sigurno stigne do kraja
+            # pre nego što Streamlit prekine vezu). 0 = bez ograničenja.
+            try:
+                _bmax = int(str(_cfg("GRUPNO_BATCH", "20")).strip() or 0)
+            except Exception:
+                _bmax = 20
+            _to_send = _to_send_svi[:_bmax] if _bmax > 0 else _to_send_svi
+            _ostalo = len(_to_send_svi) - len(_to_send)
+            # pauza između mejlova — server lakše podnosi niz mejlova zaredom
+            try:
+                _bpauza = float(str(_cfg("GRUPNO_PAUZA", "2")).strip() or 0)
+            except Exception:
+                _bpauza = 2.0
             _cur_u = st.session_state.get("admin_user", "Administracija")
             _n_ok = 0; _n_fail = 0
+            _stop_razlog = ""
+            _ses = MejlSesija()
             for _bi, r in enumerate(_to_send):
                 _bidk2 = r["idk"]
                 _o2 = obj_by_id[_bidk2]
@@ -5878,28 +6131,76 @@ def prikazi_administraciju():
                     _bsubj2 = ("VAPE SHOP - " + str(_bnaziv2) + " - PORUDŽBINA - "
                                + _now().strftime("%d.%m.%Y."))
                     posalji_mejl_sa_prilogom(_bemail2, _bsubj2, _mejl_tekst(_bnaziv2),
-                                             _bxlsx2, _bfname2)
+                                             _bxlsx2, _bfname2, sesija=_ses)
                     st.session_state[_bsk2] = {"ok": True, "msg": "Poslato na " + _bemail2}
                     _n_ok += 1
+                    # skini ga sa izbora, da se sledećim klikom ne pošalje ponovo
+                    try:
+                        st.session_state[_selk].discard(_bidk2)
+                    except Exception:
+                        pass
                     # Auto: zabeleži mejl u dnevnik (ko + vreme) + upali „Poslala sam mejl"
                     try:
                         sb_obrada_log(mesec_key, sistem, _bidk2, "mejl", _cur_u)
                     except Exception:
                         pass
+                except MejlOgranicenje as _bo:
+                    # server nas privremeno koči — nema smisla nastaviti
+                    st.session_state[_bsk2] = {"ok": False, "msg": str(_bo)}
+                    _n_fail += 1
+                    try:
+                        sb_mejl_greska(mesec_key, sistem, _bidk2, str(_bo), _cur_u)
+                    except Exception:
+                        pass
+                    _stop_razlog = str(_bo)
+                    break
                 except Exception as _be:
                     st.session_state[_bsk2] = {"ok": False, "msg": str(_be)}
                     _n_fail += 1
+                    # upiši grešku u bazu ODMAH, da ostane zapisana i ako se strana izgubi
+                    try:
+                        sb_mejl_greska(mesec_key, sistem, _bidk2, str(_be), _cur_u)
+                    except Exception:
+                        pass
                 _bprog.progress(int((_bi + 1) / len(_to_send) * 100),
                                 "✅ Poslato " + str(_bi + 1) + "/" + str(len(_to_send)))
+                if _bpauza > 0 and _bi < len(_to_send) - 1:
+                    import time as _tsl
+                    _tsl.sleep(_bpauza)
+            try:
+                _ses.zatvori()
+            except Exception:
+                pass
             _bprog.empty()
+            _por = []
+            if _n_fail == 0:
+                _tip = "ok"
+                _por.append("✅ Poslato " + str(_n_ok) + " mejlova. Status je zabeležen (vidljiv i posle odjave).")
+            else:
+                _tip = "warn"
+                _por.append("Poslato " + str(_n_ok) + " · nije uspelo " + str(_n_fail)
+                            + " (proveri status u tabeli iznad).")
+            if _stop_razlog:
+                _tip = "warn"
+                _por.append("⏸️ Slanje je zaustavljeno jer nas server privremeno koči: " + _stop_razlog
+                            + "\n\nTo NIJE greška u adresama — isti mejlovi će proći kasnije. "
+                            "Sačekaj sat vremena (ili do sutra ako je dnevno ograničenje) pa klikni ponovo; "
+                            "poslati objekti su već odštiklirani, tako da niko neće dobiti mejl dvaput.")
+            _ostalo = len(_to_send_svi) - _n_ok - _n_fail
+            if _ostalo > 0 and not _stop_razlog:
+                _tip = "warn"
+                _por.append("Ostalo je još " + str(_ostalo) + " objekata — oni su i dalje štiklirani, "
+                            "samo klikni ponovo „📧 Pošalji izabranima“ da se pošalje i taj deo.")
             _kkb = st.session_state.get("_zadnja_kopija")
             if _kkb and not _kkb[0]:
-                st.warning("Mejlovi su poslati, ali kopije nisu upisane u folder Poslato: "
-                           + str(_kkb[1]))
-            if _n_fail == 0:
-                st.success("✅ Poslato " + str(_n_ok) + " mejlova. Status je zabeležen (vidljiv i posle odjave).")
-            else:
-                st.warning("Poslato " + str(_n_ok) + " · nije uspelo " + str(_n_fail) + " (proveri status u tabeli iznad).")
+                _tip = "warn"
+                _por.append("Kopije nisu upisane u folder Poslato: " + str(_kkb[1]))
+            st.session_state["_bulk_flash"] = (_tip, "\n\n".join(_por))
+            # novi ključ za tabelu, da se poslati objekti stvarno odštikliraju
+            try:
+                st.session_state[_verk] += 1
+            except Exception:
+                pass
             st.rerun()
 
 
