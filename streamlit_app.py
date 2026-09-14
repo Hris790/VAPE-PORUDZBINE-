@@ -6031,10 +6031,18 @@ def prikazi_administraciju():
             _bmail_ko = (_bobr.get("reakcije_ko") or {}).get("Poslala sam mejl", "")
             _bmej_lst = ((_bobr.get("dnevnik") or {}).get("mejlovi") or [])
             _bmail_n = len(_bmej_lst) if _bmej_lst else (1 if _bmail_sent else 0)
+            # kada je poslednji mejl poslat (za kolonu „Poslato“ i sortiranje po vremenu)
+            _bmail_at = None
+            if _bmej_lst:
+                try:
+                    _bmail_at = datetime.datetime.fromisoformat(str(_bmej_lst[-1].get("at", "")))
+                except Exception:
+                    _bmail_at = None
             _bulk_rows.append({
                 "idk": _bidk, "Naziv": _bnaziv, "Email": _bemail or "(nema mejla)",
                 "zona_txt": _bz[3], "zona_dot": _bz[2], "Stavki": _bstavki,
                 "mail_sent": _bmail_sent, "mail_ko": _bmail_ko, "mail_n": _bmail_n,
+                "mail_at": _bmail_at,
                 "_zona": o["nivo"], "_email_ok": _mejl_ok(_bemail), "_has_rows": _bstavki > 0,
             })
         _vrac = {}
@@ -6150,19 +6158,32 @@ def prikazi_administraciju():
                                 + (_ko_kratko(r["mail_ko"]) if r["mail_ko"] else "")).strip()
                                if int(r.get("mail_n", 0) or 0) > 0 else "—")),
                 "Stavki": r["Stavki"],
+                "Poslato": r.get("mail_at"),
             } for r in _view_rows])
+            # indeks = ID objekta, da izbor ostane tačan i kad se tabela presortira
+            _bdf.index = [int(r["idk"]) for r in _view_rows]
+            # kolona mora da bude pravi datum (a ne tekst) da bi sortiranje radilo
+            # i kad nijedan objekat još nema poslat mejl
+            _bdf["Poslato"] = pd.to_datetime(_bdf["Poslato"], errors="coerce")
             _h_editor = min(60 + 36 * len(_view_rows), 760)
             _bedited = st.data_editor(
                 _bdf, hide_index=True, use_container_width=True, height=_h_editor,
                 key="bulk_editor_" + str(sistem) + "_" + str(mesec_key) + "_" + str(st.session_state[_verk]),
-                disabled=["Zona", "Naziv", "Email", "Mejl", "Stavki"],
+                disabled=["Zona", "Naziv", "Email", "Mejl", "Stavki", "Poslato"],
                 column_config={"Izabrano": st.column_config.CheckboxColumn("Izabrano", width="small"),
                                "Zona": st.column_config.TextColumn("Zona", width="small"),
-                               "Mejl": st.column_config.TextColumn("Mejl", width="small")})
+                               "Mejl": st.column_config.TextColumn("Mejl", width="small"),
+                               "Poslato": st.column_config.DatetimeColumn(
+                                   "Poslato", width="medium", format="DD.MM.YYYY. HH:mm",
+                                   help="Kada je poslednji mejl poslat. Klikni na zaglavlje kolone "
+                                        "da sortiraš — najstariji gore znači da si te prvo slala.")})
             _new_sel_vis = set()
-            for _i, _r in _bedited.iterrows():
+            for _idx, _r in _bedited.iterrows():
                 if bool(_r["Izabrano"]):
-                    _new_sel_vis.add(_view_rows[_i]["idk"])
+                    try:
+                        _new_sel_vis.add(int(_idx))
+                    except Exception:
+                        pass
             # izbor = tačno ono što je štiklirano u trenutno prikazanoj (filtriranoj) listi
             st.session_state[_selk] = _new_sel_vis
         _sel_ids = st.session_state[_selk]
