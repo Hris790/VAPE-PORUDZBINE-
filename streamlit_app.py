@@ -3695,6 +3695,26 @@ def _napravi_poruku(cfg, to_email, subject, body, attach_bytes=None, attach_file
     return (msg, recipients, to_email)
 
 
+def _mem_mb():
+    """Koliko memorije aplikacija trenutno zauzima, u MB (0 ako ne može da se izmeri).
+
+    Streamlit Cloud gasi i ponovo pokreće aplikaciju kad pređe ~1000 MB —
+    a to korisnika izbaci na ekran za prijavu usred posla. Zato se broj
+    prikazuje tokom grupnog slanja, da se vidi da li memorija raste."""
+    try:
+        with open("/proc/self/status", "r") as _f:
+            for _ln in _f:
+                if _ln.startswith("VmRSS:"):
+                    return int(int(_ln.split()[1]) / 1024)
+    except Exception:
+        pass
+    try:
+        import resource as _rs
+        return int(_rs.getrusage(_rs.RUSAGE_SELF).ru_maxrss / 1024)
+    except Exception:
+        return 0
+
+
 class MejlOgranicenje(RuntimeError):
     """Server je PRIVREMENO odbio slanje — dnevno/satno ograničenje broja
     mejlova, previše veza sa iste adrese ili slično. Nije greška u adresi;
@@ -3791,14 +3811,14 @@ class MejlSesija:
         self._sent_folder = _f
         return (_im, _f)
 
-    def _kopija(self, msg):
+    def _kopija(self, _sirova):
+        """_sirova = već serijalizovana poruka (bajtovi), da se ne pravi druga kopija u memoriji."""
         import imaplib, time as _t
         _im, _f = self._imap()
         if _im is None:
             return (False, str(_f or "kopija nije upisana"))
         try:
-            _im.append(_f, "\\Seen", imaplib.Time2Internaldate(_t.time()),
-                       msg.as_string().encode("utf-8"))
+            _im.append(_f, "\\Seen", imaplib.Time2Internaldate(_t.time()), _sirova)
             return (True, _f)
         except Exception as _e:
             # veza je možda pukla — jedan pokušaj sa novom
@@ -3811,8 +3831,7 @@ class MejlSesija:
             if _im is None:
                 return (False, str(_e)[:160])
             try:
-                _im.append(_f, "\\Seen", imaplib.Time2Internaldate(_t.time()),
-                           msg.as_string().encode("utf-8"))
+                _im.append(_f, "\\Seen", imaplib.Time2Internaldate(_t.time()), _sirova)
                 return (True, _f)
             except Exception as _e2:
                 return (False, str(_e2)[:160])
@@ -3827,12 +3846,16 @@ class MejlSesija:
                                "SMTP_HOST" + _suf + " / SMTP_USER" + _suf + " / SMTP_PASSWORD" + _suf + ".")
         msg, recipients, to_email = _napravi_poruku(
             self.cfg, to_email, subject, body, attach_bytes, attach_filename, cc_email)
+        # poruku serijalizujemo JEDNOM i tu istu kopiju koristimo i za slanje
+        # i za upis u Poslato — ranije su se pravile dve kopije u memoriji
+        _sirova = msg.as_bytes()
+        del msg
 
         _greska = None
         for _pokusaj in (1, 2):
             try:
                 _s = self._smtp()
-                _s.sendmail(self.cfg["from_email"], recipients, msg.as_string())
+                _s.sendmail(self.cfg["from_email"], recipients, _sirova)
                 _greska = None
                 break
             except smtplib.SMTPAuthenticationError:
@@ -3862,7 +3885,7 @@ class MejlSesija:
 
         # kopija u folder Poslato, da se mejl vidi i u Outlooku/webmailu
         try:
-            _ok_kop, _kop = self._kopija(msg)
+            _ok_kop, _kop = self._kopija(_sirova)
             try:
                 st.session_state["_zadnja_kopija"] = (bool(_ok_kop), str(_kop))
             except Exception:
@@ -6070,6 +6093,11 @@ def prikazi_administraciju():
         st.caption("Izabrano: " + str(_n_sel) + " objekata · spremno za slanje: " + str(_n_sel_ok)
                    + ((" · bez mejla: " + str(_n_sel_no_email)) if _n_sel_no_email else "")
                    + ((" · nema dodatne porudžbine: " + str(_n_sel_no_rows)) if _n_sel_no_rows else ""))
+        _mem_sada = _mem_mb()
+        if _mem_sada:
+            st.caption("🧠 Memorija aplikacije: " + str(_mem_sada) + " MB / ~1000 MB"
+                       + ("  ·  ⚠️ blizu granice — osveži stranu (F5) pre grupnog slanja"
+                          if _mem_sada > 700 else ""))
         _flash = st.session_state.pop("_bulk_flash", None)
         if _flash:
             if _flash[0] == "ok":
@@ -6083,9 +6111,9 @@ def prikazi_administraciju():
             # Koliko mejlova po jednom kliku (da slanje sigurno stigne do kraja
             # pre nego što Streamlit prekine vezu). 0 = bez ograničenja.
             try:
-                _bmax = int(str(_cfg("GRUPNO_BATCH", "20")).strip() or 0)
+                _bmax = int(str(_cfg("GRUPNO_BATCH", "8")).strip() or 0)
             except Exception:
-                _bmax = 20
+                _bmax = 8
             _to_send = _to_send_svi[:_bmax] if _bmax > 0 else _to_send_svi
             _ostalo = len(_to_send_svi) - len(_to_send)
             # pauza između mejlova — server lakše podnosi niz mejlova zaredom
@@ -6096,6 +6124,8 @@ def prikazi_administraciju():
             _cur_u = st.session_state.get("admin_user", "Administracija")
             _n_ok = 0; _n_fail = 0
             _stop_razlog = ""
+            _stop_tip = ""
+            _mem_max = _mem_mb()
             _ses = MejlSesija()
             for _bi, r in enumerate(_to_send):
                 _bidk2 = r["idk"]
@@ -6118,9 +6148,11 @@ def prikazi_administraciju():
                                             "predikcija": int(round(int(a.get("pred", 0) or 0) * _bmeseci)),
                                             "dodatna": _bdod2})
                 _bsk2 = "mailsent_" + str(sistem) + "_" + str(_bidk2)
+                _mem0 = _mem_mb()
                 _bprog.progress(int(_bi / len(_to_send) * 100),
                                 "✉️ Šaljem " + str(_bi + 1) + "/" + str(len(_to_send))
-                                + " — " + str(_bnaziv2)[:40] + " …")
+                                + " — " + str(_bnaziv2)[:40] + " …"
+                                + ((" · memorija " + str(_mem0) + " MB") if _mem0 else ""))
                 try:
                     _bxlsx2 = _objekat_order_xlsx(_bnaziv2, _bidk2, _sel_lbl, _bexp_rows2, meseci=meta.get("meseci") if isinstance(meta, dict) else None)
                     import re as _refn2
@@ -6153,6 +6185,7 @@ def prikazi_administraciju():
                     except Exception:
                         pass
                     _stop_razlog = str(_bo)
+                    _stop_tip = "server"
                     break
                 except Exception as _be:
                     st.session_state[_bsk2] = {"ok": False, "msg": str(_be)}
@@ -6162,8 +6195,26 @@ def prikazi_administraciju():
                         sb_mejl_greska(mesec_key, sistem, _bidk2, str(_be), _cur_u)
                     except Exception:
                         pass
+                # oslobodi memoriju odmah — prilog ume da bude po nekoliko MB,
+                # a Streamlit Cloud restartuje aplikaciju (i izbaci te na prijavu)
+                # ako ukupna memorija pređe ~1000 MB
+                try:
+                    del _bxlsx2
+                except Exception:
+                    pass
+                _bexp_rows2 = None
+                import gc as _gc
+                _gc.collect()
+                _mem1 = _mem_mb()
+                _mem_max = max(_mem_max, _mem1)
                 _bprog.progress(int((_bi + 1) / len(_to_send) * 100),
-                                "✅ Poslato " + str(_bi + 1) + "/" + str(len(_to_send)))
+                                "✅ Poslato " + str(_bi + 1) + "/" + str(len(_to_send))
+                                + ((" · memorija " + str(_mem1) + " MB") if _mem1 else ""))
+                if _mem1 and _mem1 > 800:
+                    _stop_razlog = ("memorija aplikacije je na " + str(_mem1)
+                                    + " MB (granica je oko 1000 MB)")
+                    _stop_tip = "memorija"
+                    break
                 if _bpauza > 0 and _bi < len(_to_send) - 1:
                     import time as _tsl
                     _tsl.sleep(_bpauza)
@@ -6180,7 +6231,13 @@ def prikazi_administraciju():
                 _tip = "warn"
                 _por.append("Poslato " + str(_n_ok) + " · nije uspelo " + str(_n_fail)
                             + " (proveri status u tabeli iznad).")
-            if _stop_razlog:
+            if _stop_razlog and _stop_tip == "memorija":
+                _tip = "warn"
+                _por.append("⏸️ Slanje je zaustavljeno da aplikacija ne bi pukla — " + _stop_razlog
+                            + ".\n\nOvo je isto ono što te ranije izbacivalo na ekran za prijavu. "
+                            "Osveži stranu (F5), prijavi se ponovo i klikni „📧 Pošalji izabranima“ — "
+                            "nastaviće tačno tamo gde je stalo, poslati objekti su već odštiklirani.")
+            elif _stop_razlog:
                 _tip = "warn"
                 _por.append("⏸️ Slanje je zaustavljeno jer nas server privremeno koči: " + _stop_razlog
                             + "\n\nTo NIJE greška u adresama — isti mejlovi će proći kasnije. "
@@ -6195,6 +6252,9 @@ def prikazi_administraciju():
             if _kkb and not _kkb[0]:
                 _tip = "warn"
                 _por.append("Kopije nisu upisane u folder Poslato: " + str(_kkb[1]))
+            if _mem_max:
+                _por.append("🧠 Najveća zauzeta memorija tokom slanja: " + str(_mem_max)
+                            + " MB (aplikacija se restartuje oko 1000 MB).")
             st.session_state["_bulk_flash"] = (_tip, "\n\n".join(_por))
             # novi ključ za tabelu, da se poslati objekti stvarno odštikliraju
             try:
