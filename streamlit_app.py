@@ -784,6 +784,69 @@ def sb_mejl_greska(mesec_key, sistem, idk, poruka, ko=""):
         return False
 
 
+def sb_vraceno_upisi(mesec_key, sistem, idk, podaci, postojeci_dnevnik=None):
+    """Trajno zapamti da se mejl objektu VRATIO (dnevnik.vraceno).
+
+    Zašto: odbijenice se čitaju iz sandučeta, pa čim se poruka obriše iz Outlooka
+    oznaka „VRAĆENO“ nestane iz aplikacije. Ovako se podatak čuva u bazi i ostaje
+    i kad se sanduče očisti."""
+    cli = _sb()
+    if cli is None:
+        return False
+    try:
+        if postojeci_dnevnik is None:
+            res = cli.table("obrada").select("dnevnik").eq("mesec", mesec_key).eq("sistem", sistem).eq("idk", int(idk)).limit(1).execute()
+            _ima = bool(res.data)
+            dnevnik = dict((res.data[0].get("dnevnik") or {}) if res.data else {})
+        else:
+            _ima = True
+            dnevnik = dict(postojeci_dnevnik or {})
+        dnevnik["vraceno"] = {"adresa": str(podaci.get("adresa", ""))[:120],
+                              "kada": str(podaci.get("kada", ""))[:32],
+                              "razlog": str(podaci.get("razlog", ""))[:200],
+                              "zabelezeno": _now().isoformat()}
+        if _ima:
+            cli.table("obrada").update({"dnevnik": dnevnik}).eq("mesec", mesec_key).eq("sistem", sistem).eq("idk", int(idk)).execute()
+        else:
+            cli.table("obrada").insert({"mesec": mesec_key, "sistem": sistem, "idk": int(idk),
+                                        "dnevnik": dnevnik}).execute()
+        return True
+    except Exception:
+        return False
+
+
+def _vraceno_vazi(vr, mejlovi, trenutna_adresa=""):
+    """Da li oznaku „VRAĆENO“ treba i dalje prikazivati.
+
+    Ne treba u dva slučaja:
+      1) adresa objekta je u međuvremenu ispravljena (odbijenica se odnosi na staru),
+      2) mejl je posle te odbijenice ponovo poslat i ovaj put se NIJE vratio.
+    Tolerancija od 6 sati postoji zato što odbijenica nosi vreme servera koji ju je
+    poslao, pa sat ne mora biti isti kao naš."""
+    if not vr:
+        return False
+    import datetime as _dt
+    _a = _ocisti_mejl(vr.get("adresa", "")).lower()
+    _t = _ocisti_mejl(trenutna_adresa or "").lower()
+    if _a and _t and _a != _t:
+        return False
+    try:
+        _b = _dt.datetime.strptime(str(vr.get("kada") or ""), "%d.%m.%Y %H:%M")
+    except Exception:
+        return True
+    _last = None
+    for _m in (mejlovi or []):
+        try:
+            _d = _dt.datetime.fromisoformat(str(_m.get("at") or ""))
+        except Exception:
+            continue
+        if _last is None or _d > _last:
+            _last = _d
+    if _last is None:
+        return True
+    return not (_last > _b + _dt.timedelta(hours=6))
+
+
 def _dnevnik_lista_html(dnevnik, kind):
     """Sitni sivi kosi tekst: lista poziva/mejlova (ko + datum + vreme)."""
     _arr = (dnevnik or {}).get("pozivi" if kind == "poziv" else "mejlovi") or []
@@ -5808,17 +5871,29 @@ def prikazi_administraciju():
                                     st.session_state.pop(_ck_key, None)
                                     st.rerun()
                 _mres = st.session_state.get(_sk_mail)
+                # zapamćena odbijenica iz baze (ostaje i kad se poruka obriše iz sandučeta)
+                _vr1 = (v.get("dnevnik") or {}).get("vraceno")
                 if _mail_to and st.session_state.get("_vrac_v"):
                     try:
-                        _vr1 = (vraceni_mejlovi(dana=30,
-                                                _v=st.session_state.get("_vrac_v", 0)) or {}
-                                ).get(_ocisti_mejl(_mail_to).lower())
+                        _zivo1 = (vraceni_mejlovi(dana=30,
+                                                  _v=st.session_state.get("_vrac_v", 0)) or {}
+                                  ).get(_ocisti_mejl(_mail_to).lower())
                     except Exception:
-                        _vr1 = None
-                    if _vr1:
-                        st.error("↩️ Mejl na ovu adresu se **vratio** ("
-                                 + str(_vr1.get("kada", "")) + ") — nije stigao do objekta. "
-                                 "Razlog: " + str(_vr1.get("razlog", "")))
+                        _zivo1 = None
+                    if _zivo1:
+                        _zivo1 = dict(_zivo1); _zivo1["adresa"] = _ocisti_mejl(_mail_to).lower()
+                        try:
+                            sb_vraceno_upisi(mesec_key, sistem, sel_id, _zivo1,
+                                             postojeci_dnevnik=(v.get("dnevnik") or {}))
+                        except Exception:
+                            pass
+                        _vr1 = _zivo1
+                if _vraceno_vazi(_vr1, (v.get("dnevnik") or {}).get("mejlovi"), _mail_to):
+                    st.error("↩️ Mejl na ovu adresu se **vratio** ("
+                             + str(_vr1.get("kada", "")) + ") — nije stigao do objekta. "
+                             "Razlog: " + str(_vr1.get("razlog", ""))
+                             + "\n\nZapisano je u bazi, pa ostaje vidljivo i ako obrišeš "
+                               "odbijenicu iz sandučeta.")
                 _kop1 = (_mres or {}).get("kopija")
                 if _kop1 and not _kop1[0]:
                     st.warning("Mejl je poslat, ali kopija nije upisana u Poslato: "
@@ -6042,7 +6117,8 @@ def prikazi_administraciju():
                 "idk": _bidk, "Naziv": _bnaziv, "Email": _bemail or "(nema mejla)",
                 "zona_txt": _bz[3], "zona_dot": _bz[2], "Stavki": _bstavki,
                 "mail_sent": _bmail_sent, "mail_ko": _bmail_ko, "mail_n": _bmail_n,
-                "mail_at": _bmail_at,
+                "mail_at": _bmail_at, "_mejlovi": _bmej_lst,
+                "_vraceno_baza": (_bobr.get("dnevnik") or {}).get("vraceno"),
                 "_zona": o["nivo"], "_email_ok": _mejl_ok(_bemail), "_has_rows": _bstavki > 0,
             })
         _vrac = {}
@@ -6051,9 +6127,26 @@ def prikazi_administraciju():
                 _vrac = vraceni_mejlovi(dana=30, _v=st.session_state.get("_vrac_v", 0)) or {}
             except Exception:
                 _vrac = {}
+        # Odbijenice se pamte u bazi, pa oznaka „VRAĆENO“ ostaje i kad se poruka
+        # obriše iz sandučeta — i vidi se bez ponovnog čitanja pošte.
+        _novih_vrac = 0
         for _r1 in _bulk_rows:
             _e1 = _ocisti_mejl(_r1.get("Email", "")).lower()
-            _r1["vraceno"] = _vrac.get(_e1) if _e1 else None
+            _zivo = _vrac.get(_e1) if _e1 else None
+            if _zivo:
+                _zivo = dict(_zivo); _zivo["adresa"] = _e1
+                _stara = _r1.get("_vraceno_baza") or {}
+                if (str(_stara.get("kada", "")) != str(_zivo.get("kada", ""))
+                        or _ocisti_mejl(_stara.get("adresa", "")).lower() != _e1):
+                    try:
+                        if sb_vraceno_upisi(mesec_key, sistem, _r1["idk"], _zivo,
+                                            postojeci_dnevnik=(obrada_map.get(_r1["idk"], {}) or {}).get("dnevnik")):
+                            _novih_vrac += 1
+                    except Exception:
+                        pass
+                _r1["_vraceno_baza"] = _zivo
+            _kand = _r1.get("_vraceno_baza")
+            _r1["vraceno"] = _kand if _vraceno_vazi(_kand, _r1.get("_mejlovi"), _r1.get("Email", "")) else None
         GRUPNO_MAX = 2   # koliko puta objekat sme da dobije mejl grupnim slanjem
         for _r0 in _bulk_rows:
             _r0["_grupno_ok"] = int(_r0.get("mail_n", 0) or 0) < GRUPNO_MAX
@@ -6111,7 +6204,9 @@ def prikazi_administraciju():
                      + "\n".join("• " + str(r["Naziv"])[:52] + " · " + str(r["Email"])
                                  + " — " + str((r["vraceno"] or {}).get("razlog", ""))[:70]
                                  for r in _lst)
-                     + (("\n\n… i još " + str(_n_vrac - len(_lst))) if _n_vrac > len(_lst) else ""))
+                     + (("\n\n… i još " + str(_n_vrac - len(_lst))) if _n_vrac > len(_lst) else "")
+                     + "\n\nOvo je zapisano u bazi — ostaje i kad obrišeš odbijenice iz sandučeta. "
+                       "Oznaka sama nestaje kad ispraviš adresu ili kad mejl ponovo prođe.")
         elif st.session_state.get("_vrac_v"):
             st.success("↩️ Nema vraćenih mejlova u poslednjih 30 dana.")
         if _n_drugi_krug or _n_iscrpljeno:
