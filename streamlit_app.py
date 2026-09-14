@@ -701,7 +701,7 @@ def sb_obrada_ocisti(mesec_key, sistem, idk, sta="mejl"):
     return _obrisano
 
 
-def sb_obrada_log(mesec_key, sistem, idk, kind, ko=""):
+def sb_obrada_log(mesec_key, sistem, idk, kind, ko="", kopija=None):
     """Zabeleži poziv ili mejl u dnevnik obrade (dnevnik.pozivi / dnevnik.mejlovi = lista {ko, at}).
     Uz to upali odgovarajuću reakciju (Pozvala sam / Poslala sam mejl) da se vidi u pregledu.
     kind: 'poziv' ili 'mejl'. Čuva postojeća polja (trebovanje, njihova, napomena)."""
@@ -730,7 +730,16 @@ def sb_obrada_log(mesec_key, sistem, idk, kind, ko=""):
             reakcije.append("Obavestila direktorku")
         reakcije_ko["Obavestila direktorku"] = reakcije_ko.get("Obavestila direktorku") or (ko or "")
     else:
-        dnevnik.setdefault("mejlovi", []).append({"ko": ko or "", "at": _at})
+        _unos = {"ko": ko or "", "at": _at}
+        # da li je kopija upisana u folder Poslato (da se posle zna zašto je nema u sandučetu)
+        if kopija is not None:
+            try:
+                _unos["kopija"] = bool(kopija[0])
+                if not kopija[0]:
+                    _unos["kopija_zasto"] = str(kopija[1])[:160]
+            except Exception:
+                pass
+        dnevnik.setdefault("mejlovi", []).append(_unos)
         # uspelo je — skloni crvenu oznaku o ranijem neuspehu
         dnevnik.pop("greske", None)
         if "Poslala sam mejl" not in reakcije:
@@ -786,8 +795,12 @@ def _dnevnik_lista_html(dnevnik, kind):
         _kd = str(_e.get("ko", "")) or "?"
         _tm = _dt_kratko(_e.get("at", ""))
         _pref = (str(_i) + ". poziv — ") if kind == "poziv" else ""
+        _kop = ""
+        if kind != "poziv" and _e.get("kopija") is False:
+            _kop = (' <span style="color:#b45309;">· nije upisan u Poslato ('
+                    + str(_e.get("kopija_zasto", ""))[:70] + ')</span>')
         _rows.append('<div style="font-size:11px;color:#9ca3af;font-style:italic;">' + _pref
-                     + _h_escape(_kd) + " · " + _h_escape(_tm) + "</div>")
+                     + _h_escape(_kd) + " · " + _h_escape(_tm) + _kop + "</div>")
     return "".join(_rows)
 
 def sb_save_obrada(mesec_key, sistem, idk, reakcije, trebovali_tip, njihova=None, napomena="", reakcije_ko=None, azurirao=""):
@@ -3736,8 +3749,9 @@ class MejlSesija:
         self._smtp_veza = None
         self._imap_veza = None
         self._sent_folder = None
-        self._imap_odustao = False
+        self._imap_odustao = False      # trajno odustajanje (isključeno / nije podešeno / nema foldera)
         self._imap_razlog = ""
+        self._imap_padova = 0           # koliko puta je veza privremeno pukla u ovom krugu
 
     # ---------- SMTP ----------
     def _smtp(self):
@@ -3790,8 +3804,15 @@ class MejlSesija:
             _im = imaplib.IMAP4_SSL(c["host"], c["port"], timeout=30)
             _im.login(c["user"], c["password"])
         except Exception as _e:
-            self._imap_odustao = True
+            # PRIVREMENO (mreža, timeout, server trenutno ne prima vezu) — ne odustajemo
+            # zauvek, nego pokušavamo ponovo kod sledećeg mejla. Ranije je jedan ovakav
+            # pad značio da NIJEDAN sledeći mejl u krugu ne dobije kopiju u Poslato.
+            self._imap_padova += 1
             self._imap_razlog = str(_e)[:160]
+            if self._imap_padova >= 4:
+                self._imap_odustao = True
+                self._imap_razlog = ("veza sa sandučetom puca (" + self._imap_razlog
+                                     + ") — kopije se ne upisuju")
             return (None, self._imap_razlog)
         _f = self._sent_folder or _smtp_kljuc("IMAP_SENT", c.get("nalog") or _mail_nalog(), "") or ""
         if not _f:
@@ -3819,6 +3840,7 @@ class MejlSesija:
             return (False, str(_f or "kopija nije upisana"))
         try:
             _im.append(_f, "\\Seen", imaplib.Time2Internaldate(_t.time()), _sirova)
+            self._imap_padova = 0
             return (True, _f)
         except Exception as _e:
             # veza je možda pukla — jedan pokušaj sa novom
@@ -3832,8 +3854,10 @@ class MejlSesija:
                 return (False, str(_e)[:160])
             try:
                 _im.append(_f, "\\Seen", imaplib.Time2Internaldate(_t.time()), _sirova)
+                self._imap_padova = 0
                 return (True, _f)
             except Exception as _e2:
+                self._imap_padova += 1
                 return (False, str(_e2)[:160])
 
     # ---------- slanje ----------
@@ -4106,6 +4130,51 @@ def _datum_sort_key(_o):
         return _d.datetime.strptime(_s, "%d.%m.%Y")
     except Exception:
         return _d.datetime.min
+
+
+def _porudzbina_otkazana(_o):
+    """Da li je porudžbina otkazana/stornirana/odbijena/poništena."""
+    _s = (_o.get("status") or "").lower()
+    return ("otkaz" in _s) or ("storn" in _s) or ("odbij" in _s) or ("ponist" in _s) or ("poništ" in _s)
+
+
+def _porucio_posle_starta(idk, hist_lst, snap):
+    """Da li je objekat poslao porudžbinu POSLE trenutka kad je zabeležen startni rezultat.
+
+    Tačan način: pri beleženju starta zapamti se spisak ID-jeva porudžbina koje je
+    objekat tada imao (snap['narudzbine']). Sve što se posle toga pojavi je nova
+    porudžbina — bez obzira na datum, pa radi i za porudžbine istog dana.
+
+    Rezerva (sistemi startovani starijom verzijom, gde tog spiska nema): poredi se
+    datum porudžbine sa danom starta, i to STROGO kasniji dan — bolje da neko ostane
+    neoznačen nego da bude pogrešno prikazan kao završen pa da ga niko ne pozove."""
+    if not hist_lst or not isinstance(snap, dict):
+        return False
+    _baza = snap.get("narudzbine")
+    # ako baš ovaj objekat nije bio u spisku na startu (dodat je kasnije), ne
+    # smemo sve njegove porudžbine proglasiti novim — tada idemo na datume
+    if isinstance(_baza, dict) and str(int(idk)) in _baza:
+        _stare = set(str(_x) for _x in (_baza.get(str(int(idk))) or []))
+        for _o in hist_lst:
+            _oid = str(_o.get("id") or "")
+            if _oid and (_oid not in _stare) and not _porudzbina_otkazana(_o):
+                return True
+        return False
+    import datetime as _dt
+    try:
+        _sd = _dt.datetime.strptime(str(snap.get("kada") or "").strip().split(" ")[0], "%d.%m.%Y").date()
+    except Exception:
+        return False
+    for _o in hist_lst:
+        if _porudzbina_otkazana(_o):
+            continue
+        try:
+            _dd = _dt.datetime.strptime((_o.get("datum") or "").split(" ")[0], "%d.%m.%Y").date()
+        except Exception:
+            continue
+        if _dd > _sd:
+            return True
+    return False
 
 
 def admin_istorija_bulk(idk_naziv, cutoff_date, max_details=800):
@@ -5202,9 +5271,13 @@ def prikazi_administraciju():
         else:
             _cr = _zu = _ze = 0; _nh = 0
             _hist_save_s = {}
+            _start_ids = {}
             for o in objekti:
                 _lst_s = sorted(_bulk_s.get(o["idk"], []), key=_datum_sort_key, reverse=True)
                 st.session_state["hist_" + str(sistem) + "_" + str(o["idk"])] = {"lst": _lst_s, "err": ""}
+                # zapamti KOJE porudžbine objekat ima u trenutku starta — sve što se
+                # kasnije pojavi znači da je objekat poručio i prelazi u „Završeno“
+                _start_ids[str(int(o["idk"]))] = [str(_x.get("id") or "") for _x in _lst_s if _x.get("id")]
                 if _lst_s:
                     _nh += 1
                     _hist_save_s[int(o["idk"])] = _lst_s
@@ -5222,7 +5295,8 @@ def prikazi_administraciju():
                 pass
             try:
                 sb_start_snapshot(mesec_key, sistem, {"n": len(objekti), "crveno": _cr, "zuto": _zu, "zeleno": _ze,
-                                                      "kada": _now().strftime("%d.%m.%Y %H:%M")})
+                                                      "kada": _now().strftime("%d.%m.%Y %H:%M"),
+                                                      "narudzbine": _start_ids})
                 st.session_state["_refresh_done"] = {"sis": sistem, "mes": mesec_key, "n": _nh}
                 st.rerun()
             except Exception as _e:
@@ -5281,6 +5355,13 @@ def prikazi_administraciju():
                 return True
             if "Ubačena porudžbina" in (_v.get("reakcije") or []):
                 return True
+            # stigla nova porudžbina od objekta POSLE starta → posao je završen
+            try:
+                _hz = st.session_state.get("hist_" + str(sistem) + "_" + str(_o["idk"]))
+                if _hz and not _hz.get("err") and _porucio_posle_starta(_o["idk"], _hz.get("lst") or [], _snap):
+                    return True
+            except Exception:
+                pass
             try:
                 _raw = hitnost_objekta(_o["lst"])[0]
             except Exception:
@@ -5365,8 +5446,9 @@ def prikazi_administraciju():
             '<th>Zona</th><th>Status</th><th style="text-align:center;">Trebovali</th>'
             '<th style="text-align:center;">Završeno</th></tr></thead>'
             '<tbody>' + _rows + '</tbody></table>', unsafe_allow_html=True)
-        st.caption("Status i trebovanje se menjaju u kartici Detalj / obrada. "
-                   "Završeno = objekat je iz crvene/narandžaste prešao u zelenu (trebovao je).")
+        st.caption("Status i trebovanje se menjaju u kartici Detalj / obrada.  ·  "
+                   "Završeno = objekat je poručio: stigla je nova porudžbina posle starta, "
+                   "ili je prešao iz crvene/narandžaste u zelenu, ili je trebovanje ručno zabeleženo.")
 
     with tab_detalj:
         _labels = []
@@ -5609,7 +5691,7 @@ def prikazi_administraciju():
                         # Auto: zabeleži mejl u dnevnik (ko + vreme) + upali „Poslala sam mejl"
                         try:
                             _cur_u = st.session_state.get("admin_user", "Administracija")
-                            sb_obrada_log(mesec_key, sistem, sel_id, "mejl", _cur_u)
+                            sb_obrada_log(mesec_key, sistem, sel_id, "mejl", _cur_u, kopija=_kk1)
                             st.session_state.pop("r2_" + str(sel_id), None)  # da se čekboks osveži na True
                         except Exception:
                             pass
@@ -6123,6 +6205,7 @@ def prikazi_administraciju():
                 _bpauza = 2.0
             _cur_u = st.session_state.get("admin_user", "Administracija")
             _n_ok = 0; _n_fail = 0
+            _n_bez_kopije = 0; _zasto_kopija = ""
             _stop_razlog = ""
             _stop_tip = ""
             _mem_max = _mem_mb()
@@ -6166,6 +6249,10 @@ def prikazi_administraciju():
                                              _bxlsx2, _bfname2, sesija=_ses)
                     st.session_state[_bsk2] = {"ok": True, "msg": "Poslato na " + _bemail2}
                     _n_ok += 1
+                    _kop2 = st.session_state.get("_zadnja_kopija")
+                    if _kop2 and not _kop2[0]:
+                        _n_bez_kopije += 1
+                        _zasto_kopija = str(_kop2[1])
                     # skini ga sa izbora, da se sledećim klikom ne pošalje ponovo
                     try:
                         st.session_state[_selk].discard(_bidk2)
@@ -6173,7 +6260,8 @@ def prikazi_administraciju():
                         pass
                     # Auto: zabeleži mejl u dnevnik (ko + vreme) + upali „Poslala sam mejl"
                     try:
-                        sb_obrada_log(mesec_key, sistem, _bidk2, "mejl", _cur_u)
+                        sb_obrada_log(mesec_key, sistem, _bidk2, "mejl", _cur_u,
+                                      kopija=st.session_state.get("_zadnja_kopija"))
                     except Exception:
                         pass
                 except MejlOgranicenje as _bo:
@@ -6248,10 +6336,12 @@ def prikazi_administraciju():
                 _tip = "warn"
                 _por.append("Ostalo je još " + str(_ostalo) + " objekata — oni su i dalje štiklirani, "
                             "samo klikni ponovo „📧 Pošalji izabranima“ da se pošalje i taj deo.")
-            _kkb = st.session_state.get("_zadnja_kopija")
-            if _kkb and not _kkb[0]:
+            if _n_bez_kopije:
                 _tip = "warn"
-                _por.append("Kopije nisu upisane u folder Poslato: " + str(_kkb[1]))
+                _por.append("📭 " + str(_n_bez_kopije) + " od " + str(_n_ok)
+                            + " mejlova NIJE upisano u folder Poslato — mejlovi jesu otišli primaocima, "
+                            "ali ih nećeš videti u sandučetu. Razlog: " + (_zasto_kopija or "nepoznat")
+                            + ". Kod svakog objekta piše da li je kopija upisana.")
             if _mem_max:
                 _por.append("🧠 Najveća zauzeta memorija tokom slanja: " + str(_mem_max)
                             + " MB (aplikacija se restartuje oko 1000 MB).")
