@@ -799,8 +799,12 @@ def sb_oznaci_trebovao(mesec_key, sistem, idk, kada="", n_por=0,
         _nov_tip = str(tip or "") or (_tip or "nas")
         _nova_njih = ({str(k): int(v) for k, v in (njihova or {}).items()}
                       if njihova is not None else _stara_njih)
-        # Ništa novo — ne diraj bazu (da se pri svakom ažuriranju ne prepisuje bez potrebe)
-        if _vec and _tip == _nov_tip and _stara_njih == _nova_njih:
+        # Ništa novo — ne diraj bazu (da se pri svakom ažuriranju ne prepisuje bez potrebe).
+        # Ako se promenilo PRAVILO po kom se prepoznaje način trebovanja, upis ide i
+        # kad su tip i količine isti (da zapis dobije novu oznaku pravila).
+        _p_st = int(((_vec.get("info") or {}).get("pravilo") or 0))
+        _p_nov = int(((info or {}).get("pravilo") or 0))
+        if _vec and _tip == _nov_tip and _stara_njih == _nova_njih and _p_st >= _p_nov:
             return False
         _dn["trebovao_posle_starta"] = {"at": (_vec.get("at") or _now().isoformat()),
                                         "kada": str(kada or "")[:32],
@@ -5028,6 +5032,50 @@ def prikazi_administraciju():
     obj_by_id = {o["idk"]: o for o in objekti}
 
     obrada_map = sb_load_obrada(mesec_key, sistem)
+
+    # --- Preračunaj način trebovanja po VAŽEĆEM pravilu (jednom po sesiji) ---
+    # Zapisi napravljeni starijim pravilom (blaži prag) se same isprave, bez novog
+    # povlačenja iz admina — koriste se već zapamćene porudžbine i startni snimak.
+    _PRAVILO_V = 2
+    _fixk = "_fixtip_" + str(sistem) + "_" + str(mesec_key)
+    if (not st.session_state.get(_fixk)) and _snap_fz and not _zakljucan:
+        _n_fix = 0
+        for _ob in objekti:
+            _vv = obrada_map.get(int(_ob["idk"])) or {}
+            _dn0 = _vv.get("dnevnik") or {}
+            _at0 = _dn0.get("trebovao_posle_starta") or {}
+            if not _at0:
+                continue
+            if ("Ubačena porudžbina" in (_vv.get("reakcije") or [])) or _dn0.get("ubaceno"):
+                continue                      # mi smo ubacili — bira se ručno
+            if int((_at0.get("info") or {}).get("pravilo") or 0) >= _PRAVILO_V:
+                continue                      # već po važećem pravilu
+            _hh0 = st.session_state.get("hist_" + str(sistem) + "_" + str(_ob["idk"]))
+            if not _hh0 or _hh0.get("err"):
+                continue
+            _lst0 = _hh0.get("lst") or []
+            try:
+                _pos0 = _treb_posle_starta(_ob["idk"], _lst0, _snap_fz)
+                _st0, _ = _treb_na_startu(_ob["idk"], _lst0, _snap_fz, _cut_hit)
+                _nk0 = {}; _nz0 = {}
+                for _s0 in _ob["lst"]:
+                    _i0 = int(_s0["ida"])
+                    _nk0[_i0] = max(int(_s0.get("kol", 0) or 0) - int(_st0.get(_i0, 0) or 0), 0)
+                    _nz0[_i0] = str(_s0.get("naziv", "") or "")
+                _t0, _inf0 = _nacin_trebovanja(_nk0, _pos0, _nz0)
+                _inf0["pravilo"] = _PRAVILO_V
+                _nj0 = {str(_i0): int(_pos0.get(_i0, 0)) for _i0 in _nk0
+                        if int(_pos0.get(_i0, 0)) > 0}
+                if sb_oznaci_trebovao(mesec_key, sistem, _ob["idk"],
+                                      kada=str(_at0.get("kada") or ""), n_por=len(_lst0),
+                                      tip=_t0, njihova=_nj0, info=_inf0):
+                    _n_fix += 1
+            except Exception:
+                pass
+        st.session_state[_fixk] = True
+        if _n_fix:
+            obrada_map = sb_load_obrada(mesec_key, sistem)
+
     reviewed = set(idk for idk, v in obrada_map.items() if v.get("reakcije"))
     if st.session_state.get("_komfull") is None:
         st.session_state["_komfull"] = sb_komitenti_full()
@@ -5893,6 +5941,7 @@ def prikazi_administraciju():
                             except Exception:
                                 pass
                         _atip, _ainfo = _nacin_trebovanja(_nase_kol, _pos_map, _nase_nz)
+                        _ainfo["pravilo"] = 2
                         # u tabelu (kolona „Njihova por.") idu samo artikli iz izveštaja
                         _anjih = {str(_ia): int(_pos_map.get(_ia, 0)) for _ia in _nase_kol
                                   if int(_pos_map.get(_ia, 0)) > 0}
