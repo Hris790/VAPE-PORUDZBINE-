@@ -2771,6 +2771,7 @@ def _nedeljni_predlog_xlsx(sistem, dani, datum, grupe, payload=None):
 
     if _ima_izv:
         _ws = _wb.active
+        _ws_izv = _ws
         _ws.title = "Izveštaj"
         _ws.sheet_view.showGridLines = False
         _sir(_ws, dict([("A", 2.5)] + [(chr(66 + i), 15) for i in range(10)] + [("L", 2.5)]))
@@ -2779,7 +2780,6 @@ def _nedeljni_predlog_xlsx(sistem, dani, datum, grupe, payload=None):
         _n_pr = int(_p.get("n_obj_problem", 0) or 0)
         _izg = int(_p.get("izgub_rsd", 0) or 0)
         _pk = int(_p.get("predlog_kom", 0) or 0)
-        _prsd = int(_dok.get("predlog_rsd", 0) or 0)
 
         _ws.merge_cells("B2:K2")
         _c(_ws, "B2", "Stanje zaliha i predlog dopune", True, 18, "FFFFFF", _f_tam)
@@ -2938,11 +2938,9 @@ def _nedeljni_predlog_xlsx(sistem, dani, datum, grupe, payload=None):
 
         _zt = "Molimo vas da porudžbinu pošaljete u najkraćem roku."
         if _pk:
-            _zt += (" Predlažemo dopunu od " + _rs(_pk) + " komada"
-                    + ((" (oko " + _rs(_prsd) + " RSD)") if _prsd else "")
-                    + ", raspoređenu po objektima — spisak je na sledećem listu.")
-        _zt += (" Svaki dan sa praznom policom je prodaja koja se ne nadoknađuje: kupac uzme drugi "
-                "artikal ili ode u drugi objekat.")
+            _zt += (" Predlažemo dopunu od " + _rs(_pk) + " komada, raspoređenu po objektima — "
+                    "spisak je na listu „Predlog po objektima“.")
+        _zt += " Svaki dan sa praznom policom je prodaja koja se ne nadoknađuje."
         if _izg:
             _zt += (" Po dosadašnjoj prodaji, odlaganje od " + _perl + " znači oko " + _rs(_izg)
                     + " RSD neostvarenog prometa.")
@@ -2950,13 +2948,7 @@ def _nedeljni_predlog_xlsx(sistem, dani, datum, grupe, payload=None):
         _c(_ws, "B" + str(_red), _zt, True, 10, "14532D", _f_zel, wrap=True, va="top")
         for _rr in range(_red, _red + 3):
             _ws.row_dimensions[_rr].height = 16
-        _red += 4
-        _ws.merge_cells("B" + str(_red) + ":K" + str(_red + 1))
-        _c(_ws, "B" + str(_red), "Odakle podaci: Prodato — evidencija prodaje po objektu i artiklu. "
-           "Poručeno — porudžbine zavedene kod nas; otkazane i stornirane se ne računaju. "
-           "Lager — stanje na dan preseka. Predlog — prosečna mesečna prodaja objekta umanjena za "
-           "trenutni lager, uvećana za rezervu za " + _perl + ".", False, 9, MUTC, wrap=True, va="top")
-        _ws.print_area = "A1:L" + str(_red + 2)
+        _ws.print_area = "A1:L" + str(_red + 3)
         _ws.page_setup.orientation = "portrait"
         _ws.page_setup.fitToWidth = 1
         _ws.page_setup.fitToHeight = 1
@@ -2964,6 +2956,7 @@ def _nedeljni_predlog_xlsx(sistem, dani, datum, grupe, payload=None):
         _w2 = _wb.create_sheet("Predlog po objektima")
     else:
         _wp = None
+        _ws_izv = None
         _w2 = _wb.active
         _w2.title = "Predlog po objektima"
 
@@ -3034,10 +3027,19 @@ def _nedeljni_predlog_xlsx(sistem, dani, datum, grupe, payload=None):
         _w3.auto_filter.ref = "A1:E" + str(_r - 1)
     _w3.freeze_panes = "A2"
 
-    # skriven list sa podacima ide POSLEDNJI
+    # Redosled kartica: prvo ono što se koristi (predlog i tabela), pa izveštaj,
+    # a skriveni list sa podacima za grafikone sasvim na kraju.
+    for _sh in [x for x in (_w2, _w3, _ws_izv, _wp) if x is not None]:
+        try:
+            _wb.move_sheet(_sh, offset=len(_wb.worksheets) - _wb.worksheets.index(_sh) - 1)
+        except Exception:
+            pass
     if _wp is not None:
-        _wb.move_sheet(_wp, offset=len(_wb.worksheets) - _wb.worksheets.index(_wp) - 1)
         _wp.sheet_state = "hidden"
+    try:
+        _wb.active = 0          # fajl se otvara na „Predlog po objektima“
+    except Exception:
+        pass
 
     _buf = _io.BytesIO()
     _wb.save(_buf)
@@ -5280,9 +5282,9 @@ def prikazi_administraciju():
                         "dopune. Kod " + str(len(_grupe_ok)) + " objekata trenutne zalihe ne pokrivaju "
                         "prodaju ni za " + _per_lbl + ".\n\n"
                         "Prilog ima tri lista:\n"
-                        "1. Izveštaj — kratak pregled sa grafikonima i primerom\n"
-                        "2. Predlog po objektima — koliko komada predlažemo po objektu i artiklu\n"
-                        "3. Tabela — isti podaci u ravnom obliku, za filtriranje\n\n"
+                        "1. Predlog po objektima — koliko komada predlažemo po objektu i artiklu\n"
+                        "2. Tabela — isti podaci u ravnom obliku, za filtriranje\n"
+                        "3. Izveštaj — kratak pregled stanja sa grafikonima i primerom\n\n"
                         "Objekti sa kritičnim lagerom:\n"
                         + _spisak + "\n"
                         "Ukupan predlog: " + str(_predlog_uk) + " kom.\n\n"
@@ -5318,9 +5320,9 @@ def prikazi_administraciju():
                         key="ned_prilog_dl_" + _sfx + "_" + str(sistem) + "_" + str(mesec_key),
                         use_container_width=True)
                 with _dc2:
-                    st.caption("Prilog ima tri lista: „Izveštaj“ (grafikoni, primer i zahtev), "
-                               "„Predlog po objektima“ (zbir po objektu) i „Tabela“ (ravan spisak "
-                               "sa filterom). Ukupno " + str(_predlog_uk) + " kom za "
+                    st.caption("Prilog ima tri lista: „Predlog po objektima“ (zbir po objektu), "
+                               "„Tabela“ (ravan spisak sa filterom) i „Izveštaj“ (grafikoni, primer "
+                               "i zahtev). Ukupno " + str(_predlog_uk) + " kom za "
                                + str(len(_grupe_ok)) + " objekata.")
                     if not (_payload_n.get("dokazi") or {}).get("primer_neredovno"):
                         st.caption("📉 Primer sa grafikom nije uključen — za ovaj sistem nema mesečne "
