@@ -1582,9 +1582,10 @@ def knez_admin_ui():
     mesec_key = _mk_opts[_mk_lbls.index(_sel_lbl_k)]
     _od, _do = _knez_period(mesec_key)
     with _kc2:
-        _filt = st.text_input("Prepoznaj pumpe po nazivu (sadrži)",
-                              value=str(_cfg("KNEZ_FILTER", "KNEZ")), key="knez_filt",
-                              help="Iz šifarnika komitenata se uzimaju svi čiji naziv sadrži ovaj tekst.")
+        _filt = st.text_input("Naziv komitenta POČINJE sa",
+                              value=str(_cfg("KNEZ_FILTER", "KNEZ PETROL")), key="knez_filt",
+                              help="Uzimaju se SAMO komitenti čiji naziv počinje ovim tekstom "
+                                   "(ne oni koji ga imaju negde u nazivu, npr. u adresi).")
     with _kc3:
         st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
         st.caption("Traži se stanje zaliha na **" + _do + "** i prodaja **"
@@ -1594,11 +1595,18 @@ def knez_admin_ui():
     if st.session_state.get("_komfull") is None:
         st.session_state["_komfull"] = sb_komitenti_full()
     _kom = st.session_state.get("_komfull") or {}
-    _q = (_filt or "").strip().lower()
+    import re as _rek
+
+    def _norm_nz(_s):
+        """mala slova, bez viška razmaka i vodećih znakova — za poređenje početka naziva"""
+        return _rek.sub(r"\s+", " ", str(_s or "")).strip().lstrip("-–—·.,").strip().lower()
+
+    _q = _norm_nz(_filt)
     _pumpe = []
     for _idk, _inf in (_kom or {}).items():
         _nz = str((_inf or {}).get("naziv", "") or "")
-        if _q and _q not in _nz.lower():
+        # SAMO oni čiji naziv POČINJE zadatim tekstom
+        if _q and not _norm_nz(_nz).startswith(_q):
             continue
         _pumpe.append({"idk": int(_idk), "naziv": _nz or ("ID " + str(_idk)),
                        "email": str((_inf or {}).get("email", "") or "").strip(),
@@ -1606,8 +1614,8 @@ def knez_admin_ui():
                        "telefon": str((_inf or {}).get("telefon", "") or "")})
     _pumpe.sort(key=lambda r: r["naziv"])
     if not _pumpe:
-        st.warning("U šifarniku nema komitenata čiji naziv sadrži „" + str(_filt) + "“. "
-                   "Proveri tekst za prepoznavanje ili učitaj šifarnik komitenata.")
+        st.warning("U šifarniku nema komitenata čiji naziv POČINJE sa „" + str(_filt) + "“. "
+                   "Proveri tekst ili učitaj šifarnik komitenata.")
         return
 
     # --- Dnevnik slanja (pamti se u bazi, po mesecu) ---
