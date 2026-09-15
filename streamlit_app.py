@@ -3569,6 +3569,10 @@ def _potpis_tekst(nalog=None):
 
 
 def _potpis_html(nalog=None):
+    """Potpis u mejlu.
+
+    Sve je u tabeli, red po red — Outlook svakom <div>-u dodaje razmak kao
+    pasusu, pa se potpis „razvuče“. U redovima tabele toga nema."""
     p = _potpis(nalog)
 
     def _e(t):
@@ -3577,26 +3581,30 @@ def _potpis_html(nalog=None):
     _mejl = _e(p.get("mejl"))
     _tel = _e(p.get("tel"))
     _adr = _e(p.get("adresa"))
-    _red = ('<div style="font-size:13px;line-height:1.5;color:#222;">')
-    _h = ('<table cellpadding="0" cellspacing="0" border="0" style="margin-top:26px;">'
-          '<tr>'
-          '<td style="width:2px;background:#e54fde;"></td>'
-          '<td style="padding-left:14px;font-family:Arial,Helvetica,sans-serif;">'
-          '<img src="cid:vapelogo" width="300" alt="VAPE SHOP" '
-          'style="display:block;border:0;margin:0 0 10px 0;"/>')
-    if _ime:
-        _h += ('<div style="font-size:14.5px;font-weight:bold;color:#111;'
-               'line-height:1.5;">' + _ime + '</div>')
-    if _mejl:
-        _h += (_red + '<a href="mailto:' + _mejl + '" style="color:#222;'
-               'text-decoration:none;">' + _mejl + '</a></div>')
-    if _tel:
-        _h += _red + _tel + '</div>'
-    if _adr:
-        _h += _red + _adr + '</div>'
-    _h += '</td></tr></table>'
-    return _h
+    _td = ('padding:0;margin:0;font-family:Arial,Helvetica,sans-serif;'
+           'font-size:12.5px;line-height:17px;color:#444;')
 
+    _h = ('<table cellpadding="0" cellspacing="0" border="0" '
+          'style="margin:24px 0 0 0;border-collapse:collapse;">'
+          '<tr><td style="padding:0;">'
+          '<div style="width:190px;border-top:2px solid #e54fde;font-size:0;line-height:0;">&nbsp;</div>'
+          '</td></tr>'
+          '<tr><td style="padding:10px 0 8px 0;">'
+          '<img src="cid:vapelogo" width="190" alt="VAPE SHOP" '
+          'style="display:block;border:0;outline:none;text-decoration:none;"/>'
+          '</td></tr>')
+    if _ime:
+        _h += ('<tr><td style="' + _td + 'font-size:13.5px;font-weight:bold;color:#111;'
+               'padding-bottom:3px;">' + _ime + '</td></tr>')
+    if _mejl:
+        _h += ('<tr><td style="' + _td + '"><a href="mailto:' + _mejl + '" '
+               'style="color:#444;text-decoration:none;">' + _mejl + '</a></td></tr>')
+    if _tel:
+        _h += '<tr><td style="' + _td + '">' + _tel + '</td></tr>'
+    if _adr:
+        _h += '<tr><td style="' + _td + 'color:#777;">' + _adr + '</td></tr>'
+    _h += '</table>'
+    return _h
 
 def _ocisti_mejl(adr):
     """Sredi adresu iz šifarnika: izbaci razmake (i one pre @), < >, navodnike;
@@ -5263,28 +5271,64 @@ def prikazi_administraciju():
         _predlog_uk = sum(int(a.get("predlog", 0) or 0) for g in _grupe_ok for a in g["arts"])
 
         _dat_str = _now().strftime("%d.%m.%Y.")
-        _mail_subj_n = "Stanje zaliha i predlog dopune — " + str(sistem) + " (" + _dat_str + ")"
-        # Spisak objekata se NE nabraja u mejlu — ceo je u prilogu, na listu
-        # „Predlog po objektima“. U mejlu ostaju samo dva broja.
-        _n_ob = len(_grupe_ok)
-        _n10, _n100 = _n_ob % 10, _n_ob % 100
-        if _n10 == 1 and _n100 != 11:
-            _ob_rec = "objekta"
-        else:
-            _ob_rec = "objekata"
-        _mail_body_n = ("Poštovani,\n\n"
-                        "U prilogu vam šaljemo pregled stanja zaliha u vašim objektima i predlog "
-                        "dopune. Kod " + str(_n_ob) + " " + _ob_rec + " trenutne zalihe ne pokrivaju "
-                        "prodaju ni za " + _per_lbl + ". Ukupan predlog dopune je "
-                        + str(_predlog_uk) + " kom.\n\n"
-                        "Prilog ima tri lista:\n"
-                        "1. Predlog po objektima — spisak objekata sa artiklima i predloženim količinama\n"
-                        "2. Tabela — isti podaci u ravnom obliku, za filtriranje\n"
-                        "3. Izveštaj — kratak pregled stanja sa grafikonima i primerom\n\n"
-                        "Molimo da se roba dopuni kako bi objekti mogli da zadrže kontinuitet prodaje.\n\n"
-                        "Srdačan pozdrav")
+        # Izbor: sa prilogom (Excel) ili samo mejl sa spiskom objekata u telu.
+        _bezp_key = "ned_bez_priloga_" + str(sistem) + "_" + str(mesec_key)
+        _bez_priloga = st.checkbox(
+            "Pošalji bez priloga — spisak objekata ide u telu mejla",
+            key=_bezp_key,
+            help="Kad je štiklirano, ne šalje se Excel. Umesto toga se u mejl upisuje spisak "
+                 "objekata sa brojem artikala i predloženom količinom, pa primalac sve vidi "
+                 "odmah u poruci.")
 
-        _sfx = "pre"
+        _n_ob = len(_grupe_ok)
+        # „Kod …“ traži genitiv: 1–4 objekta, 5 i više objekata
+        _n10, _n100 = _n_ob % 10, _n_ob % 100
+        _ob_rec = ("objekta" if (_n10 in (1, 2, 3, 4) and _n100 not in (11, 12, 13, 14))
+                   else "objekata")
+
+        def _art_rec(n):
+            _a10, _a100 = n % 10, n % 100
+            if _a10 == 1 and _a100 != 11:
+                return "artikal"
+            if _a10 in (2, 3, 4) and _a100 not in (12, 13, 14):
+                return "artikla"
+            return "artikala"
+
+        if _bez_priloga:
+            _mail_subj_n = ("Predlog dopune zaliha — " + str(sistem) + " (" + _dat_str + ")")
+            _spisak = ""
+            for _gi, _g in enumerate(_grupe_ok, 1):
+                _kom = sum(int(a.get("predlog", 0) or 0) for a in _g["arts"])
+                _na = len(_g["arts"])
+                _spisak += (str(_gi) + ". " + str(_g.get("objekat", "")) + " — "
+                            + str(_na) + " " + _art_rec(_na) + ", predlog " + str(_kom) + " kom\n")
+            _mail_body_n = ("Poštovani,\n\n"
+                            "Kod " + str(_n_ob) + " " + _ob_rec + " trenutne zalihe ne pokrivaju "
+                            "prodaju ni za " + _per_lbl + ". U nastavku je spisak objekata sa brojem "
+                            "artikala kojima roba nedostaje i predloženom količinom za dopunu.\n\n"
+                            + _spisak + "\n"
+                            "Ukupan predlog dopune: " + str(_predlog_uk) + " kom.\n\n"
+                            "Molimo da se roba dopuni kako bi objekti mogli da zadrže kontinuitet "
+                            "prodaje. Ako vam treba detaljan pregled po artiklima, rado ga šaljemo "
+                            "u Excel tabeli.\n\n"
+                            "Srdačan pozdrav")
+        else:
+            _mail_subj_n = "Stanje zaliha i predlog dopune — " + str(sistem) + " (" + _dat_str + ")"
+            # Spisak objekata se NE nabraja u mejlu — ceo je u prilogu, na listu
+            # „Predlog po objektima“. U mejlu ostaju samo dva broja.
+            _mail_body_n = ("Poštovani,\n\n"
+                            "U prilogu vam šaljemo pregled stanja zaliha u vašim objektima i predlog "
+                            "dopune. Kod " + str(_n_ob) + " " + _ob_rec + " trenutne zalihe ne pokrivaju "
+                            "prodaju ni za " + _per_lbl + ". Ukupan predlog dopune je "
+                            + str(_predlog_uk) + " kom.\n\n"
+                            "Prilog ima tri lista:\n"
+                            "1. Predlog po objektima — spisak objekata sa artiklima i predloženim količinama\n"
+                            "2. Tabela — isti podaci u ravnom obliku, za filtriranje\n"
+                            "3. Izveštaj — kratak pregled stanja sa grafikonima i primerom\n\n"
+                            "Molimo da se roba dopuni kako bi objekti mogli da zadrže kontinuitet prodaje.\n\n"
+                            "Srdačan pozdrav")
+
+        _sfx = ("bez" if _bez_priloga else "pre")
         _subj_key = "ned_mail_subj_" + _sfx + "_" + str(sistem) + "_" + str(mesec_key)
         _body_key = "ned_mail_body_" + _sfx + "_" + str(sistem) + "_" + str(mesec_key)
         st.text_input("Naslov mejla", value=_mail_subj_n, key=_subj_key)
@@ -5295,9 +5339,14 @@ def prikazi_administraciju():
         _pdf_bytes_n = None
         _prilog_ime = ""
         _prilog_mime = ""
-        _osnova = str(sistem).replace(" ", "_") + "_" + mesec_key
+        # U nazivu fajla ide DATUM SLANJA (ne mesec izveštaja) — tako se u sandučetu
+        # odmah vidi kad je predlog poslat.
+        _osnova = str(sistem).replace(" ", "_") + "_" + _now().strftime("%d.%m.%Y")
         try:
-            if not _grupe_ok:
+            if _bez_priloga:
+                st.caption("📧 Šalje se samo mejl, bez priloga — spisak od " + str(len(_grupe_ok))
+                           + " objekata je u tekstu iznad (ukupno " + str(_predlog_uk) + " kom).")
+            elif not _grupe_ok:
                 st.info("Nema nijednog artikla za predlog — svi objekti imaju dovoljan lager.")
             else:
                 _pdf_bytes_n = _nedeljni_predlog_xlsx(str(sistem), _dani, _dat_str, _grupe_ok,
@@ -5336,7 +5385,9 @@ def prikazi_administraciju():
                                     disabled=_zakljucan)
         with _mc2:
             st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-            _send_disabled = _zakljucan or not smtp_dostupan() or _pdf_bytes_n is None
+            _send_disabled = (_zakljucan or not smtp_dostupan()
+                              or (_pdf_bytes_n is None and not _bez_priloga)
+                              or (_bez_priloga and not _grupe_ok))
             if st.button("✉️ Pošalji mejl", key="ned_mail_send_" + str(sistem) + "_" + str(mesec_key),
                          type="primary", use_container_width=True, disabled=_send_disabled):
                 _to_send = (st.session_state.get(_to_key, "") or "").strip()
@@ -5358,7 +5409,9 @@ def prikazi_administraciju():
                         except Exception:
                             pass
                         _kk = st.session_state.get("_zadnja_kopija")
-                        st.success("✅ Mejl poslat na " + _to_send + " · prilog: " + _prilog_ime)
+                        st.success("✅ Mejl poslat na " + _to_send
+                                   + (" · bez priloga (spisak u mejlu)" if _bez_priloga
+                                      else (" · prilog: " + _prilog_ime)))
                         if _kk and not _kk[0]:
                             st.warning("Mejl je poslat, ali kopija nije upisana u Poslato: "
                                        + str(_kk[1]))
