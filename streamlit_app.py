@@ -1664,11 +1664,32 @@ def knez_admin_ui():
                 unsafe_allow_html=True)
 
     # --- Provera odgovora u sandučetu ---
-    _oc1, _oc2 = st.columns([1.5, 4])
+    # Čita se od 1. u TEKUĆEM mesecu (ili od prvog poslatog mejla, ako je raniji) —
+    # odgovor ne može da stigne pre nego što smo poslali zahtev.
+    _od_def = _now().date().replace(day=1)
+    try:
+        _prvi_mejl = None
+        for r in _pumpe:
+            for _m0 in (((_obr.get(int(r["idk"])) or {}).get("dnevnik") or {}).get("mejlovi") or []):
+                _d0 = str(_m0.get("at", ""))[:10]
+                if len(_d0) == 10 and (_prvi_mejl is None or _d0 < _prvi_mejl):
+                    _prvi_mejl = _d0
+        if _prvi_mejl:
+            _dp = datetime.date.fromisoformat(_prvi_mejl)
+            if _dp < _od_def:
+                _od_def = _dp
+    except Exception:
+        pass
+    _oc1, _ocd, _oc2 = st.columns([1.5, 1.3, 3])
     with _oc1:
+        st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
         _chk_odg = st.button("📥 Proveri odgovore", key="knez_scan", use_container_width=True,
-                             help="Čita sanduče i vezuje odgovore za pumpe po adresi pošiljaoca. "
-                                  "Traje nekoliko sekundi do minut.")
+                             help="Čita sanduče i vezuje odgovore za pumpe po adresi pošiljaoca.")
+    with _ocd:
+        _od_dat = st.date_input("Čitaj poruke od", value=_od_def, key="knez_od_dat",
+                                format="DD.MM.YYYY",
+                                help="Podrazumevano 1. u tekućem mesecu (ili od prvog poslatog "
+                                     "mejla). Što kraći period — to brža provera.")
     with _oc2:
         if _odg_ses.get("kada"):
             st.caption("📥 Poslednja provera: " + str(_odg_ses.get("kada"))
@@ -1680,8 +1701,11 @@ def knez_admin_ui():
                        "(tekst i prilozi) i prikažu ispod svake pumpe.")
     if _chk_odg:
         _adr = set((r["email"] or "").lower() for r in _pumpe if r["_email_ok"])
-        with st.spinner("📥 Čitam sanduče… (može da potraje do minut)"):
-            _po, _nep, _err = knez_odgovori(_adr, dana=int(_cfg("KNEZ_ODG_DANA", 45) or 45))
+        import time as _tm0
+        _t0 = _tm0.time()
+        with st.spinner("📥 Čitam sanduče od " + _od_dat.strftime("%d.%m.%Y") + "…"):
+            _po, _nep, _err = knez_odgovori(_adr, od_datum=_od_dat)
+        _trajalo = round(_tm0.time() - _t0, 1)
         if _err and not _po:
             st.error("Čitanje sandučeta nije uspelo: " + str(_err))
         _n_up = 0
@@ -1700,7 +1724,8 @@ def knez_admin_ui():
         st.session_state["_knez_scan_flash"] = (
             "📥 Pronađeno " + str(sum(len(v) for v in (_po or {}).values())) + " odgovora od "
             + str(len(_po or {})) + " pumpi" + ((" · novih zabeleženo: " + str(_n_up)) if _n_up else "")
-            + ((" · " + str(len(_nep)) + " poruka nije prepoznato (vidi dole)") if _nep else ""))
+            + ((" · " + str(len(_nep)) + " poruka nije prepoznato (vidi dole)") if _nep else "")
+            + "  ·  provera je trajala " + str(_trajalo) + " s")
         st.rerun()
     _sf = st.session_state.pop("_knez_scan_flash", None)
     if _sf:
@@ -4220,14 +4245,15 @@ def _mail_prilozi(msg, maks_po_fajlu=6_000_000, maks_fajlova=5):
     return _out
 
 
-def knez_odgovori(adrese, nalog=None, dana=45, _v=0):
-    """Pročitaj sanduče i nađi ODGOVORE pumpi. `adrese` = skup mejlova iz šifarnika.
+def knez_odgovori(adrese, nalog=None, od_datum=None, _v=0):
+    """Pro\u010ditaj sandu\u010de i na\u0111i ODGOVORE pumpi. `adrese` = skup mejlova iz \u0161ifarnika.
 
-    Vrati (po_adresi, neprepoznati):
-      po_adresi     = {adresa: [ {od, ime, at, naslov, tekst, prilozi:[{ime,vel,data}]} ]}
-      neprepoznati  = [ {od, ime, at, naslov, tekst, prilozi} ]  — pošiljalac nije u šifarniku
-    Nikad ne baca izuzetak — vraća i poruku o grešci kao treći element."""
-    import imaplib, email
+    BRZINA: prvo se povla\u010de SAMO zaglavlja (From/Subject/Date) svih poruka od
+    `od_datum` \u2014 to je par kilobajta. Cela poruka (sa prilozima) se skida tek za
+    one \u010diji se po\u0161iljalac poklapa sa pumpom. Zato traje sekundama, a ne minutima.
+
+    Vrati (po_adresi, neprepoznati, greska)."""
+    import imaplib, email, re as _re
     from email.utils import parseaddr, parsedate_to_datetime
     from email.header import decode_header as _dh
     import datetime as _dt
@@ -4235,43 +4261,92 @@ def knez_odgovori(adrese, nalog=None, dana=45, _v=0):
     _nep = []
     c = _imap_cfg(nalog)
     if not (c["host"] and c["user"] and c["password"]):
-        return (_po, _nep, "IMAP nije podešen (IMAP_HOST / SMTP_USER / SMTP_PASSWORD u Secrets).")
+        return (_po, _nep, "IMAP nije pode\u0161en (IMAP_HOST / SMTP_USER / SMTP_PASSWORD u Secrets).")
     _skup = set(str(a or "").strip().lower() for a in (adrese or set()) if a)
     _nas = str(c.get("user") or "").strip().lower()
+    _domeni = set()
+    for _a in _skup:
+        if "@" in _a:
+            _domeni.add(_a.split("@")[-1])
+
+    def _zaglavlje(_txt, _polje):
+        _m = _re.search(r"^" + _polje + r":\s*(.*(?:\n[ \t].*)*)", _txt, _re.I | _re.M)
+        return _re.sub(r"\s+", " ", _m.group(1)).strip() if _m else ""
+
     try:
         _im = imaplib.IMAP4_SSL(c["host"], c["port"], timeout=30)
         _im.login(c["user"], c["password"])
         _im.select("INBOX", readonly=True)
-        _od = (_now() - _dt.timedelta(days=int(dana or 45))).strftime("%d-%b-%Y")
+        if isinstance(od_datum, _dt.date):
+            _od = od_datum.strftime("%d-%b-%Y")
+        else:
+            _od = _now().replace(day=1).strftime("%d-%b-%Y")
         _ok, _dat = _im.search(None, '(SINCE "' + _od + '")')
         _ids = (_dat[0].split() if (_ok == "OK" and _dat and _dat[0]) else [])
-        _ids = _ids[-800:]                      # sigurnosna granica
-        for _mid in reversed(_ids):
+        if not _ids:
             try:
-                _ok2, _raw = _im.fetch(_mid, "(RFC822)")
-                if _ok2 != "OK" or not _raw or not _raw[0]:
-                    continue
-                _msg = email.message_from_bytes(_raw[0][1])
+                _im.logout()
+            except Exception:
+                pass
+            return (_po, _nep, "")
+        # --- 1) samo ZAGLAVLJA, u paketima (brzo) ---
+        _kand = []          # [(broj_poruke, adresa, ime, naslov, datum)]
+        _KOR = 200
+        for _i in range(0, len(_ids), _KOR):
+            _grupa = _ids[_i:_i + _KOR]
+            _set = b",".join(_grupa)
+            try:
+                _ok2, _raw = _im.fetch(_set, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
             except Exception:
                 continue
-            _ime, _adr = parseaddr(_msg.get("From", "") or "")
-            _adr = str(_adr or "").strip().lower()
-            if not _adr or _adr == _nas:
+            if _ok2 != "OK" or not _raw:
                 continue
-            _low = _adr.lower()
-            if ("mailer-daemon" in _low or "postmaster" in _low or "no-reply" in _low
-                    or "noreply" in _low):
+            for _st in _raw:
+                if not isinstance(_st, tuple) or len(_st) < 2:
+                    continue
+                try:
+                    _pref = _st[0].decode("utf-8", "ignore")
+                    _br = _re.match(r"\s*(\d+)", _pref).group(1)
+                    _htxt = _st[1].decode("utf-8", "ignore")
+                except Exception:
+                    continue
+                _ime, _adr = parseaddr(_zaglavlje(_htxt, "From"))
+                _adr = str(_adr or "").strip().lower()
+                if not _adr or _adr == _nas:
+                    continue
+                if ("mailer-daemon" in _adr or "postmaster" in _adr
+                        or "no-reply" in _adr or "noreply" in _adr):
+                    continue
+                _dom = _adr.split("@")[-1] if "@" in _adr else ""
+                # cela poruka se skida samo za pumpe ili za isti domen (npr. knezpetrol.com)
+                if _adr not in _skup and _dom not in _domeni:
+                    continue
+                _kand.append((_br, _adr, str(_ime or ""), _zaglavlje(_htxt, "Subject"),
+                              _zaglavlje(_htxt, "Date")))
+        # --- 2) cela poruka SAMO za kandidate ---
+        for _br, _adr, _ime, _nas_raw, _dat_raw in _kand[:300]:
+            try:
+                _ok3, _rawm = _im.fetch(_br, "(RFC822)")
+                if _ok3 != "OK" or not _rawm or not _rawm[0]:
+                    continue
+                _msg = email.message_from_bytes(_rawm[0][1])
+            except Exception:
                 continue
             try:
                 _nas_txt = "".join((_b.decode(_ch or "utf-8", "ignore") if isinstance(_b, bytes) else _b)
-                                   for _b, _ch in _dh(_msg.get("Subject", "") or ""))
+                                   for _b, _ch in _dh(_msg.get("Subject", "") or _nas_raw))
             except Exception:
-                _nas_txt = str(_msg.get("Subject", "") or "")
+                _nas_txt = str(_nas_raw or "")
             try:
-                _kad = parsedate_to_datetime(_msg.get("Date", "")).strftime("%d.%m.%Y. %H:%M")
+                _kad = parsedate_to_datetime(_msg.get("Date", "") or _dat_raw).strftime("%d.%m.%Y. %H:%M")
             except Exception:
                 _kad = ""
-            _z = {"od": _adr, "ime": str(_ime or "")[:80], "at": _kad,
+            try:
+                _ime2 = "".join((_b.decode(_ch or "utf-8", "ignore") if isinstance(_b, bytes) else _b)
+                                for _b, _ch in _dh(_ime)) if _ime else ""
+            except Exception:
+                _ime2 = str(_ime or "")
+            _z = {"od": _adr, "ime": str(_ime2 or "")[:80], "at": _kad,
                   "naslov": str(_nas_txt or "")[:160],
                   "tekst": _mail_telo_tekst(_msg),
                   "prilozi": _mail_prilozi(_msg)}
