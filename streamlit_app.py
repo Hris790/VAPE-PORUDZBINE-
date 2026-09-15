@@ -4810,6 +4810,24 @@ def prikazi_administraciju():
     table.adm-t th{text-align:left;font-size:11px;color:#b0b4bd;font-weight:600;text-transform:uppercase;letter-spacing:.5px;padding:0 14px 12px;}
     table.adm-t td{padding:13px 14px;border-top:1px solid #f2f3f7;font-size:14px;vertical-align:middle;color:#2a2f3a;}
     table.adm-t td.idc{font-weight:700;} table.adm-t td.ce{text-align:center;} table.adm-t td.mut{color:#b0b4bd;}
+    /* Lista objekata — redovi sa nazivom kao dugmetom (izgled kao ranija tabela) */
+    .lst-h{font-size:11px;color:#b0b4bd;font-weight:600;text-transform:uppercase;letter-spacing:.5px;
+           padding:0 0 4px;}
+    .lst-c{font-size:14px;color:#2a2f3a;line-height:1.25;}
+    .lst-c.ce{text-align:center;} .lst-id{font-weight:700;}
+    .lst-row{display:flex;align-items:center;gap:0;width:100%;}
+    div[data-testid="stHorizontalBlock"]:has(.rtag){border-top:1px solid #f2f3f7;padding:5px 0 4px;}
+    div[data-testid="stHorizontalBlock"]:has(.rtag.red){background:#fff8f8;}
+    div[data-testid="stHorizontalBlock"]:has(.rtag.org){background:#fffcf6;}
+    div[data-testid="stHorizontalBlock"]:has(.rtag) div[data-testid="stElementContainer"]{margin:0;}
+    div[data-testid="stHorizontalBlock"]:has(.rtag) button{background:transparent !important;
+        border:none !important;box-shadow:none !important;padding:0 !important;min-height:0 !important;
+        font-size:14px !important;font-weight:400 !important;color:#2a2f3a !important;
+        text-align:left !important;justify-content:flex-start !important;width:100% !important;}
+    div[data-testid="stHorizontalBlock"]:has(.rtag) button p{font-size:14px !important;
+        font-weight:400 !important;margin:0 !important;text-align:left !important;}
+    div[data-testid="stHorizontalBlock"]:has(.rtag) button:hover,
+    div[data-testid="stHorizontalBlock"]:has(.rtag) button:hover p{color:#7c3aed !important;}
     table.adm-t td a:hover{color:#7c3aed !important;border-bottom-color:#7c3aed !important;}
     .zona{display:inline-flex;align-items:center;gap:7px;font-weight:600;font-size:13px;white-space:nowrap;}
     .zona .zd{width:8px;height:8px;border-radius:50%;}
@@ -4982,6 +5000,24 @@ def prikazi_administraciju():
         _hkk = "hist_" + str(sistem) + "_" + str(_ck)
         if st.session_state.get(_hkk) is None:
             st.session_state[_hkk] = {"lst": [], "err": ""}
+
+    # --- Napomena koju je analitika upisala pri objavi (dogovor sa sistemom) ---
+    _nap_an = (meta.get("nap_analitika") or {}) if isinstance(meta, dict) else {}
+    if _nap_an.get("tekst"):
+        _nap_sub = []
+        if _nap_an.get("ko"):
+            _nap_sub.append(str(_nap_an["ko"]))
+        if _nap_an.get("at"):
+            _nap_sub.append(str(_nap_an["at"]))
+        st.markdown('<div style="background:#fffbeb;border:1px solid #fcd34d;border-left:5px solid #f59e0b;'
+                    'border-radius:10px;padding:11px 15px;margin:2px 0 12px;">'
+                    '<div style="font-size:11.5px;font-weight:800;color:#92400e;text-transform:uppercase;'
+                    'letter-spacing:.6px;">📝 Napomena iz analitike</div>'
+                    '<div style="font-size:14px;color:#78350f;font-weight:600;margin-top:4px;'
+                    'white-space:pre-wrap;">' + _h_escape(str(_nap_an["tekst"])) + '</div>'
+                    + (('<div style="font-size:11px;color:#a16207;margin-top:5px;font-style:italic;">'
+                        + _h_escape(" · ".join(_nap_sub)) + '</div>') if _nap_sub else '')
+                    + '</div>', unsafe_allow_html=True)
 
     # --- Poslednje ažuriranje iz admina (odmah ispod dugmeta „Ažuriraj iz admina") ---
     if not (isinstance(meta, dict) and meta.get("nedeljni")):
@@ -5722,14 +5758,21 @@ def prikazi_administraciju():
 
         # --- Slanje mejla nadležnom (glavni kontakt) sa prilogom ---
         _mail_meta = dict(meta.get("nedeljni_mail") or {}) if isinstance(meta, dict) else {}
-        _to_default = _mail_meta.get("to", "") or ""
+        # Mejl koji je zadala analitika pri objavi — administracija ga NE menja
+        _mfix = (meta.get("mail_to_fix") or {}) if isinstance(meta, dict) else {}
+        _mfix_to = str(_mfix.get("to", "") or "").strip()
+        _to_default = _mfix_to or (_mail_meta.get("to", "") or "")
         _to_key = "ned_mail_to_" + str(sistem) + "_" + str(mesec_key)
+        if _mfix_to:
+            st.session_state[_to_key] = _mfix_to      # uvek stoji zadati mejl
         st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
         _mc1, _mc2 = st.columns([2.2, 1.2])
         with _mc1:
-            _to_val = st.text_input("Mejl nadležnog (glavni kontakt)", value=_to_default,
-                                    key=_to_key, placeholder="npr. nabavka@univerexport.rs",
-                                    disabled=_zakljucan)
+            _to_val = st.text_input(
+                ("Mejl nadležnog 🔒 (zadala analitika — ne menja se)" if _mfix_to
+                 else "Mejl nadležnog (glavni kontakt)"),
+                value=_to_default, key=_to_key, placeholder="npr. nabavka@univerexport.rs",
+                disabled=(_zakljucan or bool(_mfix_to)))
         with _mc2:
             st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
             _send_disabled = (_zakljucan or not smtp_dostupan()
@@ -5737,7 +5780,7 @@ def prikazi_administraciju():
                               or (_bez_priloga and not _grupe_ok))
             if st.button("✉️ Pošalji mejl", key="ned_mail_send_" + str(sistem) + "_" + str(mesec_key),
                          type="primary", use_container_width=True, disabled=_send_disabled):
-                _to_send = (st.session_state.get(_to_key, "") or "").strip()
+                _to_send = _mfix_to or (st.session_state.get(_to_key, "") or "").strip()
                 _subj_send = st.session_state.get(_subj_key, _mail_subj_n)
                 _body_send = st.session_state.get(_body_key, _mail_body_n)
                 if not _to_send or "@" not in _to_send:
@@ -5772,6 +5815,11 @@ def prikazi_administraciju():
             st.caption("📧 Poslednji put poslato: " + str(_mail_meta.get("at"))
                        + (" · " + str(_mail_meta.get("ko")) if _mail_meta.get("ko") else "")
                        + (" · " + str(_mail_meta.get("to")) if _mail_meta.get("to") else ""))
+        elif _mfix_to:
+            st.caption("🔒 Mejl je zadala analitika pri objavi: " + _mfix_to
+                       + ((" (" + str(_mfix.get("ko")) + " · " + str(_mfix.get("at")) + ")")
+                          if _mfix.get("ko") else "")
+                       + ". Klikni Pošalji mejl da pošalješ sa prilogom.")
         elif _to_default:
             st.caption("Zapamćen mejl nadležnog: " + _to_default + ". Klikni Pošalji mejl da pošalješ sa prilogom.")
 
@@ -6111,31 +6159,21 @@ def prikazi_administraciju():
     _TABS = ["Lista objekata", "Detalj / obrada", "📧 Grupno slanje mejlova"]
 
     # --- Klik na naziv objekta u listi otvara baš taj objekat u „Detalj / obrada" ---
-    # Link u tabeli postavi ?obj=<id>; ovde se to pročita PRE pravljenja tabova.
-    try:
-        _qp_obj = st.query_params.get("obj")
-    except Exception:
-        _qp_obj = None
-    if _qp_obj:
+    # Mora da bude pravo Streamlit dugme (on_click). Link sa ?obj=... ponovo učitava
+    # stranicu, pravi NOVU sesiju i izbacuje na prijavu — zato se ne koristi.
+    def _otvori_objekat(_oid):
         try:
-            _qid = int(str(_qp_obj))
-            _qo = obj_by_id.get(_qid)
-            if _qo:
-                _qz = _zona_disp(_qo["nivo"])
-                _qn = (komfull.get(_qid, {}) or {}).get("naziv", "")
-                st.session_state["adm_pick"] = (_qz[2] + "  " + str(_qid)
-                                                + (("  ·  " + _qn) if _qn else "")
-                                                + "  ·  " + _qz[3])
-                st.session_state["adm_tabs"] = _TABS[1]
+            _oo = obj_by_id.get(int(_oid))
+            if not _oo:
+                return
+            _oz = _zona_disp(_oo["nivo"])
+            _on = (komfull.get(int(_oid), {}) or {}).get("naziv", "")
+            st.session_state["adm_pick"] = (_oz[2] + "  " + str(int(_oid))
+                                            + (("  \u00b7  " + _on) if _on else "")
+                                            + "  \u00b7  " + _oz[3])
+            st.session_state["adm_tabs"] = _TABS[1]
         except Exception:
             pass
-        try:
-            del st.query_params["obj"]
-        except Exception:
-            try:
-                st.query_params.clear()
-            except Exception:
-                pass
 
     try:
         tab_lista, tab_detalj, tab_bulk = st.tabs(_TABS, key="adm_tabs", on_change="rerun")
@@ -6145,7 +6183,7 @@ def prikazi_administraciju():
     with tab_lista:
         _cut_list = _admin_presek(meta, mesec_key)
         _je_zavrseno = _zavrsen
-        _rows = ""
+        _rows = []
         _export_rows = []
         for o in objekti:
             z = _zona_disp(o["nivo"])
@@ -6190,25 +6228,20 @@ def prikazi_administraciju():
                 _tt = int(sum(_treb_posle_preseka(_hf.get("lst") or [], _cut_list).values()))
                 if _tt > 0:
                     _treb_mark = ' <span title="Trebovano posle 01." style="color:#b45309;font-weight:700;">⚠️ posle 01. (' + str(_tt) + ')</span>'
-            # Naziv je link — klik otvara baš taj objekat u „Detalj / obrada"
-            _lnk_a = ('<a href="?obj=' + str(int(o["idk"])) + '" target="_self" '
-                      'title="Otvori detalje ovog objekta" '
-                      'style="color:inherit;text-decoration:none;border-bottom:1px dotted #c7cbd4;">')
-            _nazcell = (('<td>' + _lnk_a + _h_escape(_nazlist) + '</a>' + _treb_mark + '</td>')
-                        if _nazlist else
-                        ('<td class="mut">' + _lnk_a + '— naknadno</a>' + _treb_mark + '</td>'))
-            _zavcell = ('<td class="ce"><span style="background:#dcfce7;color:#14532d;font-weight:700;font-size:11.5px;'
-                        'padding:3px 9px;border-radius:20px;">✓ Završeno</span></td>') if _zav else '<td class="ce"><span class="np">—</span></td>'
-            _rows += ('<tr class="' + _rc + '">'
-                '<td class="idc">' + str(o["idk"]) + '</td>'
-                + _nazcell +
-                '<td class="ce" style="color:#d33;">' + str(o["na_nuli"]) + '</td>'
-                '<td class="ce">' + str(o["izgub"]) + '</td>'
-                '<td><span class="zona ' + z[0] + '"><span class="zd"></span>' + z[3] + '</span></td>'
-                '<td>' + stat + '</td>'
-                '<td class="ce">' + _treb_list_cell(v.get("trebovali_tip", ""), o["idk"] in reviewed) + '</td>'
-                + _zavcell +
-                '</tr>')
+            _zavcell = ('<span style="background:#dcfce7;color:#14532d;font-weight:700;font-size:11.5px;'
+                        'padding:3px 9px;border-radius:20px;">✓ Završeno</span>') if _zav else '<span class="np">—</span>'
+            _rows.append({
+                "idk": int(o["idk"]),
+                "naziv": (_nazlist or "— naknadno"),
+                "ima_naziv": bool(_nazlist),
+                "mark_txt": (("⚠️ posle 01. (" + str(_tt) + ")") if _treb_mark else ""),
+                "nula": int(o["na_nuli"]), "izgub": int(o["izgub"]),
+                "zona": ('<span class="zona ' + z[0] + '"><span class="zd"></span>' + z[3] + '</span>'),
+                "stat": stat,
+                "treb": _treb_list_cell(v.get("trebovali_tip", ""), o["idk"] in reviewed),
+                "zav": _zavcell,
+                "rc": ("red" if o["nivo"] == "crveno" else ("org" if o["nivo"] == "zuto" else "")),
+            })
         # Izvoz u Excel (iznad liste)
         _lc1, _lc2 = st.columns([1.4, 3])
         with _lc1:
@@ -6225,11 +6258,54 @@ def prikazi_administraciju():
             _nz = sum(1 for r in _export_rows if r["zavrseno"])
             st.caption("Excel: mejl + 1./2./3. poziv (Da/Ne), ko i kada, i Završeno.  ·  Završeno: "
                        + str(_nz) + " / " + str(len(_export_rows)) + " objekata.")
-        st.markdown('<table class="adm-t">'
-            '<thead><tr><th>ID</th><th>Naziv komitenta</th><th>Na nuli</th><th>Izgubljeno</th>'
-            '<th>Zona</th><th>Status</th><th style="text-align:center;">Trebovali</th>'
-            '<th style="text-align:center;">Zavr\u0161eno</th></tr></thead>'
-            '<tbody>' + _rows + '</tbody></table>', unsafe_allow_html=True)
+        # --- Lista: naziv objekta je dugme (klik otvara Detalj za taj objekat) ---
+        # Ostale kolone idu kao JEDAN HTML blok po redu (fiksne \u0161irine), da lista
+        # ostane brza \u2014 ina\u010de bi 238 objekata zna\u010dilo ~1900 elemenata po prikazu.
+        _W = [0.62, 4.3, 8.1]
+        _CW = [78, 96, 150, 172, 108, 112]      # Na nuli, Izgubljeno, Zona, Status, Trebovali, Zavr\u0161eno
+        _HDR = ["Na nuli", "Izgubljeno", "Zona", "Status", "Trebovali", "Zavr\u0161eno"]
+
+        def _lbl_md(_s):
+            """Naziv ide kao labela dugmeta (markdown) — neutrališi * _ [ ] ` znakove."""
+            _o = str(_s or "")
+            for _ch in ("\\", "*", "_", "[", "]", "`", "~"):
+                _o = _o.replace(_ch, "\\" + _ch)
+            return _o
+
+        def _celije(_vals, _cls="lst-c"):
+            _o = '<div class="lst-row">'
+            for _i2, _vv in enumerate(_vals):
+                _ta = "center" if _i2 in (0, 1, 4, 5) else "left"
+                _o += ('<div class="' + _cls + '" style="flex:0 0 ' + str(_CW[_i2])
+                       + 'px;text-align:' + _ta + ';">' + _vv + '</div>')
+            return _o + '</div>'
+
+        _hc = st.columns(_W)
+        _hc[0].markdown('<div class="lst-h">ID</div>', unsafe_allow_html=True)
+        _hc[1].markdown('<div class="lst-h">Naziv komitenta</div>', unsafe_allow_html=True)
+        _hc[2].markdown(_celije(_HDR, "lst-h"), unsafe_allow_html=True)
+        for _r in _rows:
+            try:
+                _cc = st.columns(_W, vertical_alignment="center")
+            except TypeError:
+                _cc = st.columns(_W)
+            _cc[0].markdown('<span class="rtag ' + _r["rc"] + '"></span>'
+                            '<div class="lst-c lst-id">' + str(_r["idk"]) + '</div>',
+                            unsafe_allow_html=True)
+            with _cc[1]:
+                try:
+                    st.button(_lbl_md(_r["naziv"]) + (("   " + _r["mark_txt"]) if _r["mark_txt"] else ""),
+                              key="opn_" + str(_r["idk"]), type="tertiary",
+                              on_click=_otvori_objekat, args=(_r["idk"],),
+                              help="Otvori detalje ovog objekta")
+                except TypeError:
+                    st.button(_lbl_md(_r["naziv"]) + (("   " + _r["mark_txt"]) if _r["mark_txt"] else ""),
+                              key="opn_" + str(_r["idk"]),
+                              on_click=_otvori_objekat, args=(_r["idk"],))
+            _cc[2].markdown(_celije([
+                '<span style="color:#d33;">' + str(_r["nula"]) + '</span>',
+                str(_r["izgub"]), _r["zona"], _r["stat"], _r["treb"], _r["zav"]]),
+                unsafe_allow_html=True)
         st.caption("\U0001F446 Klikni na naziv objekta da ti otvori ba\u0161 taj objekat u Detalj / obrada.  \u00b7  "
                    "Status i trebovanje se menjaju u kartici Detalj / obrada.  \u00b7  "
                    "Zavr\u0161eno = objekat je poru\u010dio: stigla je nova porud\u017ebina posle starta, "
@@ -10708,6 +10784,39 @@ with tab_obj:
                 with _cpd[1]:
                     st.caption("Objekat je u problemu ako mu realni lager (lager + naknadne porudžbine) ne pokriva "
                                "prodaju za " + str(int(_o_sist_dani)) + " dana. Prag = predikcija × (" + str(int(_o_sist_dani)) + " ÷ 30).")
+            # --- Napomena i mejl koje zadaje analitika (administracija ih samo vidi) ---
+            # Ako za ovaj sistem/mesec već postoji objava, popuni postojeće vrednosti
+            # (jednom), da se ponovnom objavom slučajno ne obrišu.
+            _pf_k = "obj_pref_" + str(_o_mes_key) + "_" + str(_osist).strip()
+            if _osist.strip() and not st.session_state.get(_pf_k):
+                try:
+                    _old_p = sb_ucitaj(_o_mes_key, _osist.strip())
+                    _old_m = (_old_p or {}).get("meta") or {}
+                    _on = (_old_m.get("nap_analitika") or {}).get("tekst", "")
+                    _om = (_old_m.get("mail_to_fix") or {}).get("to", "")
+                    if _on and not st.session_state.get("obj_napomena"):
+                        st.session_state["obj_napomena"] = _on
+                    if _om and not st.session_state.get("obj_mail_fix"):
+                        st.session_state["obj_mail_fix"] = _om
+                except Exception:
+                    pass
+                st.session_state[_pf_k] = True
+            with st.expander("📝 Napomena i mejl za administraciju (opciono)",
+                             expanded=bool(st.session_state.get("obj_napomena")
+                                           or st.session_state.get("obj_mail_fix"))):
+                _o_napomena = st.text_area(
+                    "Napomena za administraciju", key="obj_napomena", height=80,
+                    placeholder="npr. Mejl se šalje petkom. Kontakt osoba je Marko, zvati posle 10h.",
+                    help="Prikazuje se administraciji na vrhu ovog sistema. Koristi za dogovor "
+                         "sa sistemom — kada se šalje, kome, šta da paze.")
+                _o_mail_fix = st.text_input(
+                    "Mejl nadležnog (zaključan za administraciju)", key="obj_mail_fix",
+                    placeholder="npr. nabavka@medius.rs — ostavi prazno da ga upiše administracija",
+                    help="Ako ovde upišeš mejl, administracija ga NE može menjati — samo šalje na njega. "
+                         "Ako ostaviš prazno, administracija sama upisuje mejl.")
+                if (_o_mail_fix or "").strip() and "@" not in _o_mail_fix:
+                    st.warning("Mejl ne izgleda ispravno (nema @).")
+
             if not sb_dostupan():
                 st.info("Objava nije moguća dok Supabase nije podešen.")
             elif st.button("📤 Objavi za koleginice", use_container_width=True, key="obj_btn"):
@@ -10734,6 +10843,19 @@ with tab_obj:
                             _presek_iso = None
                         _stavke = stavke_iz_rezultata(_res, _eng)
                         _payload = {"mesec_label": _mlbl2, "meta": {"pred_label": _eng.pred_label, "order_label": _eng.order_label, "min_lager": _eng.min_lager, "meseci": round(float(_o_mes), 1), "presek": _presek_iso, "nedeljni": bool(_o_nedeljni), "nedeljni_dani": int(_o_sist_dani), "mesec_nazivi": list(getattr(_eng, "mesec_labels", []) or []), "generisano": _now().strftime("%d.%m.%Y %H:%M"), "n_objekata": int(len({_s2['idk'] for _s2 in _stavke})), "n_sistem_ukupno": int(getattr(_eng, "num_komitenti", 0)), "ukupno_kom": int(sum(_s2['kol'] for _s2 in _stavke))}, "stavke": _stavke}
+                        # Napomena + zaključan mejl koje zadaje analitika
+                        _nap_an = (st.session_state.get("obj_napomena", "") or "").strip()
+                        _mf_an = (st.session_state.get("obj_mail_fix", "") or "").strip()
+                        if _nap_an:
+                            _payload["meta"]["nap_analitika"] = {
+                                "tekst": _nap_an[:1500],
+                                "ko": st.session_state.get("admin_user", "Analitika"),
+                                "at": _now().strftime("%d.%m.%Y %H:%M")}
+                        if _mf_an:
+                            _payload["meta"]["mail_to_fix"] = {
+                                "to": _mf_an[:200],
+                                "ko": st.session_state.get("admin_user", "Analitika"),
+                                "at": _now().strftime("%d.%m.%Y %H:%M")}
                         try:
                             _payload["direktor"] = direktor_blok(_eng, _res)
                         except Exception:
