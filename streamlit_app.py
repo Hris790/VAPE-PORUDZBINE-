@@ -1627,12 +1627,25 @@ def knez_admin_ui():
         r["mail_at"] = (_mj[-1].get("at") if _mj else None)
         r["mail_ko"] = (_mj[-1].get("ko", "") if _mj else "")
         r["_email_ok"] = _mejl_ok(r["email"])
+    # --- Odgovori iz sandučeta (čita se na klik) ---
+    _odg_k = "_knez_odg_" + str(mesec_key)
+    _odg_ses = st.session_state.get(_odg_k) or {}
+    _odg_live = (_odg_ses.get("po") or {})
+    _nepr = (_odg_ses.get("nep") or [])
+    for r in _pumpe:
+        _v = _obr.get(int(r["idk"])) or {}
+        _sac = ((_v.get("dnevnik") or {}).get("odgovori") or [])
+        _liv = _odg_live.get((r["email"] or "").lower(), [])
+        r["odg_sac"] = _sac
+        r["odg_live"] = _liv
+        r["odg_n"] = max(len(_sac), len(_liv))
     _n_uk = len(_pumpe)
     _n_mail = sum(1 for r in _pumpe if r["_email_ok"])
     _n_pos = sum(1 for r in _pumpe if r["mail_n"] > 0)
     _n_ost = _n_uk - _n_pos
+    _n_odg = sum(1 for r in _pumpe if r["odg_n"] > 0)
 
-    st.markdown('<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:6px 0 10px;">'
+    st.markdown('<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:6px 0 10px;">'
                 '<div style="background:#faf7ff;border:1px solid #e9d5ff;border-radius:12px;padding:15px 18px;">'
                 '<div style="font-size:22px;font-weight:800;color:#7c3aed;">' + str(_n_uk) + '</div>'
                 '<div style="font-size:12px;color:#8b7fa8;margin-top:3px;">Pumpi u šifarniku</div></div>'
@@ -1644,8 +1657,105 @@ def knez_admin_ui():
                 '<div style="font-size:12px;color:#6b82ad;margin-top:3px;">Poslat mejl (' + _sel_lbl_k + ')</div></div>'
                 '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:15px 18px;">'
                 '<div style="font-size:22px;font-weight:800;color:#b45309;">' + str(_n_ost) + '</div>'
-                '<div style="font-size:12px;color:#9a7b3a;margin-top:3px;">Još nije poslato</div></div></div>',
+                '<div style="font-size:12px;color:#9a7b3a;margin-top:3px;">Još nije poslato</div></div>'
+                '<div style="background:#dcfce7;border:1px solid #86efac;border-radius:12px;padding:15px 18px;">'
+                '<div style="font-size:22px;font-weight:800;color:#14532d;">' + str(_n_odg) + '</div>'
+                '<div style="font-size:12px;color:#166534;margin-top:3px;font-weight:700;">📥 Odgovorili</div></div></div>',
                 unsafe_allow_html=True)
+
+    # --- Provera odgovora u sandučetu ---
+    _oc1, _oc2 = st.columns([1.5, 4])
+    with _oc1:
+        _chk_odg = st.button("📥 Proveri odgovore", key="knez_scan", use_container_width=True,
+                             help="Čita sanduče i vezuje odgovore za pumpe po adresi pošiljaoca. "
+                                  "Traje nekoliko sekundi do minut.")
+    with _oc2:
+        if _odg_ses.get("kada"):
+            st.caption("📥 Poslednja provera: " + str(_odg_ses.get("kada"))
+                       + " · pronađeno odgovora: " + str(sum(len(v) for v in _odg_live.values()))
+                       + " · neprepoznatih: " + str(len(_nepr))
+                       + ". Prilozi se preuzimaju iz sandučeta — dostupni su do sledeće provere.")
+        else:
+            st.caption("Klikni „Proveri odgovore“ da se iz sandučeta povuku odgovori pumpi "
+                       "(tekst i prilozi) i prikažu ispod svake pumpe.")
+    if _chk_odg:
+        _adr = set((r["email"] or "").lower() for r in _pumpe if r["_email_ok"])
+        with st.spinner("📥 Čitam sanduče… (može da potraje do minut)"):
+            _po, _nep, _err = knez_odgovori(_adr, dana=int(_cfg("KNEZ_ODG_DANA", 45) or 45))
+        if _err and not _po:
+            st.error("Čitanje sandučeta nije uspelo: " + str(_err))
+        _n_up = 0
+        for _a, _lst in (_po or {}).items():
+            _ik = next((r["idk"] for r in _pumpe if (r["email"] or "").lower() == _a), None)
+            if _ik is None:
+                continue
+            for _z in _lst:
+                try:
+                    if sb_knez_odgovor_set(mesec_key, _ik, _z):
+                        _n_up += 1
+                except Exception:
+                    pass
+        st.session_state[_odg_k] = {"po": _po, "nep": _nep,
+                                    "kada": _now().strftime("%d.%m.%Y. %H:%M")}
+        st.session_state["_knez_scan_flash"] = (
+            "📥 Pronađeno " + str(sum(len(v) for v in (_po or {}).values())) + " odgovora od "
+            + str(len(_po or {})) + " pumpi" + ((" · novih zabeleženo: " + str(_n_up)) if _n_up else "")
+            + ((" · " + str(len(_nep)) + " poruka nije prepoznato (vidi dole)") if _nep else ""))
+        st.rerun()
+    _sf = st.session_state.pop("_knez_scan_flash", None)
+    if _sf:
+        st.success(_sf)
+
+    # --- Naslov i tekst mejla (isti za pojedinačno i za grupno slanje) ---
+    if not smtp_dostupan():
+        _n = _mail_nalog()
+        _suf = ("_" + _n) if _n else ""
+        st.warning("✉️ Slanje mejlova nije podešeno za tvoj nalog — dodaj u Secrets: "
+                   "SMTP_HOST" + _suf + " / SMTP_USER" + _suf + " / SMTP_PASSWORD" + _suf + ".")
+    with st.expander("✉️ Naslov i tekst mejla" + (("  ·  šalje se sa " + str(_smtp_cfg().get("from_email", "")))
+                                                  if smtp_dostupan() else ""), expanded=False):
+        _subj_k = st.text_input(
+            "Naslov mejla", key="knez_subj_" + str(mesec_key),
+            value=("VAPE SHOP - Zahtev za izveštaj o prodaji i zalihama - " + _sel_lbl_k))
+        _tekst_k = st.text_area(
+            "Tekst mejla", key="knez_body_" + str(mesec_key), height=210,
+            value=str(_cfg("KNEZ_MEJL_TEKST", KNEZ_TEKST_DEFAULT)),
+            help="{objekat} = naziv pumpe · {od} = prvi dan meseca · {do} = poslednji dan meseca "
+                 "· {mesec} = naziv meseca.")
+        _prva = next((r for r in _pumpe if r["_email_ok"]), _pumpe[0])
+        st.caption("Ovako izgleda za „" + str(_prva["naziv"])[:44] + "“:")
+        st.code("Za: " + (_prva["email"] or "—") + "\nNaslov: " + str(_subj_k) + "\n\n"
+                + _knez_tekst(_tekst_k, mesec_key, _prva["naziv"]))
+
+    def _knez_posalji(_r):
+        """Pošalji mejl jednoj pumpi i zabeleži u dnevnik (ko + kada)."""
+        _ko1 = st.session_state.get("admin_user", "Administracija")
+        _sk1 = "knez_sent_" + str(mesec_key) + "_" + str(_r["idk"])
+        try:
+            with st.spinner("✉️ Šaljem mejl…"):
+                posalji_mejl_sa_prilogom(_r["email"], str(_subj_k),
+                                         _knez_tekst(_tekst_k, mesec_key, _r["naziv"]))
+            try:
+                sb_obrada_log(mesec_key, KNEZ_SIS, _r["idk"], "mejl", _ko1,
+                              kopija=st.session_state.get("_zadnja_kopija"))
+            except Exception:
+                pass
+            st.session_state[_sk1] = {"ok": True, "msg": "Poslato na " + _r["email"]}
+        except Exception as _e1:
+            st.session_state[_sk1] = {"ok": False, "msg": str(_e1)}
+            try:
+                sb_mejl_greska(mesec_key, KNEZ_SIS, _r["idk"], str(_e1), _ko1)
+            except Exception:
+                pass
+
+    def _knez_poziv(_idk, _tel):
+        """Klik na slušalicu = zabeležen poziv (ko + kada) + pokreće pozivanje."""
+        try:
+            sb_obrada_log(mesec_key, KNEZ_SIS, int(_idk), "poziv",
+                          st.session_state.get("admin_user", "Administracija"))
+        except Exception:
+            pass
+        st.session_state["_knez_dial_" + str(_idk)] = _tel
 
     _KT = ["Pregled", "📧 Grupno slanje mejlova"]
     try:
@@ -1654,24 +1764,222 @@ def knez_admin_ui():
         _kt1, _kt2 = st.tabs(_KT)
 
     with _kt1:
-        _pdf = pd.DataFrame([{
-            "ID": r["idk"], "Naziv": r["naziv"], "Mesto": r["mesto"],
-            "Email": r["email"] or "—",
-            "Poslato ×": int(r["mail_n"]),
-            "Poslednji put": r["mail_at"],
-            "Ko": _ko_kratko(r["mail_ko"]) if r["mail_ko"] else "",
-        } for r in _pumpe])
-        _pdf["Poslednji put"] = pd.to_datetime(_pdf["Poslednji put"], errors="coerce")
-        st.dataframe(_pdf, hide_index=True, use_container_width=True,
-                     height=min(60 + 36 * len(_pumpe), 700),
-                     column_config={
-                         "ID": st.column_config.NumberColumn("ID", width="small", format="%d"),
-                         "Poslato ×": st.column_config.NumberColumn(
-                             "Poslato ×", width="small",
-                             help="Koliko puta je mejl poslat za ovaj mesec. Nema ograničenja."),
-                         "Poslednji put": st.column_config.DatetimeColumn(
-                             "Poslednji put", format="DD.MM.YYYY. HH:mm",
-                             help="Klikni na zaglavlje da sortiraš po datumu slanja.")})
+        _pc1, _pc2 = st.columns([2.2, 1.4])
+        with _pc1:
+            _pq = st.text_input("Pretraga (naziv, mesto ili mejl)", key="knez_pq",
+                                placeholder="npr. Ćuprija")
+        with _pc2:
+            _pf = st.selectbox("Prikaži", ["Sve", "Nije poslato", "Već poslato",
+                                           "📥 Odgovorili", "Nisu odgovorili", "Bez mejla"],
+                               key="knez_pf")
+
+        def _pok(r):
+            if _pf == "Nije poslato" and r["mail_n"] > 0:
+                return False
+            if _pf == "Već poslato" and r["mail_n"] == 0:
+                return False
+            if _pf == "📥 Odgovorili" and not r["odg_n"]:
+                return False
+            if _pf == "Nisu odgovorili" and (r["odg_n"] or r["mail_n"] == 0):
+                return False
+            if _pf == "Bez mejla" and r["_email_ok"]:
+                return False
+            if _pq.strip():
+                _qq = _pq.strip().lower()
+                if (_qq not in r["naziv"].lower() and _qq not in r["email"].lower()
+                        and _qq not in str(r["mesto"]).lower()):
+                    return False
+            return True
+        _vidljive = [r for r in _pumpe if _pok(r)]
+        st.caption("Prikazano: " + str(len(_vidljive)) + " od " + str(len(_pumpe))
+                   + " pumpi.  ·  👆 Klikni na pumpu da se ispod otvori slanje mejla i poziv.")
+
+        for r in _vidljive:
+            _idk = int(r["idk"])
+            _v = _obr.get(_idk) or {}
+            _dnv = _v.get("dnevnik") or {}
+            _pozivi = _dnv.get("pozivi") or []
+            _mejlovi = _dnv.get("mejlovi") or []
+            _greske = _dnv.get("greske") or []
+            _hdr = (("📥 " if r["odg_n"] else ("✅ " if _mejlovi else
+                                              ("⚠️ " if not r["_email_ok"] else "✉️ ")))
+                    + str(r["naziv"]))
+            if r["mesto"]:
+                _hdr += "   ·   " + str(r["mesto"])
+            if _mejlovi:
+                _hdr += "   ·   poslato " + str(len(_mejlovi)) + "×"
+            if _pozivi:
+                _hdr += "   ·   📞 " + str(len(_pozivi)) + " poziv" + ("a" if len(_pozivi) > 1 else "")
+            if r["odg_n"]:
+                _hdr += "   ·   📥 ODGOVORILI"
+            with st.expander(_hdr, expanded=False):
+                _kb = []
+                if r["email"]:
+                    _kb.append("✉️ " + _h_escape(r["email"]))
+                if r["telefon"]:
+                    _kb.append("📞 " + _h_escape(r["telefon"]))
+                _kb.append("ID " + str(_idk))
+                st.markdown('<div style="color:#6b7280;font-size:12.5px;margin:0 0 8px;">'
+                            + "&nbsp;&nbsp;·&nbsp;&nbsp;".join(_kb) + '</div>',
+                            unsafe_allow_html=True)
+
+                # --- Slušalica: klik = zabeležen poziv ---
+                _tel_raw = str(r["telefon"] or "").strip()
+                import re as _ret
+                _tel_c = _ret.sub(r"[^\d+]", "", _tel_raw)
+                if _tel_c.count("+") > 1:
+                    _tel_c = "+" + _tel_c.replace("+", "")
+                if _tel_c.startswith("00"):
+                    _tel_c = "+" + _tel_c[2:]
+                elif _tel_c.startswith("0"):
+                    _tel_c = "+381" + _tel_c[1:]
+                _b1, _b2, _b3 = st.columns([1.5, 1.5, 2])
+                with _b1:
+                    st.button("📞 Pozovi " + (_tel_raw or "—"),
+                              key="knez_call_" + str(mesec_key) + "_" + str(_idk),
+                              use_container_width=True, disabled=(not _tel_c),
+                              on_click=_knez_poziv, args=(_idk, _tel_c),
+                              help="Klik se automatski beleži kao poziv (ko i kada).")
+                with _b2:
+                    st.button("✉️ Pošalji mejl",
+                              key="knez_send1_" + str(mesec_key) + "_" + str(_idk),
+                              type="primary", use_container_width=True,
+                              disabled=(not r["_email_ok"] or not smtp_dostupan()),
+                              on_click=_knez_posalji, args=(r,))
+                with _b3:
+                    if not r["_email_ok"]:
+                        st.caption("Nema ispravan mejl u šifarniku.")
+                    elif not smtp_dostupan():
+                        st.caption("Slanje mejlova nije podešeno.")
+
+                if st.session_state.get("_knez_dial_" + str(_idk)):
+                    _dn = st.session_state.pop("_knez_dial_" + str(_idk))
+                    components.html("<script>window.location.href='tel:" + _dn + "';</script>", height=0)
+                    st.markdown('<a href="tel:' + _h_escape(_dn) + '" style="display:inline-block;'
+                                'background:#16a34a;color:#fff;text-decoration:none;font-weight:700;'
+                                'font-size:13px;padding:8px 16px;border-radius:9px;">'
+                                '📞 Ako se poziv ne otvori sam — klikni</a>', unsafe_allow_html=True)
+
+                _res1 = st.session_state.get("knez_sent_" + str(mesec_key) + "_" + str(_idk))
+                if _res1:
+                    (st.success if _res1["ok"] else st.error)(
+                        ("✅ " if _res1["ok"] else "❌ ") + str(_res1["msg"]))
+
+                # --- Trajna oznaka: mejl je poslat + ko i kada ---
+                if _mejlovi:
+                    _z = _mejlovi[-1]
+                    st.markdown('<div style="background:#dcfce7;border:1px solid #86efac;'
+                                'border-radius:9px;padding:8px 13px;margin:6px 0 2px;'
+                                'font-size:13px;color:#14532d;font-weight:700;">'
+                                '✅ Mejl je poslat ' + str(len(_mejlovi)) + '× · poslednji put '
+                                + _h_escape(_dt_kratko(_z.get("at", "")))
+                                + (" · " + _h_escape(_ko_kratko(_z.get("ko", ""))) if _z.get("ko") else "")
+                                + '</div>' + _dnevnik_lista_html(_dnv, "mejl"),
+                                unsafe_allow_html=True)
+                else:
+                    st.caption("✉️ Mejl još nije poslat za " + _sel_lbl_k + ".")
+
+                if _pozivi:
+                    st.markdown('<div style="font-size:12px;color:#6b7280;font-weight:600;'
+                                'margin:8px 0 1px;">📞 Pozvano ' + str(len(_pozivi)) + '× :</div>'
+                                + _dnevnik_lista_html(_dnv, "poziv"), unsafe_allow_html=True)
+
+                if _greske:
+                    _g = _greske[-1]
+                    st.error("❌ Poslednji pokušaj slanja NIJE uspeo — "
+                             + _dt_kratko(_g.get("at", "")) + " · " + str(_g.get("sta", ""))[:200])
+
+                # --- ODGOVOR PUMPE (iz sandučeta) ---
+                _odg_prikaz = r["odg_live"] or r["odg_sac"]
+                if _odg_prikaz:
+                    st.markdown('<div style="background:#eef2ff;border:2px solid #818cf8;'
+                                'border-radius:10px;padding:10px 14px;margin:10px 0 4px;">'
+                                '<div style="font-size:14px;font-weight:900;color:#312e81;">'
+                                '📥 ODGOVORILI — ' + str(len(_odg_prikaz)) + ' poruka</div></div>',
+                                unsafe_allow_html=True)
+                    for _oi, _o in enumerate(_odg_prikaz):
+                        _ko_o = (str(_o.get("ime", "")) or str(_o.get("od", "")))
+                        st.markdown('<div style="font-size:13px;font-weight:700;color:#3730a3;'
+                                    'margin:6px 0 2px;">✉️ ' + _h_escape(_ko_o) + ' &lt;'
+                                    + _h_escape(str(_o.get("od", ""))) + '&gt;  ·  '
+                                    + _h_escape(str(_o.get("at", ""))) + '</div>'
+                                    '<div style="font-size:12.5px;color:#4b5563;font-weight:600;">'
+                                    + _h_escape(str(_o.get("naslov", ""))) + '</div>',
+                                    unsafe_allow_html=True)
+                        if _o.get("tekst"):
+                            st.markdown('<div style="background:#f8fafc;border:1px solid #e5e7eb;'
+                                        'border-radius:8px;padding:8px 12px;margin:4px 0 6px;'
+                                        'font-size:12.5px;color:#374151;white-space:pre-wrap;">'
+                                        + _h_escape(str(_o.get("tekst", ""))) + '</div>',
+                                        unsafe_allow_html=True)
+                        for _pi, _pz in enumerate(_o.get("prilozi") or []):
+                            _vel = int(_pz.get("vel", 0) or 0)
+                            _vt = (str(round(_vel / 1024.0)) + " KB" if _vel < 1024 * 1024
+                                   else str(round(_vel / 1048576.0, 1)) + " MB")
+                            if _pz.get("data"):
+                                st.download_button(
+                                    "⬇️ " + str(_pz.get("ime", "prilog")) + "  (" + _vt + ")",
+                                    _pz["data"], file_name=str(_pz.get("ime", "prilog")),
+                                    key=("knez_dl_" + str(mesec_key) + "_" + str(_idk) + "_"
+                                         + str(_oi) + "_" + str(_pi)))
+                            else:
+                                st.caption("📎 " + str(_pz.get("ime", "prilog")) + " (" + _vt
+                                           + ") — klikni „📥 Proveri odgovore“ gore da se prilog "
+                                             "povuče iz sandučeta.")
+                    if not r["odg_live"] and r["odg_sac"]:
+                        st.caption("ℹ️ Prikazano iz zabeleženog. Za preuzimanje priloga klikni "
+                                   "„📥 Proveri odgovore“ gore.")
+                elif _mejlovi:
+                    st.caption("📥 Još nema odgovora od ove pumpe.")
+
+        # --- Odgovori koje aplikacija nije prepoznala (drugi mejl pošiljaoca) ---
+        if _nepr:
+            st.markdown("<hr style='margin:16px 0 8px;border:none;border-top:1px solid #e5e7eb;'>",
+                        unsafe_allow_html=True)
+            with st.expander("❓ Neprepoznati odgovori (" + str(len(_nepr))
+                             + ") — pošiljalac nije u šifarniku, dodeli ih ručno", expanded=False):
+                st.caption("Ovo su poruke iz sandučeta koje nisu stigle sa adrese neke pumpe "
+                           "(npr. odgovorili su sa lične adrese). Izaberi pumpu i klikni Dodeli.")
+                _opts = ["—"] + [str(r["idk"]) + " · " + r["naziv"] for r in _pumpe]
+                for _ni, _z in enumerate(_nepr[:30]):
+                    st.markdown('<div style="font-size:13px;font-weight:700;color:#374151;'
+                                'margin:8px 0 2px;">✉️ ' + _h_escape(str(_z.get("ime", "")) or "")
+                                + ' &lt;' + _h_escape(str(_z.get("od", ""))) + '&gt;  ·  '
+                                + _h_escape(str(_z.get("at", ""))) + '</div>'
+                                '<div style="font-size:12.5px;color:#6b7280;">'
+                                + _h_escape(str(_z.get("naslov", ""))) + '</div>',
+                                unsafe_allow_html=True)
+                    if _z.get("tekst"):
+                        st.caption(str(_z.get("tekst", ""))[:220])
+                    for _pi2, _pz2 in enumerate(_z.get("prilozi") or []):
+                        if _pz2.get("data"):
+                            st.download_button("⬇️ " + str(_pz2.get("ime", "prilog")),
+                                               _pz2["data"], file_name=str(_pz2.get("ime", "prilog")),
+                                               key="knez_ndl_" + str(_ni) + "_" + str(_pi2))
+                    _dc1, _dc2 = st.columns([3, 1])
+                    with _dc1:
+                        _pick = st.selectbox("Dodeli pumpi", _opts, key="knez_nas_" + str(_ni),
+                                             label_visibility="collapsed")
+                    with _dc2:
+                        if st.button("✓ Dodeli", key="knez_nasb_" + str(_ni),
+                                     use_container_width=True, disabled=(_pick == "—")):
+                            try:
+                                _tid = int(str(_pick).split("·")[0].strip())
+                                if sb_knez_odgovor_set(mesec_key, _tid, _z):
+                                    st.success("Dodeljeno pumpi " + str(_tid) + ".")
+                                # prikaži ga odmah i pod tom pumpom
+                                _em = next((p["email"] for p in _pumpe if p["idk"] == _tid), "")
+                                if _em:
+                                    _cur = st.session_state.get(_odg_k) or {"po": {}, "nep": []}
+                                    _cur.setdefault("po", {}).setdefault(_em.lower(), []).append(_z)
+                                    _cur["nep"] = [x for x in (_cur.get("nep") or []) if x is not _z]
+                                    st.session_state[_odg_k] = _cur
+                                st.rerun()
+                            except Exception as _de:
+                                st.error("Nije uspelo: " + str(_de))
+                    st.markdown("<hr style='margin:6px 0;border:none;border-top:1px dashed #e5e7eb;'>",
+                                unsafe_allow_html=True)
+
         _bez = [r for r in _pumpe if not r["_email_ok"]]
         if _bez:
             st.warning("✉️ " + str(len(_bez)) + " pumpi nema ispravan mejl u šifarniku — "
@@ -1680,6 +1988,16 @@ def knez_admin_ui():
                        + ("…" if len(_bez) > 10 else ""))
         try:
             import io as _io
+            _pdf = pd.DataFrame([{
+                "ID": r["idk"], "Naziv": r["naziv"], "Mesto": r["mesto"],
+                "Email": r["email"] or "—", "Poslato ×": int(r["mail_n"]),
+                "Poslednji put": (_dt_kratko(r["mail_at"]) if r["mail_at"] else ""),
+                "Ko": _ko_kratko(r["mail_ko"]) if r["mail_ko"] else "",
+                "Poziva": len(((_obr.get(int(r["idk"])) or {}).get("dnevnik") or {}).get("pozivi") or []),
+                "Odgovorili": ("DA" if r["odg_n"] else "—"),
+                "Odgovor stigao": ((r["odg_live"] or r["odg_sac"])[-1].get("at", "")
+                                   if r["odg_n"] else ""),
+            } for r in _pumpe])
             _buf = _io.BytesIO()
             with pd.ExcelWriter(_buf, engine="openpyxl") as _w:
                 _pdf.to_excel(_w, index=False, sheet_name="Knez Petrol")
@@ -1691,26 +2009,9 @@ def knez_admin_ui():
             st.caption("Izvoz trenutno nije moguć: " + str(_ke))
 
     with _kt2:
-        if not smtp_dostupan():
-            _n = _mail_nalog()
-            _suf = ("_" + _n) if _n else ""
-            st.warning("✉️ Slanje mejlova nije podešeno za tvoj nalog — dodaj u Secrets: "
-                       "SMTP_HOST" + _suf + " / SMTP_USER" + _suf + " / SMTP_PASSWORD" + _suf + ".")
-        else:
+        if smtp_dostupan():
             st.caption("✉️ Mejlovi se šalju sa: " + str(_smtp_cfg().get("from_email", "")))
-
-        _subj_k = st.text_input(
-            "Naslov mejla", key="knez_subj_" + str(mesec_key),
-            value=("VAPE SHOP - Zahtev za izveštaj o prodaji i zalihama - " + _sel_lbl_k))
-        _tekst_k = st.text_area(
-            "Tekst mejla", key="knez_body_" + str(mesec_key), height=210,
-            value=str(_cfg("KNEZ_MEJL_TEKST", KNEZ_TEKST_DEFAULT)),
-            help="{objekat} = naziv pumpe · {od} = prvi dan meseca · {do} = poslednji dan meseca "
-                 "· {mesec} = naziv meseca.")
-        with st.expander("👁️ Kako će izgledati (prva pumpa sa mejlom)", expanded=False):
-            _prva = next((r for r in _pumpe if r["_email_ok"]), _pumpe[0])
-            st.code("Za: " + (_prva["email"] or "—") + "\nNaslov: " + str(_subj_k) + "\n\n"
-                    + _knez_tekst(_tekst_k, mesec_key, _prva["naziv"]))
+        st.caption("Naslov i tekst menjaš gore, u „✉️ Naslov i tekst mejla“.")
 
         _selk = "knez_sel_" + str(mesec_key)
         _verk = "knez_ver_" + str(mesec_key)
@@ -3833,6 +4134,201 @@ def imap_test_upis(nalog=None):
     _m["To"] = str(c.get("from_email", ""))
     _m["Date"] = formatdate(localtime=True)
     return _upisi_u_poslato(_m, nalog)
+
+
+def _mail_telo_tekst(msg, maks=800):
+    """Izvuci čitljiv tekst poruke (bez HTML-a, bez citiranog dela)."""
+    import re as _re
+    _txt = ""
+    try:
+        if msg.is_multipart():
+            for _p in msg.walk():
+                if _p.get_content_maintype() == "multipart":
+                    continue
+                if (_p.get("Content-Disposition") or "").lower().startswith("attachment"):
+                    continue
+                if _p.get_content_type() == "text/plain":
+                    _txt = _p.get_payload(decode=True).decode(
+                        _p.get_content_charset() or "utf-8", "ignore")
+                    break
+            if not _txt:
+                for _p in msg.walk():
+                    if _p.get_content_type() == "text/html":
+                        _h = _p.get_payload(decode=True).decode(
+                            _p.get_content_charset() or "utf-8", "ignore")
+                        _txt = _re.sub(r"<[^>]+>", " ", _h)
+                        break
+        else:
+            _txt = msg.get_payload(decode=True).decode(
+                msg.get_content_charset() or "utf-8", "ignore")
+            if msg.get_content_type() == "text/html":
+                _txt = _re.sub(r"<[^>]+>", " ", _txt)
+    except Exception:
+        _txt = ""
+    # HTML entiteti (&nbsp; &amp; …) u čitljiv tekst
+    try:
+        import html as _hh
+        _txt = _hh.unescape(str(_txt or ""))
+    except Exception:
+        pass
+    _lin = []
+    for _l in str(_txt or "").splitlines():
+        _s = _l.strip()
+        if _s.startswith(">"):
+            continue                      # citirani deo naše poruke
+        if _re.match(r"^(-{2,}\s*Original|On .+ wrote:|Od:|From:|Poslato:|Sent:)", _s):
+            break
+        _lin.append(_s)
+    _out = _re.sub(r"\n{3,}", "\n\n", "\n".join(_lin)).strip()
+    return _out[:int(maks)]
+
+
+def _mail_prilozi(msg, maks_po_fajlu=6_000_000, maks_fajlova=5):
+    """Vrati [{ime, vel, data}] za priloge poruke (preskače inline slike i potpise)."""
+    _out = []
+    try:
+        for _p in msg.walk():
+            if _p.get_content_maintype() == "multipart":
+                continue
+            _disp = (_p.get("Content-Disposition") or "")
+            _ime = _p.get_filename()
+            if not _ime:
+                continue
+            # Slika iz potpisa (logo) nije prilog — prepoznaje se po Content-ID / inline
+            if _p.get_content_maintype() == "image" and (_p.get("Content-ID")
+                                                         or "inline" in _disp.lower()):
+                continue
+            try:
+                from email.header import decode_header as _dh
+                _dec = _dh(_ime)
+                _ime = "".join((_b.decode(_c or "utf-8", "ignore") if isinstance(_b, bytes) else _b)
+                               for _b, _c in _dec)
+            except Exception:
+                pass
+            try:
+                _dat = _p.get_payload(decode=True) or b""
+            except Exception:
+                _dat = b""
+            if not _dat or len(_dat) > int(maks_po_fajlu):
+                _out.append({"ime": str(_ime)[:120], "vel": len(_dat), "data": None})
+            else:
+                _out.append({"ime": str(_ime)[:120], "vel": len(_dat), "data": _dat})
+            if len(_out) >= int(maks_fajlova):
+                break
+    except Exception:
+        pass
+    return _out
+
+
+def knez_odgovori(adrese, nalog=None, dana=45, _v=0):
+    """Pročitaj sanduče i nađi ODGOVORE pumpi. `adrese` = skup mejlova iz šifarnika.
+
+    Vrati (po_adresi, neprepoznati):
+      po_adresi     = {adresa: [ {od, ime, at, naslov, tekst, prilozi:[{ime,vel,data}]} ]}
+      neprepoznati  = [ {od, ime, at, naslov, tekst, prilozi} ]  — pošiljalac nije u šifarniku
+    Nikad ne baca izuzetak — vraća i poruku o grešci kao treći element."""
+    import imaplib, email
+    from email.utils import parseaddr, parsedate_to_datetime
+    from email.header import decode_header as _dh
+    import datetime as _dt
+    _po = {}
+    _nep = []
+    c = _imap_cfg(nalog)
+    if not (c["host"] and c["user"] and c["password"]):
+        return (_po, _nep, "IMAP nije podešen (IMAP_HOST / SMTP_USER / SMTP_PASSWORD u Secrets).")
+    _skup = set(str(a or "").strip().lower() for a in (adrese or set()) if a)
+    _nas = str(c.get("user") or "").strip().lower()
+    try:
+        _im = imaplib.IMAP4_SSL(c["host"], c["port"], timeout=30)
+        _im.login(c["user"], c["password"])
+        _im.select("INBOX", readonly=True)
+        _od = (_now() - _dt.timedelta(days=int(dana or 45))).strftime("%d-%b-%Y")
+        _ok, _dat = _im.search(None, '(SINCE "' + _od + '")')
+        _ids = (_dat[0].split() if (_ok == "OK" and _dat and _dat[0]) else [])
+        _ids = _ids[-800:]                      # sigurnosna granica
+        for _mid in reversed(_ids):
+            try:
+                _ok2, _raw = _im.fetch(_mid, "(RFC822)")
+                if _ok2 != "OK" or not _raw or not _raw[0]:
+                    continue
+                _msg = email.message_from_bytes(_raw[0][1])
+            except Exception:
+                continue
+            _ime, _adr = parseaddr(_msg.get("From", "") or "")
+            _adr = str(_adr or "").strip().lower()
+            if not _adr or _adr == _nas:
+                continue
+            _low = _adr.lower()
+            if ("mailer-daemon" in _low or "postmaster" in _low or "no-reply" in _low
+                    or "noreply" in _low):
+                continue
+            try:
+                _nas_txt = "".join((_b.decode(_ch or "utf-8", "ignore") if isinstance(_b, bytes) else _b)
+                                   for _b, _ch in _dh(_msg.get("Subject", "") or ""))
+            except Exception:
+                _nas_txt = str(_msg.get("Subject", "") or "")
+            try:
+                _kad = parsedate_to_datetime(_msg.get("Date", "")).strftime("%d.%m.%Y. %H:%M")
+            except Exception:
+                _kad = ""
+            _z = {"od": _adr, "ime": str(_ime or "")[:80], "at": _kad,
+                  "naslov": str(_nas_txt or "")[:160],
+                  "tekst": _mail_telo_tekst(_msg),
+                  "prilozi": _mail_prilozi(_msg)}
+            if _adr in _skup:
+                _po.setdefault(_adr, []).append(_z)
+            elif _z["prilozi"] or _z["tekst"]:
+                _nep.append(_z)
+        try:
+            _im.logout()
+        except Exception:
+            pass
+        return (_po, _nep[:60], "")
+    except Exception as _e:
+        try:
+            _im.logout()
+        except Exception:
+            pass
+        return (_po, _nep, str(_e)[:200])
+
+
+def sb_knez_odgovor_set(mesec_key, idk, zapis):
+    """Trajno zabeleži da je pumpa odgovorila (ko, kada, naslov, tekst, imena priloga).
+    Sadržaj priloga se NE čuva u bazi — preuzima se iz sandučeta pri proveri."""
+    cli = _sb()
+    if cli is None:
+        return False
+    try:
+        res = (cli.table("obrada")
+               .select("reakcije,trebovali_tip,njihova,napomena,reakcije_ko,dnevnik")
+               .eq("mesec", mesec_key).eq("sistem", KNEZ_SIS).eq("idk", int(idk)).limit(1).execute())
+        _r = res.data[0] if res.data else {}
+        _dn = dict(_r.get("dnevnik") or {})
+        _lst = list(_dn.get("odgovori") or [])
+        _kljuc = (str(zapis.get("od", "")) + "|" + str(zapis.get("at", ""))
+                  + "|" + str(zapis.get("naslov", ""))[:60])
+        for _p in _lst:
+            if (str(_p.get("od", "")) + "|" + str(_p.get("at", ""))
+                    + "|" + str(_p.get("naslov", ""))[:60]) == _kljuc:
+                return False                      # već zabeleženo
+        _lst.append({"od": zapis.get("od", ""), "ime": zapis.get("ime", ""),
+                     "at": zapis.get("at", ""), "naslov": zapis.get("naslov", ""),
+                     "tekst": str(zapis.get("tekst", ""))[:800],
+                     "prilozi": [{"ime": _p.get("ime", ""), "vel": int(_p.get("vel", 0) or 0)}
+                                 for _p in (zapis.get("prilozi") or [])],
+                     "upisano": _now().isoformat()})
+        _dn["odgovori"] = _lst[-20:]
+        _row = {"mesec": mesec_key, "sistem": KNEZ_SIS, "idk": int(idk),
+                "reakcije": list(_r.get("reakcije") or []),
+                "trebovali": bool(_r.get("trebovali_tip")),
+                "trebovali_tip": _r.get("trebovali_tip") or "",
+                "njihova": _r.get("njihova") or {}, "napomena": _r.get("napomena") or "",
+                "reakcije_ko": dict(_r.get("reakcije_ko") or {}),
+                "dnevnik": _dn, "azurirano": _now().isoformat()}
+        cli.table("obrada").upsert(_row, on_conflict="mesec,sistem,idk").execute()
+        return True
+    except Exception:
+        return False
 
 
 @st.cache_data(ttl=300, show_spinner=False)
