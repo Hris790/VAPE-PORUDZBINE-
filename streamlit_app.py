@@ -5264,30 +5264,23 @@ def prikazi_administraciju():
 
         _dat_str = _now().strftime("%d.%m.%Y.")
         _mail_subj_n = "Stanje zaliha i predlog dopune — " + str(sistem) + " (" + _dat_str + ")"
-        _spisak = ""
-        for _gi, _g in enumerate(_grupe_ok, 1):
-            _kom = sum(int(a.get("predlog", 0) or 0) for a in _g["arts"])
-            _na = len(_g["arts"])
-            _n10, _n100 = _na % 10, _na % 100
-            if _n10 == 1 and _n100 != 11:
-                _art_rec = "artikal"
-            elif _n10 in (2, 3, 4) and _n100 not in (12, 13, 14):
-                _art_rec = "artikla"
-            else:
-                _art_rec = "artikala"
-            _spisak += (str(_gi) + ". " + str(_g.get("objekat", "")) + " — "
-                        + str(_na) + " " + _art_rec + ", predlog " + str(_kom) + " kom\n")
+        # Spisak objekata se NE nabraja u mejlu — ceo je u prilogu, na listu
+        # „Predlog po objektima“. U mejlu ostaju samo dva broja.
+        _n_ob = len(_grupe_ok)
+        _n10, _n100 = _n_ob % 10, _n_ob % 100
+        if _n10 == 1 and _n100 != 11:
+            _ob_rec = "objekta"
+        else:
+            _ob_rec = "objekata"
         _mail_body_n = ("Poštovani,\n\n"
                         "U prilogu vam šaljemo pregled stanja zaliha u vašim objektima i predlog "
-                        "dopune. Kod " + str(len(_grupe_ok)) + " objekata trenutne zalihe ne pokrivaju "
-                        "prodaju ni za " + _per_lbl + ".\n\n"
+                        "dopune. Kod " + str(_n_ob) + " " + _ob_rec + " trenutne zalihe ne pokrivaju "
+                        "prodaju ni za " + _per_lbl + ". Ukupan predlog dopune je "
+                        + str(_predlog_uk) + " kom.\n\n"
                         "Prilog ima tri lista:\n"
-                        "1. Predlog po objektima — koliko komada predlažemo po objektu i artiklu\n"
+                        "1. Predlog po objektima — spisak objekata sa artiklima i predloženim količinama\n"
                         "2. Tabela — isti podaci u ravnom obliku, za filtriranje\n"
                         "3. Izveštaj — kratak pregled stanja sa grafikonima i primerom\n\n"
-                        "Objekti sa kritičnim lagerom:\n"
-                        + _spisak + "\n"
-                        "Ukupan predlog: " + str(_predlog_uk) + " kom.\n\n"
                         "Molimo da se roba dopuni kako bi objekti mogli da zadrže kontinuitet prodaje.\n\n"
                         "Srdačan pozdrav")
 
