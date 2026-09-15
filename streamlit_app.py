@@ -758,6 +758,44 @@ def sb_obrada_log(mesec_key, sistem, idk, kind, ko="", kopija=None):
         cli.table("obrada").upsert(_row, on_conflict="mesec,sistem,idk").execute()
 
 
+def sb_oznaci_trebovao(mesec_key, sistem, idk, kada="", n_por=0):
+    """Trajno zabeleži da je objekat POSLAO PORUDŽBINU posle starta.
+
+    Zove se pri ažuriranju iz admina. Piše u bazu, pa status ostaje i kad se
+    izađe iz aplikacije i uđe ponovo bez novog ažuriranja.
+
+    Ne dira ručni izbor: ako je neko već označio kako je trebovano
+    (po našem / po njihovom), to se ne menja."""
+    cli = _sb()
+    if cli is None:
+        return False
+    try:
+        res = (cli.table("obrada")
+               .select("reakcije,trebovali_tip,njihova,napomena,reakcije_ko,dnevnik")
+               .eq("mesec", mesec_key).eq("sistem", sistem).eq("idk", int(idk)).limit(1).execute())
+        _r = res.data[0] if res.data else {}
+        _tip = str(_r.get("trebovali_tip") or "")
+        _dn = dict(_r.get("dnevnik") or {})
+        _vec = _dn.get("trebovao_posle_starta") or {}
+        if _tip and _vec:
+            return False                      # već zabeleženo i ručno potvrđeno — ne diraj
+        _dn["trebovao_posle_starta"] = {"at": _now().isoformat(),
+                                        "kada": str(kada or "")[:32],
+                                        "porudzbina": int(n_por or 0)}
+        _row = {"mesec": mesec_key, "sistem": sistem, "idk": int(idk),
+                "reakcije": list(_r.get("reakcije") or []),
+                "trebovali": True,
+                "trebovali_tip": _tip or "nas",
+                "njihova": _r.get("njihova") or {},
+                "napomena": _r.get("napomena") or "",
+                "reakcije_ko": dict(_r.get("reakcije_ko") or {}),
+                "dnevnik": _dn, "azurirano": _now().isoformat()}
+        cli.table("obrada").upsert(_row, on_conflict="mesec,sistem,idk").execute()
+        return True
+    except Exception:
+        return False
+
+
 def sb_mejl_greska(mesec_key, sistem, idk, poruka, ko=""):
     """Zapiši NEUSPELO slanje mejla u dnevnik (dnevnik.greske = lista {ko, at, sta}).
 
@@ -5556,7 +5594,23 @@ def prikazi_administraciju():
                 sb_admin_hist_set(mesec_key, sistem, _hist_save, _kada_now)
             except Exception as _es:
                 st.warning("Podaci su ažurirani, ali nisu trajno sačuvani (osvežiće se ponovo pri sledećem ažuriranju): " + str(_es))
-            st.session_state["_refresh_done"] = {"sis": sistem, "mes": mesec_key, "n": _n_hist}
+            # Ko je poručio POSLE starta — zabeleži trajno u bazu, da status ostane
+            # i kad se izađe pa ponovo uđe bez novog ažuriranja.
+            _snap_r = meta.get("start_zone") if isinstance(meta, dict) else None
+            _n_zav = 0
+            for o in objekti:
+                _lz = (_hist_save.get(int(o["idk"])) or [])
+                try:
+                    if _porucio_posle_starta(o["idk"], _lz, _snap_r):
+                        if sb_oznaci_trebovao(mesec_key, sistem, o["idk"],
+                                              kada=_kada_now, n_por=len(_lz)):
+                            _n_zav += 1
+                        # osveži čekboks/izbor u detaljnom pregledu
+                        st.session_state.pop("treb_" + str(o["idk"]), None)
+                except Exception:
+                    pass
+            st.session_state["_refresh_done"] = {"sis": sistem, "mes": mesec_key,
+                                                 "n": _n_hist, "zav": _n_zav}
             st.rerun()
     _rf = st.session_state.get("_refresh_done")
     if _rf and _rf.get("sis") == sistem and _rf.get("mes") == mesec_key:
@@ -5564,7 +5618,9 @@ def prikazi_administraciju():
         _pcs = _pcut.strftime("%d.%m.%Y") if _pcut else "01."
         st.success("✅ Ažurirano iz admina — prethodne porudžbine i dopuna su spremni u svakom objektu. "
                    "Prikazuje se šta su objekti sami poručili od " + _pcs + " (posle preseka). "
-                   "Objekata sa takvim porudžbinama: " + str(_rf.get("n", 0)) + ".")
+                   "Objekata sa takvim porudžbinama: " + str(_rf.get("n", 0)) + "."
+                   + ((" · ✅ " + str(_rf.get("zav", 0)) + " objekata je poručilo posle starta i "
+                       "trajno je označeno kao ZAVRŠENO.") if _rf.get("zav") else ""))
 
     # --- Startni rezultat: povuci porudžbine od preseka (jednom, pa se zaključa) ---
     _pk_s = _admin_presek(meta, mesec_key)
@@ -5655,28 +5711,34 @@ def prikazi_administraciju():
             return '<span class="tb-nj">po njihovom</span>'
         return '<span class="np">—</span>' if rev else '<span class="np">·</span>'
 
+    _snap_z = meta.get("start_zone") if isinstance(meta, dict) else None
+
+    def _zavrsen(_o, _v):
+        """Da li je objekat gotov — poručio je, pa ga ne treba više zvati ni slati mu mejl."""
+        _v = _v or {}
+        if (_v.get("trebovali_tip") or "") in ("nas", "njihov"):
+            return True
+        if "Ubačena porudžbina" in (_v.get("reakcije") or []):
+            return True
+        if (_v.get("dnevnik") or {}).get("trebovao_posle_starta"):
+            return True
+        try:
+            _hz = st.session_state.get("hist_" + str(sistem) + "_" + str(_o["idk"]))
+            if _hz and not _hz.get("err") and _porucio_posle_starta(_o["idk"], _hz.get("lst") or [], _snap_z):
+                return True
+        except Exception:
+            pass
+        try:
+            _raw = hitnost_objekta(_o["lst"])[0]
+        except Exception:
+            _raw = _o.get("nivo")
+        return _raw in ("crveno", "zuto") and _o.get("nivo") == "zeleno"
+
     tab_lista, tab_detalj, tab_bulk = st.tabs(["Lista objekata", "Detalj / obrada", "📧 Grupno slanje mejlova"])
 
     with tab_lista:
         _cut_list = _admin_presek(meta, mesec_key)
-        def _je_zavrseno(_o, _v):
-            # Objekat je „završeno" ako je poručeno (prešao iz crvene/žute u zelenu, ili je trebovanje zabeleženo)
-            if (_v.get("trebovali_tip") or "") in ("nas", "njihov"):
-                return True
-            if "Ubačena porudžbina" in (_v.get("reakcije") or []):
-                return True
-            # stigla nova porudžbina od objekta POSLE starta → posao je završen
-            try:
-                _hz = st.session_state.get("hist_" + str(sistem) + "_" + str(_o["idk"]))
-                if _hz and not _hz.get("err") and _porucio_posle_starta(_o["idk"], _hz.get("lst") or [], _snap):
-                    return True
-            except Exception:
-                pass
-            try:
-                _raw = hitnost_objekta(_o["lst"])[0]
-            except Exception:
-                _raw = _o["nivo"]
-            return _raw in ("crveno", "zuto") and _o["nivo"] == "zeleno"
+        _je_zavrseno = _zavrsen
         _rows = ""
         _export_rows = []
         for o in objekti:
@@ -5800,7 +5862,17 @@ def prikazi_administraciju():
         else:
             _tip_now = _loaded_tip
         _njihov_active = (_tip_now == "njihov")
+        _auto_treb = (v.get("dnevnik") or {}).get("trebovao_posle_starta") or {}
         _revb = '<span class="revy">✓ Pregledano</span>' if sel_id in reviewed else '<span class="revn">Nepregledano</span>'
+        _zav_ovaj = False
+        try:
+            _o_sel = next((o for o in objekti if int(o["idk"]) == int(sel_id)), None)
+            _zav_ovaj = bool(_o_sel is not None and _zavrsen(_o_sel, v))
+        except Exception:
+            _zav_ovaj = False
+        if _zav_ovaj:
+            _revb = ('<span style="background:#dcfce7;color:#166534;font-weight:800;font-size:12px;'
+                     'padding:4px 12px;border-radius:20px;">✓ ZAVRŠENO</span>&nbsp;&nbsp;') + _revb
         _kinfo = komfull.get(int(sel_id), {}) or {}
         _knaziv = _kinfo.get("naziv", "")
         _naz_html = ('<span style="font-weight:600;color:#2a2f3a;">' + _h_escape(_knaziv) + '</span>') if _knaziv else '<span class="mut">— naziv naknadno</span>'
@@ -6265,13 +6337,19 @@ def prikazi_administraciju():
             if _ncall > 0: react.append("Pozvala sam")
             if _r2: react.append("Poslala sam mejl")
             if _r3: react.append("Obavestila direktorku")
-            _can = len(react) > 0
+            # Otključano i kad je porudžbina sama stigla posle starta — inače bi
+            # se automatski zabeležen status obrisao pri sledećem čuvanju.
+            _can = bool(react) or bool(_auto_treb) or bool(_loaded_tip)
             st.markdown('<div class="adm-lbl" style="margin-top:12px;">Trebovanje nakon reakcije</div>', unsafe_allow_html=True)
             _tip_idx = ["", "nas", "njihov"].index(_loaded_tip) if _loaded_tip in ["", "nas", "njihov"] else 0
             _treb_lbl = st.radio("Trebovanje", TREB_OPT, index=_tip_idx, disabled=not _can,
                                  key=_key_treb, label_visibility="collapsed")
             _tip_val = TREB_CODE.get(_treb_lbl, "") if _can else ""
-            if not _can:
+            if _auto_treb:
+                st.caption("✅ Automatski označeno — objekat je poslao porudžbinu posle starta"
+                           + ((" (zabeleženo " + _dt_kratko(_auto_treb.get("at", "")) + ")")
+                              if _auto_treb.get("at") else "") + ". Možeš da promeniš ako treba.")
+            elif not _can:
                 st.caption("🔒 Otključava se kad izabereš bar jednu reakciju.")
             st.markdown('<div class="adm-lbl" style="margin-top:12px;">Napomena (interno)</div>', unsafe_allow_html=True)
             _nap = st.text_area("Napomena", value=(v.get("napomena", "") or ""), key="nap_" + str(sel_id),
@@ -6335,8 +6413,14 @@ def prikazi_administraciju():
             st.session_state[_verk] = 0
         # Svi objekti sistema + oznaka da li je mejl već poslat (iz baze — obrada reakcije)
         _bulk_rows = []
+        _n_izbaceno_zav = 0
         for o in objekti:
             _bidk = int(o["idk"])
+            # Objekti koji su već poručili (ZAVRŠENO) ne ulaze u listu za slanje —
+            # nema smisla tražiti porudžbinu od nekog ko je upravo poručio.
+            if _zavrsen(o, obrada_map.get(_bidk, {}) or {}):
+                _n_izbaceno_zav += 1
+                continue
             _bkinfo = komfull.get(_bidk, {}) or {}
             _bnaziv = _bkinfo.get("naziv", "") or ("ID " + str(_bidk))
             _bemail = (_bkinfo.get("email") or "").strip()
@@ -6444,6 +6528,9 @@ def prikazi_administraciju():
                     return False
             return True
         _view_rows = [r for r in _bulk_rows if _match(r)]
+        if _n_izbaceno_zav:
+            st.caption("✅ " + str(_n_izbaceno_zav) + " objekata je ZAVRŠENO (poručili su) — "
+                       "ne prikazuju se ovde i ne mogu da dobiju mejl.")
         _n_vrac = sum(1 for r in _bulk_rows if r.get("vraceno"))
         if _n_vrac:
             _lst = [r for r in _bulk_rows if r.get("vraceno")][:12]
