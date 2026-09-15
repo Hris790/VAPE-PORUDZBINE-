@@ -2711,9 +2711,8 @@ def _nedeljni_predlog_xlsx(sistem, dani, datum, grupe, payload=None):
     import io as _io
     from openpyxl import Workbook as _WB
     from openpyxl.styles import Font as _F, PatternFill as _PF, Alignment as _AL, Border as _BD, Side as _SD
-    from openpyxl.chart import DoughnutChart as _DC, BarChart as _BC, LineChart as _LC, Reference as _R
+    from openpyxl.chart import DoughnutChart as _DC, BarChart as _BC, Reference as _R
     from openpyxl.chart.series import DataPoint as _DP
-    from openpyxl.chart.marker import Marker as _MK
     from openpyxl.chart.label import DataLabelList as _DLL
     from openpyxl.drawing.line import LineProperties as _LP
     from openpyxl.chart.shapes import GraphicalProperties as _GP
@@ -2817,13 +2816,13 @@ def _nedeljni_predlog_xlsx(sistem, dani, datum, grupe, payload=None):
         if _pr and _pr.get("meseci"):
             _mes = [str(m).split()[0] for m in _pr["meseci"]]
             _prim_r = _r
-            _c(_wp, "A" + str(_r), "Mesec", True); _c(_wp, "B" + str(_r), "Prodato", True)
-            _c(_wp, "C" + str(_r), "Lager na kraju meseca", True); _c(_wp, "D" + str(_r), "Poručeno", True)
+            _c(_wp, "A" + str(_r), "Mesec", True)
+            _c(_wp, "B" + str(_r), "Prodato krajnjim kupcima", True)
+            _c(_wp, "C" + str(_r), "Poručeno od nas", True)
             for _i, _m in enumerate(_mes):
                 _c(_wp, "A" + str(_r + 1 + _i), _m)
                 _c(_wp, "B" + str(_r + 1 + _i), int((_pr.get("prodaja") or [0] * 99)[_i]))
-                _c(_wp, "C" + str(_r + 1 + _i), int((_pr.get("lager_niz") or [0] * 99)[_i]))
-                _c(_wp, "D" + str(_r + 1 + _i), int((_pr.get("poruceno") or [0] * 99)[_i]))
+                _c(_wp, "C" + str(_r + 1 + _i), int((_pr.get("poruceno") or [0] * 99)[_i]))
             _r += len(_mes) + 2
 
         def _krug(naslov, prvi_red, n, boje):
@@ -2897,20 +2896,12 @@ def _nedeljni_predlog_xlsx(sistem, dani, datum, grupe, payload=None):
             _nm = len(_pr["meseci"])
             _bar = _BC(); _bar.type = "col"; _bar.style = 2
             _bar.add_data(_R(_wp, min_col=2, min_row=_prim_r, max_row=_prim_r + _nm), titles_from_data=True)
-            _bar.add_data(_R(_wp, min_col=4, min_row=_prim_r, max_row=_prim_r + _nm), titles_from_data=True)
+            _bar.add_data(_R(_wp, min_col=3, min_row=_prim_r, max_row=_prim_r + _nm), titles_from_data=True)
             _bar.set_categories(_R(_wp, min_col=1, min_row=_prim_r + 1, max_row=_prim_r + _nm))
             for _i, _b in enumerate((PLAVA, "4A3AA7")):
                 _bar.series[_i].graphicalProperties.solidFill = _b
                 _bar.series[_i].graphicalProperties.line.noFill = True
             _bar.gapWidth = 60
-            _ln = _LC()
-            _ln.add_data(_R(_wp, min_col=3, min_row=_prim_r, max_row=_prim_r + _nm), titles_from_data=True)
-            _ln.series[0].graphicalProperties.line.solidFill = LJ[1]
-            _ln.series[0].graphicalProperties.line.width = 28000
-            _ln.series[0].marker = _MK(symbol="circle", size=7)
-            _ln.series[0].marker.graphicalProperties.solidFill = LJ[1]
-            _ln.series[0].smooth = False
-            _bar += _ln
             _bar.y_axis.title = "komada"
             _bar.y_axis.majorGridlines.spPr = _GP(ln=_LP(solidFill="ECE9F4"))
             _bar.width, _bar.height = 23.5, 8.4
@@ -2920,16 +2911,19 @@ def _nedeljni_predlog_xlsx(sistem, dani, datum, grupe, payload=None):
             for _rr in range(_red + 3, _red + 20):
                 _ws.row_dimensions[_rr].height = 15
             _red += 21
-            _n0 = sum(1 for _x in (_pr.get("lager_niz") or []) if int(_x or 0) <= 0)
-            _op = ("Ovaj artikal je u posmatranom periodu poručen " + str(_pr.get("n_porudzbina", 0))
-                   + (" put" if int(_pr.get("n_porudzbina", 0)) == 1 else " puta") + " — ukupno "
-                   + _rs(_pr.get("uk_poruceno", 0)) + " komada, a prodato je "
-                   + _rs(_pr.get("uk_prodato", 0)) + " komada.")
-            if _n0:
-                _op += (" Lager je bio na nuli " + str(_n0) + " od " + str(_nm)
-                        + " meseci — u tim mesecima prodaja pada ne zato što je potražnja prestala, "
-                        "nego zato što nema šta da se proda.")
-            _op += " Isti obrazac ponavlja se u većini objekata sa lista „Predlog po objektima“."
+            _pros = _pr.get("mes_prosek") or 0
+            _op = ("Ovaj artikal je danas na lageru NULA, a u posmatranom periodu prodato je "
+                   + _rs(_pr.get("uk_prodato", 0)) + " komada — prosečno " + str(_pros).replace(".", ",")
+                   + " komada mesečno.")
+            if int(_pr.get("n_porudzbina", 0) or 0) > 0:
+                _op += (" Objekat ga je poručio " + str(_pr.get("n_porudzbina"))
+                        + (" put" if int(_pr.get("n_porudzbina")) == 1 else " puta") + ", ukupno "
+                        + _rs(_pr.get("uk_poruceno", 0)) + " komada — manje nego što je prodao.")
+            else:
+                _op += " Objekat ga u tom periodu nije poručio nijednom."
+            _op += (" Potražnja postoji i dalje, ali robe nema, pa je svaki dan od sada prodaja "
+                    "koja se ne ostvaruje. Isti obrazac ponavlja se u većini objekata sa lista "
+                    "„Predlog po objektima“.")
             _ws.merge_cells("B" + str(_red) + ":K" + str(_red + 2))
             _c(_ws, "B" + str(_red), _op, False, 10, "991B1B", _f_crv, wrap=True, va="top")
             for _rr in range(_red, _red + 3):
@@ -4370,31 +4364,42 @@ def _lager_unazad(lager_sada, prodato, poruceno):
 
 
 def _primer_neredovno(kandidati, admin_hist, mes_naz):
-    """Objekat + artikal koji se DOBRO prodaje, a REDAK je u porudžbinama.
+    """Izaberi artikal koji najbolje pokazuje TRENUTNI problem.
 
-    kandidati: [{idk, ida, obj, art, lager, prodaja:[...]}]
-    Bira se onaj sa najviše meseci prodaje i najmanje porudžbina, kod kog je
-    lager danas 0. Vraća dict za grafik ili None."""
+    Uslovi (svi moraju da važe, inače primer nema smisla):
+      · lager je DANAS nula — problem je sadašnji, ne istorijski,
+      · artikal se prodavao bar 3 meseca — postoji stvarna potražnja,
+      · prodato je više nego što je poručeno — inače objekat ima robu
+        i priča o nestašici ne stoji.
+    Među takvima bira se onaj sa najjačom prodajom u poslednja tri meseca.
+
+    Namerno se NE rekonstruiše istorija lagera: to je računanje unazad iz
+    današnjeg stanja, a čim se količine iz admina i prodaja ne poklope
+    (povrati, roba primljena u drugom mesecu), dobiju se besmislene nule.
+    Prikazuje se samo ono što pouzdano znamo: prodaja, porudžbine i lager danas."""
     _naj, _naj_sc = None, None
     for c in kandidati:
+        if int(c.get("lager", 0) or 0) > 0:
+            continue                              # ima robu — nije trenutni problem
         _ser = [int(x or 0) for x in (c.get("prodaja") or [])]
         if not _ser or sum(_ser) <= 0:
             continue
-        _por = _poruceno_po_mesecima(admin_hist, mes_naz, c["idk"], c["ida"])
-        _n_por = sum(1 for x in _por if x > 0)
         _n_mes = sum(1 for x in _ser if x > 0)
         if _n_mes < 3:
-            continue
-        # želimo: mnogo meseci prodaje, malo porudžbina, lager 0
-        _sc = (1 if int(c.get("lager", 0) or 0) <= 0 else 0) * 100000 \
-            + _n_mes * 1000 - _n_por * 300 + min(sum(_ser), 299)
+            continue                              # prekratka istorija da bi se tvrdilo bilo šta
+        _por = _poruceno_po_mesecima(admin_hist, mes_naz, c["idk"], c["ida"])
+        if sum(_por) >= sum(_ser):
+            continue                              # poručeno je koliko i prodato — nema šta da se dokazuje
+        _skoro = sum(_ser[-3:]) if len(_ser) >= 3 else sum(_ser)
+        _sc = _skoro * 1000 + _n_mes * 10 + min(sum(_ser), 999)
         if _naj_sc is None or _sc > _naj_sc:
             _naj_sc, _naj = _sc, {
                 "obj": c["obj"], "art": c["art"], "meseci": list(mes_naz),
-                "prodaja": _ser, "poruceno": _por, "lager": int(c.get("lager", 0) or 0),
-                "lager_niz": _lager_unazad(int(c.get("lager", 0) or 0), _ser, _por),
+                "prodaja": _ser, "poruceno": _por, "lager": 0,
                 "uk_prodato": sum(_ser), "uk_poruceno": sum(_por),
-                "n_porudzbina": _n_por,
+                "n_porudzbina": sum(1 for x in _por if x > 0),
+                "mes_prosek": round(sum(_ser) / float(max(_n_mes, 1)), 1),
+                "skoro3": _skoro,
             }
     return _naj
 
@@ -5366,10 +5371,32 @@ def prikazi_administraciju():
                                "„Tabela“ (ravan spisak sa filterom) i „Izveštaj“ (grafikoni, primer "
                                "i zahtev). Ukupno " + str(_predlog_uk) + " kom za "
                                + str(len(_grupe_ok)) + " objekata.")
-                    if not (_payload_n.get("dokazi") or {}).get("primer_neredovno"):
-                        st.caption("📉 Primer sa grafikom nije uključen — za ovaj sistem nema mesečne "
-                                   "prodaje po artiklu ili nema istorije porudžbina iz admina. "
-                                   "Rešenje: „Ažuriraj iz admina“ gore, pa ponovo objavi sistem.")
+                    # Jasno reci ŠTA fali u izveštaju i zašto — da se ne pogađa
+                    _dd = _payload_n.get("dokazi") or {}
+                    _fali = []
+                    if not _dd.get("zone_objekti"):
+                        _fali.append("krug „Gde je roba nestala“")
+                    if not _dd.get("ucestalost"):
+                        _fali.append("krug „Kako se poručuje“")
+                    if not _dd.get("stanje_artikala"):
+                        _fali.append("krug „Koliko artikala fali“")
+                    if not _dd.get("primer_neredovno"):
+                        _fali.append("primer sa grafikom")
+                    if _fali:
+                        _ima_hist = bool((meta.get("admin_hist") or {}) if isinstance(meta, dict) else {})
+                        _ima_mes = bool(_mes_naz)
+                        if not _ima_hist:
+                            _zasto = ("za ovaj sistem nije povučena istorija porudžbina iz admina. "
+                                      "Rešenje: klikni „🔄 Ažuriraj iz admina“ u zaglavlju, sačekaj da "
+                                      "završi, pa ponovo napravi prilog.")
+                        elif not _ima_mes:
+                            _zasto = ("uz ovaj sistem nije sačuvana mesečna prodaja po artiklu. "
+                                      "Rešenje: u kartici Objava izveštaja ponovo objavi ovaj sistem "
+                                      "za ovaj mesec (isti fajl, isti parametri).")
+                        else:
+                            _zasto = ("nema dovoljno poklapanja između prodaje po artiklu i porudžbina "
+                                      "iz admina za ovaj period.")
+                        st.warning("📉 U izveštaju nedostaje: " + ", ".join(_fali) + " — " + _zasto)
         except Exception as _pe:
             st.error("Greška pri pravljenju priloga: " + str(_pe))
 
