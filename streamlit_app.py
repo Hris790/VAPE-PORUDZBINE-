@@ -2696,436 +2696,352 @@ def _serije_prodaje_iz_analitike(mesec_key, sistem):
         return {}, []
 
 
-def _nedeljni_predlog_xlsx(sistem, dani, datum, grupe):
-    """Excel sa predlogom porudžbine za sistemske sisteme.
+def _nedeljni_predlog_xlsx(sistem, dani, datum, grupe, payload=None):
+    """Jedan Excel koji se šalje sistemu — zamenjuje raniji PDF + Excel.
+
+      List 1 „Izveštaj“              — dijagnoza: tri kružna grafika, primer sa grafikom, zahtev
+      List 2 „Predlog po objektima“  — grupisano po objektu, sa zbirovima
+      List 3 „Tabela“                — ravan spisak sa filterom, za pivot
+      List 4 „Podaci za grafikone“   — skriven, hrani grafikone sa lista 1
+
     grupe = [{'objekat': naziv, 'arts': [{'naziv','lager','pred','predlog'}, ...]}, ...]
-    List 1 = grupisano po objektima (pivot izgled), List 2 = ravna tabela za filtriranje."""
+    payload = isti rečnik koji je pravio PDF (dokazi, brojevi objekata, izgubljena prodaja).
+              Ako ga nema ili u njemu nema dokaza, list „Izveštaj“ se izostavlja.
+    """
     import io as _io
     from openpyxl import Workbook as _WB
     from openpyxl.styles import Font as _F, PatternFill as _PF, Alignment as _AL, Border as _BD, Side as _SD
-    from openpyxl.utils import get_column_letter as _GL
+    from openpyxl.chart import DoughnutChart as _DC, BarChart as _BC, LineChart as _LC, Reference as _R
+    from openpyxl.chart.series import DataPoint as _DP
+    from openpyxl.chart.marker import Marker as _MK
+    from openpyxl.chart.label import DataLabelList as _DLL
+    from openpyxl.drawing.line import LineProperties as _LP
+    from openpyxl.chart.shapes import GraphicalProperties as _GP
 
-    _per = str(int(dani)) + " dana"
-    _wb = _WB()
+    _p = payload or {}
+    _dok = _p.get("dokazi") or {}
+    _FN = "Arial"
+    INK, INK2, MUTC = "3730A3", "44403C", "8B8FA3"
+    CRV, ZUT, ZEL = "E5484D", "F2820C", "17A34A"
+    LJ = ["4C1D95", "5F21BD", "8B5CF6", "B7A3FB"]
+    PLAVA, TAMNA = "2A78D6", "2E1065"
     _thin = _SD(style="thin", color="E5E0F0")
     _bord = _BD(left=_thin, right=_thin, top=_thin, bottom=_thin)
-    _FN = "Arial"
-    _hdr_fill = _PF("solid", fgColor="EDE9FE")
-    _obj_fill = _PF("solid", fgColor="F5F3FF")
-    _sum_fill = _PF("solid", fgColor="FFF7ED")
+    _f_hdr = _PF("solid", fgColor="EDE9FE")
+    _f_obj = _PF("solid", fgColor="F5F3FF")
+    _f_sum = _PF("solid", fgColor="FFF7ED")
+    _f_crv = _PF("solid", fgColor="FEF2F2")
+    _f_zel = _PF("solid", fgColor="F0FDF4")
+    _f_tam = _PF("solid", fgColor=TAMNA)
 
-    # ---------- List 1: grupisano ----------
-    _ws = _wb.active
-    _ws.title = "Predlog porudžbine"
-    _ws.merge_cells("A1:D1")
-    _t = _ws["A1"]
-    _t.value = "Predlog porudžbine · " + str(sistem) + " · " + str(datum)
-    _t.font = _F(name=_FN, bold=True, size=13, color="3730A3")
-    _t.alignment = _AL(horizontal="left", vertical="center")
-    _ws.row_dimensions[1].height = 22
-    _ws.merge_cells("A2:D2")
-    _s = _ws["A2"]
-    _s.value = ("Objekti kod kojih lager ne pokriva prodaju ni za " + _per
-                + ". Predlog = koliko komada nedostaje do pokrivenosti za " + _per + ".")
-    _s.font = _F(name=_FN, size=9, color="6B7280")
-    _s.alignment = _AL(horizontal="left", vertical="center")
+    def _per(n):
+        n = int(n)
+        if n % 7 == 0 and n >= 7:
+            _w = n // 7
+            return {1: "nedelju dana", 2: "dve nedelje", 3: "tri nedelje",
+                    4: "četiri nedelje"}.get(_w, str(_w) + " nedelja")
+        return str(n) + " dana"
+    _perl = _per(dani)
 
-    _hdr = ["Objekat", "Artikal", "Lager sada", "Predlog (kom)"]
-    _hr = 4
-    for _ci, _hv in enumerate(_hdr, start=1):
-        _c = _ws.cell(row=_hr, column=_ci, value=_hv)
-        _c.font = _F(name=_FN, bold=True, size=11, color="4C1D95")
-        _c.fill = _hdr_fill
-        _c.alignment = _AL(horizontal=("left" if _ci <= 2 else "center"), vertical="center", wrap_text=True)
-        _c.border = _bord
+    def _rs(n):
+        return "{:,.0f}".format(int(n)).replace(",", ".")
 
-    _r = _hr + 1
-    _prvi_red = _r
-    for _g in (grupe or []):
-        _arts = _g.get("arts") or []
-        if not _arts:
-            continue
-        _od = _r
-        for _i, _a in enumerate(_arts):
-            _ws.cell(row=_r, column=1, value=(str(_g.get("objekat", "")) if _i == 0 else ""))
-            _ws.cell(row=_r, column=2, value=str(_a.get("naziv", "")))
-            _ws.cell(row=_r, column=3, value=int(_a.get("lager", 0) or 0))
-            _ws.cell(row=_r, column=4, value=int(_a.get("predlog", 0) or 0))
-            for _ci in range(1, 5):
-                _cc = _ws.cell(row=_r, column=_ci)
-                _cc.font = _F(name=_FN, size=10, bold=(_ci == 1 and _i == 0))
-                _cc.alignment = _AL(horizontal=("left" if _ci <= 2 else "center"), vertical="center")
-                _cc.border = _bord
-                if _ci == 1 and _i == 0:
-                    _cc.fill = _obj_fill
-            _r += 1
-        _do = _r - 1
-        _ws.cell(row=_r, column=2, value="Ukupno · " + str(_g.get("objekat", "")))
-        _ws.cell(row=_r, column=4, value="=SUBTOTAL(9,D" + str(_od) + ":D" + str(_do) + ")")
-        for _ci in range(1, 5):
-            _cc = _ws.cell(row=_r, column=_ci)
-            _cc.font = _F(name=_FN, size=10, bold=True, color="9A3412")
-            _cc.fill = _sum_fill
-            _cc.alignment = _AL(horizontal=("left" if _ci <= 2 else "center"), vertical="center")
-            _cc.border = _bord
-        _r += 2
-    _zadnji_red = _r - 1
-    if _zadnji_red >= _prvi_red:
-        _ws.cell(row=_r, column=2, value="UKUPNO (svi objekti)")
-        _ws.cell(row=_r, column=4,
-                 value="=SUBTOTAL(9,D" + str(_prvi_red) + ":D" + str(_zadnji_red) + ")")
-        for _ci in range(1, 5):
-            _cc = _ws.cell(row=_r, column=_ci)
-            _cc.font = _F(name=_FN, size=11, bold=True, color="4C1D95")
-            _cc.fill = _hdr_fill
-            _cc.alignment = _AL(horizontal=("left" if _ci <= 2 else "center"), vertical="center")
-            _cc.border = _bord
-    for _col, _w in (("A", 34), ("B", 48), ("C", 12), ("D", 14)):
-        _ws.column_dimensions[_col].width = _w
-    _ws.freeze_panes = "A5"
+    def _sir(ws, mapa):
+        for k, v in mapa.items():
+            ws.column_dimensions[k].width = v
 
-    # ---------- List 2: ravna tabela ----------
-    _w2 = _wb.create_sheet("Tabela")
-    _h2 = ["Objekat", "Artikal", "Lager sada", "Predikcija (mesečno)", "Predlog (kom)"]
-    for _ci, _hv in enumerate(_h2, start=1):
-        _c = _w2.cell(row=1, column=_ci, value=_hv)
-        _c.font = _F(name=_FN, bold=True, size=11, color="4C1D95")
-        _c.fill = _hdr_fill
-        _c.alignment = _AL(horizontal=("left" if _ci <= 2 else "center"), vertical="center", wrap_text=True)
-        _c.border = _bord
-    _rr = 2
-    for _g in (grupe or []):
+    def _c(ws, adr, val, bold=False, size=10, boja=INK2, fill=None,
+           wrap=False, ha="left", va="center"):
+        _cl = ws[adr]
+        _cl.value = val
+        _cl.font = _F(name=_FN, bold=bold, size=size, color=boja)
+        _cl.alignment = _AL(horizontal=ha, vertical=va, wrap_text=wrap)
+        if fill:
+            _cl.fill = fill
+        return _cl
+
+    _wb = _WB()
+
+    # ============================================================ LIST 1: Izveštaj
+    _zone = _dok.get("zone_objekti")          # [("Roba nedostaje", n), ("Na granici", n), ("Zalihe u redu", n)]
+    _ucest = _dok.get("ucestalost")           # [("nijednom", n), ("1 put", n), ...]
+    _art = _dok.get("stanje_artikala")        # [("Lager 0", n), ("Ispod minimuma", n), ("Dovoljno", n)]
+    _pr = _dok.get("primer_neredovno")
+    _ima_izv = bool(_zone or _ucest or _art or _pr)
+
+    if _ima_izv:
+        _ws = _wb.active
+        _ws.title = "Izveštaj"
+        _ws.sheet_view.showGridLines = False
+        _sir(_ws, dict([("A", 2.5)] + [(chr(66 + i), 15) for i in range(10)] + [("L", 2.5)]))
+
+        _n_uk = int(_p.get("n_obj_ukupno", 0) or 0)
+        _n_pr = int(_p.get("n_obj_problem", 0) or 0)
+        _izg = int(_p.get("izgub_rsd", 0) or 0)
+        _pk = int(_p.get("predlog_kom", 0) or 0)
+        _prsd = int(_dok.get("predlog_rsd", 0) or 0)
+
+        _ws.merge_cells("B2:K2")
+        _c(_ws, "B2", "Stanje zaliha i predlog dopune", True, 18, "FFFFFF", _f_tam)
+        _ws.row_dimensions[2].height = 30
+        _ws.merge_cells("B3:K3")
+        _c(_ws, "B3", str(sistem) + "   ·   presek na dan " + str(datum)
+           + (("   ·   " + str(_n_uk) + " objekata u sistemu") if _n_uk else ""),
+           False, 10, "D7C9F5", _f_tam)
+        _ws.row_dimensions[3].height = 18
+        _ws.merge_cells("B5:K5")
+        _c(_ws, "B5", "Poštovani, u nastavku je pregled stanja zaliha u vašim objektima i predlog "
+                      "dopune. Brojke dolaze iz evidencije prodaje po objektu i iz porudžbina "
+                      "zavedenih kod nas.", False, 10, INK2, wrap=True)
+        _ws.row_dimensions[5].height = 28
+
+        # --- skriveni list sa podacima za grafikone (pravi se sada, premešta se na kraj)
+        _wp = _wb.create_sheet("Podaci za grafikone")
+        _c(_wp, "A1", "Ovaj list hrani grafikone na listu „Izveštaj“. Ne briši ga.", True, 10, MUTC)
+        _sir(_wp, {"A": 26, "B": 12, "C": 22, "D": 12})
+        _r = 3
+        _blok = {}
+        for _kljuc, _naz, _lst in (("zone", "Stanje objekata", _zone),
+                                   ("ucest", "Koliko puta je poručeno", _ucest),
+                                   ("art", "Stanje artikala", _art)):
+            if not _lst:
+                continue
+            _c(_wp, "A" + str(_r), _naz, True)
+            _c(_wp, "B" + str(_r), "broj", True)
+            _blok[_kljuc] = (_r + 1, len(_lst))
+            for _i, _x in enumerate(_lst):
+                _c(_wp, "A" + str(_r + 1 + _i), str(_x[0]))
+                _c(_wp, "B" + str(_r + 1 + _i), int(_x[1]))
+            _r += len(_lst) + 2
+        _prim_r = None
+        if _pr and _pr.get("meseci"):
+            _mes = [str(m).split()[0] for m in _pr["meseci"]]
+            _prim_r = _r
+            _c(_wp, "A" + str(_r), "Mesec", True); _c(_wp, "B" + str(_r), "Prodato", True)
+            _c(_wp, "C" + str(_r), "Lager na kraju meseca", True); _c(_wp, "D" + str(_r), "Poručeno", True)
+            for _i, _m in enumerate(_mes):
+                _c(_wp, "A" + str(_r + 1 + _i), _m)
+                _c(_wp, "B" + str(_r + 1 + _i), int((_pr.get("prodaja") or [0] * 99)[_i]))
+                _c(_wp, "C" + str(_r + 1 + _i), int((_pr.get("lager_niz") or [0] * 99)[_i]))
+                _c(_wp, "D" + str(_r + 1 + _i), int((_pr.get("poruceno") or [0] * 99)[_i]))
+            _r += len(_mes) + 2
+
+        def _krug(naslov, prvi_red, n, boje):
+            _ch = _DC(holeSize=58)
+            _ch.title = naslov
+            _ch.add_data(_R(_wp, min_col=2, min_row=prvi_red - 1, max_row=prvi_red + n - 1),
+                         titles_from_data=True)
+            _ch.set_categories(_R(_wp, min_col=1, min_row=prvi_red, max_row=prvi_red + n - 1))
+            _s = _ch.series[0]
+            _s.data_points = []
+            for _b in boje[:n]:
+                _dp = _DP(idx=len(_s.data_points))
+                _dp.graphicalProperties.solidFill = _b
+                _dp.graphicalProperties.line.solidFill = "FFFFFF"
+                _dp.graphicalProperties.line.width = 22000
+                _s.data_points.append(_dp)
+            _ch.dataLabels = _DLL()
+            _ch.dataLabels.showVal = True
+            _ch.dataLabels.showPercent = False
+            _ch.dataLabels.showSerName = False
+            _ch.dataLabels.showCatName = False
+            _ch.dataLabels.showLegendKey = False
+            _ch.width, _ch.height = 8.2, 7.4
+            _ch.legend.position = "b"
+            _ch.legend.overlay = False
+            return _ch
+
+        _c(_ws, "B7", "DIJAGNOZA — ŠTA POKAZUJU BROJKE", True, 11, INK)
+        _koloni = ["B9", "E9", "H9"]
+        _i_k = 0
+        if "zone" in _blok:
+            _ws.add_chart(_krug("1. Gde je roba nestala", _blok["zone"][0], _blok["zone"][1],
+                                [CRV, ZUT, ZEL]), _koloni[_i_k]); _i_k += 1
+        if "ucest" in _blok:
+            _ws.add_chart(_krug("2. Kako se poručuje", _blok["ucest"][0], _blok["ucest"][1],
+                                LJ), _koloni[_i_k]); _i_k += 1
+        if "art" in _blok:
+            _ws.add_chart(_krug("3. Koliko artikala fali", _blok["art"][0], _blok["art"][1],
+                                [CRV, ZUT, ZEL]), _koloni[_i_k]); _i_k += 1
+        for _rr in range(9, 24):
+            _ws.row_dimensions[_rr].height = 15
+
+        _txt = []
+        if _zone:
+            _txt.append(("B25:D26", "U " + str(_n_pr) + " objekata artikli koji se prodaju trenutno "
+                         "su na nuli ili ispod nivoa koji pokriva prodaju za " + _perl + "."))
+        if _ucest:
+            _u = dict((str(a), int(b)) for a, b in _ucest)
+            _retko = _u.get("nijednom", 0) + _u.get("1 put", 0)
+            _svu = sum(_u.values()) or 1
+            _txt.append(("E25:G26", str(_retko) + " od " + str(_svu) + " objekata poručilo je jednom "
+                         "ili nijednom u posmatranom periodu, dok prodaja teče svakog meseca."))
+        if _art:
+            _a = [(str(x[0]), int(x[1])) for x in _art]
+            _uka = sum(v for _n, v in _a) or 1
+            _txt.append(("H25:K26", "Od " + _rs(_uka) + " artikala koji se prodaju, " + str(_a[0][1])
+                         + " je na nuli, a još " + str(_a[1][1] if len(_a) > 1 else 0)
+                         + " neće izdržati " + _perl + "."))
+        for _rng, _t in _txt:
+            _ws.merge_cells(_rng)
+            _c(_ws, _rng.split(":")[0], _t, False, 9, INK2, wrap=True, va="top")
+        _ws.row_dimensions[25].height = 26
+        _ws.row_dimensions[26].height = 14
+
+        _red = 28
+        if _prim_r:
+            _c(_ws, "B" + str(_red), "PRIMER — KAD ZALIHE NESTANU, PRODAJA STANE", True, 11, INK)
+            _ws.merge_cells("B" + str(_red + 1) + ":K" + str(_red + 1))
+            _c(_ws, "B" + str(_red + 1), str(_pr.get("obj", "")) + "   ·   " + str(_pr.get("art", "")),
+               True, 10, INK2)
+            _nm = len(_pr["meseci"])
+            _bar = _BC(); _bar.type = "col"; _bar.style = 2
+            _bar.add_data(_R(_wp, min_col=2, min_row=_prim_r, max_row=_prim_r + _nm), titles_from_data=True)
+            _bar.add_data(_R(_wp, min_col=4, min_row=_prim_r, max_row=_prim_r + _nm), titles_from_data=True)
+            _bar.set_categories(_R(_wp, min_col=1, min_row=_prim_r + 1, max_row=_prim_r + _nm))
+            for _i, _b in enumerate((PLAVA, "4A3AA7")):
+                _bar.series[_i].graphicalProperties.solidFill = _b
+                _bar.series[_i].graphicalProperties.line.noFill = True
+            _bar.gapWidth = 60
+            _ln = _LC()
+            _ln.add_data(_R(_wp, min_col=3, min_row=_prim_r, max_row=_prim_r + _nm), titles_from_data=True)
+            _ln.series[0].graphicalProperties.line.solidFill = LJ[1]
+            _ln.series[0].graphicalProperties.line.width = 28000
+            _ln.series[0].marker = _MK(symbol="circle", size=7)
+            _ln.series[0].marker.graphicalProperties.solidFill = LJ[1]
+            _ln.series[0].smooth = False
+            _bar += _ln
+            _bar.y_axis.title = "komada"
+            _bar.y_axis.majorGridlines.spPr = _GP(ln=_LP(solidFill="ECE9F4"))
+            _bar.width, _bar.height = 23.5, 8.4
+            _bar.legend.position = "t"
+            _bar.legend.overlay = False
+            _ws.add_chart(_bar, "B" + str(_red + 3))
+            for _rr in range(_red + 3, _red + 20):
+                _ws.row_dimensions[_rr].height = 15
+            _red += 21
+            _n0 = sum(1 for _x in (_pr.get("lager_niz") or []) if int(_x or 0) <= 0)
+            _op = ("Ovaj artikal je u posmatranom periodu poručen " + str(_pr.get("n_porudzbina", 0))
+                   + (" put" if int(_pr.get("n_porudzbina", 0)) == 1 else " puta") + " — ukupno "
+                   + _rs(_pr.get("uk_poruceno", 0)) + " komada, a prodato je "
+                   + _rs(_pr.get("uk_prodato", 0)) + " komada.")
+            if _n0:
+                _op += (" Lager je bio na nuli " + str(_n0) + " od " + str(_nm)
+                        + " meseci — u tim mesecima prodaja pada ne zato što je potražnja prestala, "
+                        "nego zato što nema šta da se proda.")
+            _op += " Isti obrazac ponavlja se u većini objekata sa lista „Predlog po objektima“."
+            _ws.merge_cells("B" + str(_red) + ":K" + str(_red + 2))
+            _c(_ws, "B" + str(_red), _op, False, 10, "991B1B", _f_crv, wrap=True, va="top")
+            for _rr in range(_red, _red + 3):
+                _ws.row_dimensions[_rr].height = 16
+            _red += 4
+
+        _zt = "Molimo vas da porudžbinu pošaljete u najkraćem roku."
+        if _pk:
+            _zt += (" Predlažemo dopunu od " + _rs(_pk) + " komada"
+                    + ((" (oko " + _rs(_prsd) + " RSD)") if _prsd else "")
+                    + ", raspoređenu po objektima — spisak je na sledećem listu.")
+        _zt += (" Svaki dan sa praznom policom je prodaja koja se ne nadoknađuje: kupac uzme drugi "
+                "artikal ili ode u drugi objekat.")
+        if _izg:
+            _zt += (" Po dosadašnjoj prodaji, odlaganje od " + _perl + " znači oko " + _rs(_izg)
+                    + " RSD neostvarenog prometa.")
+        _ws.merge_cells("B" + str(_red) + ":K" + str(_red + 2))
+        _c(_ws, "B" + str(_red), _zt, True, 10, "14532D", _f_zel, wrap=True, va="top")
+        for _rr in range(_red, _red + 3):
+            _ws.row_dimensions[_rr].height = 16
+        _red += 4
+        _ws.merge_cells("B" + str(_red) + ":K" + str(_red + 1))
+        _c(_ws, "B" + str(_red), "Odakle podaci: Prodato — evidencija prodaje po objektu i artiklu. "
+           "Poručeno — porudžbine zavedene kod nas; otkazane i stornirane se ne računaju. "
+           "Lager — stanje na dan preseka. Predlog — prosečna mesečna prodaja objekta umanjena za "
+           "trenutni lager, uvećana za rezervu za " + _perl + ".", False, 9, MUTC, wrap=True, va="top")
+        _ws.print_area = "A1:L" + str(_red + 2)
+        _ws.page_setup.orientation = "portrait"
+        _ws.page_setup.fitToWidth = 1
+        _ws.page_setup.fitToHeight = 1
+        _ws.sheet_properties.pageSetUpPr.fitToPage = True
+        _w2 = _wb.create_sheet("Predlog po objektima")
+    else:
+        _wp = None
+        _w2 = _wb.active
+        _w2.title = "Predlog po objektima"
+
+    # ============================================================ LIST 2: po objektima
+    _w2.sheet_view.showGridLines = False
+    _sir(_w2, {"A": 46, "B": 12, "C": 12, "D": 13})
+    _w2.merge_cells("A1:D1")
+    _c(_w2, "A1", "Predlog porudžbine · " + str(sistem) + " · " + str(datum), True, 13, INK)
+    _w2.row_dimensions[1].height = 22
+    _w2.merge_cells("A2:D2")
+    _c(_w2, "A2", "Objekti kod kojih lager ne pokriva prodaju ni za " + _perl
+       + ". Predlog = koliko komada nedostaje do pokrivenosti za " + _perl + ".", False, 9, MUTC)
+    _r = 4
+    for _h, _t in zip("ABCD", ["Objekat / artikal", "Lager", "Predikcija", "Predlog (kom)"]):
+        _c(_w2, _h + str(_r), _t, True, 10, INK, _f_hdr, ha=("left" if _h == "A" else "center"))
+        _w2[_h + str(_r)].border = _bord
+    _r += 1
+    _prvi = _r
+    for _g in grupe:
+        _c(_w2, "A" + str(_r), str(_g.get("objekat", "")), True, 10, INK, _f_obj)
+        for _h in "BCD":
+            _c(_w2, _h + str(_r), None, fill=_f_obj)
+        _od = _r + 1
+        _r += 1
         for _a in (_g.get("arts") or []):
-            _w2.cell(row=_rr, column=1, value=str(_g.get("objekat", "")))
-            _w2.cell(row=_rr, column=2, value=str(_a.get("naziv", "")))
-            _w2.cell(row=_rr, column=3, value=int(_a.get("lager", 0) or 0))
-            _w2.cell(row=_rr, column=4, value=int(_a.get("pred", 0) or 0))
-            _w2.cell(row=_rr, column=5, value=int(_a.get("predlog", 0) or 0))
-            for _ci in range(1, 6):
-                _cc = _w2.cell(row=_rr, column=_ci)
-                _cc.font = _F(name=_FN, size=10)
-                _cc.alignment = _AL(horizontal=("left" if _ci <= 2 else "center"), vertical="center")
-                _cc.border = _bord
-            _rr += 1
-    if _rr > 2:
-        _w2.auto_filter.ref = "A1:" + _GL(5) + str(_rr - 1)
-        _w2.cell(row=_rr, column=2, value="UKUPNO (vidljivo)")
-        _w2.cell(row=_rr, column=5, value="=SUBTOTAL(9,E2:E" + str(_rr - 1) + ")")
-        for _ci in range(1, 6):
-            _cc = _w2.cell(row=_rr, column=_ci)
-            _cc.font = _F(name=_FN, size=11, bold=True, color="4C1D95")
-            _cc.fill = _hdr_fill
-            _cc.alignment = _AL(horizontal=("left" if _ci <= 2 else "center"), vertical="center")
-            _cc.border = _bord
-    for _col, _w in (("A", 34), ("B", 48), ("C", 12), ("D", 18), ("E", 14)):
-        _w2.column_dimensions[_col].width = _w
-    _w2.freeze_panes = "A2"
+            _c(_w2, "A" + str(_r), "    " + str(_a.get("naziv", "")))
+            _c(_w2, "B" + str(_r), int(_a.get("lager", 0) or 0), ha="center")
+            _c(_w2, "C" + str(_r), int(_a.get("pred", 0) or 0), ha="center")
+            _c(_w2, "D" + str(_r), int(_a.get("predlog", 0) or 0), True, ha="center")
+            for _h in "ABCD":
+                _w2[_h + str(_r)].border = _bord
+            _r += 1
+        _c(_w2, "A" + str(_r), "    Ukupno — " + str(_g.get("objekat", "")), True, 9, INK2, _f_sum)
+        for _h in "BC":
+            _c(_w2, _h + str(_r), None, fill=_f_sum)
+        # SUBTOTAL i ovde, da ga ukupan zbir ispod ne bi brojao dvaput
+        _c(_w2, "D" + str(_r), "=SUBTOTAL(9,D" + str(_od) + ":D" + str(_r - 1) + ")",
+           True, 10, INK, _f_sum, ha="center")
+        for _h in "ABCD":
+            _w2[_h + str(_r)].border = _bord
+        _r += 2
+    _c(_w2, "A" + str(_r), "UKUPAN PREDLOG", True, 11, "FFFFFF", _f_tam)
+    for _h in "BC":
+        _c(_w2, _h + str(_r), None, fill=_f_tam)
+    _c(_w2, "D" + str(_r), "=SUBTOTAL(9,D" + str(_prvi) + ":D" + str(_r - 1) + ")",
+       True, 12, "FFFFFF", _f_tam, ha="center")
+    _w2.freeze_panes = "A5"
+
+    # ============================================================ LIST 3: ravna tabela
+    _w3 = _wb.create_sheet("Tabela")
+    _sir(_w3, {"A": 40, "B": 38, "C": 10, "D": 12, "E": 14})
+    for _h, _t in zip("ABCDE", ["Objekat", "Artikal", "Lager", "Predikcija", "Predlog (kom)"]):
+        _c(_w3, _h + "1", _t, True, 10, "FFFFFF", _f_tam)
+    _r = 2
+    for _g in grupe:
+        for _a in (_g.get("arts") or []):
+            _c(_w3, "A" + str(_r), str(_g.get("objekat", "")))
+            _c(_w3, "B" + str(_r), str(_a.get("naziv", "")))
+            _c(_w3, "C" + str(_r), int(_a.get("lager", 0) or 0), ha="center")
+            _c(_w3, "D" + str(_r), int(_a.get("pred", 0) or 0), ha="center")
+            _c(_w3, "E" + str(_r), int(_a.get("predlog", 0) or 0), True, ha="center")
+            _r += 1
+    _c(_w3, "A" + str(_r), "UKUPNO", True, 10, INK, _f_sum)
+    for _h in "BCD":
+        _c(_w3, _h + str(_r), None, fill=_f_sum)
+    _c(_w3, "E" + str(_r), "=SUM(E2:E" + str(_r - 1) + ")", True, 11, INK, _f_sum, ha="center")
+    if _r > 2:
+        _w3.auto_filter.ref = "A1:E" + str(_r - 1)
+    _w3.freeze_panes = "A2"
+
+    # skriven list sa podacima ide POSLEDNJI
+    if _wp is not None:
+        _wb.move_sheet(_wp, offset=len(_wb.worksheets) - _wb.worksheets.index(_wp) - 1)
+        _wp.sheet_state = "hidden"
 
     _buf = _io.BytesIO()
     _wb.save(_buf)
     return _buf.getvalue()
-
-
-def _nedeljni_prilog_pdf(payload):
-    """Jednostrani izveštaj za sistemske sisteme (za glavni kontakt).
-    payload:
-      sistem, datum, dani, lager_datum, dodatne_do,
-      objekti_red: [{'ime','na_nuli','kriticnih','manjak'}, ...],
-      art_na_nuli, obj_sa_nulom, izgub7,
-      primer: {obj, art, meseci:[lbl], prodaja:[int], ned, mes, lager, pred7} | None
-    Vraća bajtove PDF-a."""
-    import io as _io
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.units import mm
-    from reportlab.lib import colors
-    from reportlab.lib.styles import ParagraphStyle
-    from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Image, Table,
-                                    TableStyle, KeepTogether)
-
-    FN, FB = _pdf_font()
-    NAVY = colors.HexColor("#1f3a5f")
-    CRIT = colors.HexColor("#c0392b")
-    WARN = colors.HexColor("#b45309")
-    INK = colors.HexColor("#1a2130")
-    INK2 = colors.HexColor("#4b5563")
-    MUT = colors.HexColor("#8b93a1")
-    LINE = colors.HexColor("#dfe4ec")
-
-    _sis = str(payload.get("sistem", ""))
-    _datum = str(payload.get("datum", ""))
-    _dani = int(payload.get("dani", 7) or 7)
-    _perl = str(_dani) + " dana"
-    _lager_datum = str(payload.get("lager_datum", "") or "")
-    _dodatne_do = str(payload.get("dodatne_do", "") or "")
-    _red = list(payload.get("objekti_red", []) or [])
-    _art0 = int(payload.get("art_na_nuli", 0) or 0)
-    _obj0 = int(payload.get("obj_sa_nulom", 0) or 0)
-    _izg = int(payload.get("izgub7", 0) or 0)
-    _primer = payload.get("primer") or None
-
-    def _esc(t):
-        return (str(t or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
-
-    P = ParagraphStyle("P", fontName=FN, fontSize=9.6, leading=13.6, textColor=INK)
-    PS = ParagraphStyle("PS", fontName=FN, fontSize=8.2, leading=11, textColor=MUT)
-    TH = ParagraphStyle("TH", fontName=FB, fontSize=8.2, leading=10.5, textColor=colors.white)
-    THr = ParagraphStyle("THr", parent=TH, alignment=2)
-    TD = ParagraphStyle("TD", fontName=FN, fontSize=8.6, leading=11.4, textColor=INK)
-    TDr = ParagraphStyle("TDr", parent=TD, alignment=2)
-    SEC = ParagraphStyle("SEC", fontName=FB, fontSize=9.6, leading=12, textColor=NAVY,
-                         spaceBefore=2, spaceAfter=5)
-
-    W = 175 * mm
-    el = []
-
-    # ---------- zaglavlje ----------
-    _h_l = Paragraph('<font size="13"><b>PROBLEM SA LAGEROM — ' + _esc(_sis.upper()) + '</b></font><br/>'
-                     '<font size="8.4" color="#b7cbe6">Objekti koji ne mogu da zadovolje potražnju ni za '
-                     + _perl + '</font>',
-                     ParagraphStyle("hl", fontName=FB, fontSize=13, leading=17, textColor=colors.white))
-    _h_r = Paragraph('<font size="7.8" color="#d7e4f4">Sistemski izveštaj<br/>' + _esc(_datum) + '</font>',
-                     ParagraphStyle("hr", fontName=FN, fontSize=7.8, leading=10.5,
-                                    textColor=colors.white, alignment=2))
-    _t = Table([[_h_l, _h_r]], colWidths=[W * 0.72, W * 0.28])
-    _t.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), NAVY),
-                            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                            ("LEFTPADDING", (0, 0), (-1, -1), 11),
-                            ("RIGHTPADDING", (0, 0), (-1, -1), 11),
-                            ("TOPPADDING", (0, 0), (-1, -1), 9),
-                            ("BOTTOMPADDING", (0, 0), (-1, -1), 9)]))
-    el.append(_t)
-    el.append(Spacer(1, 8))
-
-    # ---------- uvod ----------
-    if _lager_datum:
-        _uv = ("Prema lageru na poslednji dan meseca (<b>" + _esc(_lager_datum) + "</b>)")
-        if _dodatne_do:
-            _uv += " i uračunatim dodatnim porudžbinama do <b>" + _esc(_dodatne_do) + "</b>"
-        _uv += ", izdvajamo "
-    else:
-        _uv = "Izdvajamo "
-    _uv += ("<b>" + str(len(_red)) + " objekata</b> koji sa trenutnim zalihama ne mogu da pokriju "
-            "prodaju ni za narednih <b>" + _perl + "</b>.")
-    el.append(Paragraph(_uv, P))
-    el.append(Spacer(1, 8))
-
-    # ---------- tri broja ----------
-    def _kart(broj, tekst, boja, bg):
-        return Table([[Paragraph('<font size="15" color="' + boja + '"><b>' + _esc(broj) + '</b></font>',
-                                 ParagraphStyle("k1", fontName=FB, fontSize=15, leading=18))],
-                      [Paragraph('<font size="7.8" color="#4b5563">' + tekst + '</font>',
-                                 ParagraphStyle("k2", fontName=FN, fontSize=7.8, leading=10))]],
-                     colWidths=[W / 3.0 - 4])
-    _c1 = _kart(str(_art0), "artikala je na lageru <b>0</b>", "#c0392b", None)
-    _c2 = _kart(str(_obj0), "objekata ima bar jedan artikal na nuli", "#b45309", None)
-    _rsd = int(payload.get("izgub_rsd", 0) or 0)
-    _c3_txt = "izgubljena prodaja za " + _perl
-    if _rsd > 0:
-        _c3_txt += "<br/><b>\u2248 " + f"{_rsd:,}".replace(",", ".") + " RSD prometa</b>"
-    _c3 = _kart("~" + str(_izg) + " kom", _c3_txt, "#1f3a5f", None)
-    for _c, _bg, _bc in ((_c1, "#fdf1f0", "#c0392b"), (_c2, "#fdf6e6", "#b45309"), (_c3, "#f4f7fb", "#1f3a5f")):
-        _c.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(_bg)),
-                                ("LINEABOVE", (0, 0), (-1, 0), 2.2, colors.HexColor(_bc)),
-                                ("BOX", (0, 0), (-1, -1), 0.5, LINE),
-                                ("LEFTPADDING", (0, 0), (-1, -1), 9),
-                                ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-                                ("TOPPADDING", (0, 0), (-1, 0), 7),
-                                ("BOTTOMPADDING", (0, 0), (-1, 0), 1),
-                                ("TOPPADDING", (0, 1), (-1, 1), 0),
-                                ("BOTTOMPADDING", (0, 1), (-1, 1), 7)]))
-    _kt = Table([[_c1, _c2, _c3]], colWidths=[W / 3.0] * 3)
-    _kt.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
-                             ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                             ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-                             ("TOPPADDING", (0, 0), (-1, -1), 0),
-                             ("BOTTOMPADDING", (0, 0), (-1, -1), 0)]))
-    el.append(_kt)
-    el.append(Spacer(1, 10))
-
-    # ---------- tabela objekata ----------
-    el.append(Paragraph("OBJEKTI SA PROBLEMOM", SEC))
-    _data = [[Paragraph("Objekat", TH), Paragraph("Artikala na 0", THr),
-              Paragraph("Ispod praga", THr), Paragraph("Gubi se (" + _perl + ")", THr)]]
-    for _o in _red:
-        _n0 = int(_o.get("na_nuli", 0) or 0)
-        _boja = "#c0392b" if _n0 > 0 else "#4b5563"
-        _data.append([
-            Paragraph(_esc(_o.get("ime", "")), TD),
-            Paragraph('<font color="' + _boja + '"><b>' + str(_n0) + '</b></font>', TDr),
-            Paragraph(str(int(_o.get("kriticnih", 0) or 0)), TDr),
-            Paragraph(str(int(_o.get("manjak", 0) or 0)) + " kom", TDr)])
-    _data.append([Paragraph("<b>UKUPNO · " + str(len(_red)) + " objekata</b>", TD),
-                  Paragraph("<b>" + str(_art0) + "</b>", TDr),
-                  Paragraph("<b>" + str(sum(int(o.get("kriticnih", 0) or 0) for o in _red)) + "</b>", TDr),
-                  Paragraph("<b>~" + str(_izg) + " kom</b>", TDr)])
-    _gust = 4 if len(_red) <= 10 else (2 if len(_red) <= 18 else 1.5)
-    _ot = Table(_data, colWidths=[W * 0.52, W * 0.16, W * 0.15, W * 0.17], repeatRows=1)
-    _ot.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), NAVY),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor("#f8fafc")]),
-        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#eef2f8")),
-        ("LINEABOVE", (0, -1), (-1, -1), 1.2, NAVY),
-        ("LINEBELOW", (0, 1), (-1, -2), 0.4, colors.HexColor("#eef1f6")),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-        ("TOPPADDING", (0, 0), (-1, -1), _gust), ("BOTTOMPADDING", (0, 0), (-1, -1), _gust)]))
-    el.append(_ot)
-    el.append(Spacer(1, 10 if len(_red) <= 12 else 7))
-
-    # ---------- primer ----------
-    _slika = None
-    if _primer and (_primer.get("prodaja") or []):
-        try:
-            import matplotlib
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as _plt
-            _plt.rcParams["font.family"] = "DejaVu Sans"
-            _mes = list(_primer.get("meseci", []) or [])
-            _prod = [int(x or 0) for x in (_primer.get("prodaja", []) or [])]
-            if not _mes or len(_mes) != len(_prod):
-                _mes = [str(i + 1) for i in range(len(_prod))]
-            _god = set()
-            for _m in _mes:
-                _d = str(_m).split()
-                if len(_d) >= 2 and _d[-1].isdigit() and len(_d[-1]) == 4:
-                    _god.add(_d[-1])
-            if len(_god) == 1:
-                _mes = [" ".join(str(_m).split()[:-1]) or str(_m) for _m in _mes]
-            _fig, _ax = _plt.subplots(figsize=(4.5, 1.42))
-            _mx = max(_prod + [1])
-            _cols = ["#b9d3f3"] * len(_prod)
-            for _i in range(max(len(_prod) - 2, 0), len(_prod)):
-                _cols[_i] = "#2a78d6"
-            _b = _ax.bar(range(len(_prod)), _prod, color=_cols, width=0.62, zorder=3)
-            for _r, _v in zip(_b, _prod):
-                _ax.text(_r.get_x() + _r.get_width() / 2, _v + _mx * 0.04, str(_v),
-                         ha="center", fontsize=7.2, color="#4b5563", fontweight="bold")
-            _ax.set_xticks(range(len(_prod)))
-            _ax.set_xticklabels(_mes, fontsize=7.2, color="#8b93a1")
-            _ax.set_ylim(0, _mx * 1.3)
-            _ax.set_ylabel("kom", fontsize=7.2, color="#4b5563")
-            _ax.tick_params(labelsize=7.2, colors="#4b5563", length=0)
-            for _sp in ("top", "right"):
-                _ax.spines[_sp].set_visible(False)
-            _ax.spines["left"].set_color("#dfe4ec")
-            _ax.spines["bottom"].set_color("#c3c2b7")
-            _ax.set_axisbelow(True)
-            _ax.yaxis.grid(True, color="#eef1f6", linewidth=0.8)
-            from matplotlib.ticker import MaxNLocator as _MNL0
-            _ax.yaxis.set_major_locator(_MNL0(integer=True, nbins=4))
-            _bf = _io.BytesIO()
-            _fig.savefig(_bf, format="png", dpi=200, facecolor="white",
-                         bbox_inches="tight", pad_inches=0.05)
-            _plt.close(_fig)
-            _bf.seek(0)
-            _slika = _bf
-        except Exception:
-            _slika = None
-
-    _prim_el = []
-    if _slika is not None and _primer:
-        _prim_el.append(Paragraph("PRIMER — KAKO TO IZGLEDA NA JEDNOM ARTIKLU", SEC))
-        _lev = [Paragraph("<b>" + _esc(_primer.get("art", "")) + "</b>", TD),
-                Paragraph(_esc(_primer.get("obj", "")), PS),
-                Spacer(1, 6)]
-        _ser0 = [int(x or 0) for x in (_primer.get("prodaja", []) or [])]
-        _last0 = _ser0[-1] if _ser0 else 0
-        _zad3 = _ser0[-3:] if len(_ser0) >= 3 else _ser0
-        _avg3 = int(round(sum(_zad3) / float(len(_zad3)))) if _zad3 else 0
-        _lbl_last = ""
-        try:
-            _mm0 = list(_primer.get("meseci", []) or [])
-            if len(_mm0) == len(_ser0) and _mm0:
-                _lbl_last = str(_mm0[-1])
-        except Exception:
-            _lbl_last = ""
-        _redovi = [("Prodaja u poslednjem mesecu" + ((" (" + _lbl_last + ")") if _lbl_last else ""),
-                    str(_last0) + " kom", False),
-                   ("Prosek poslednja " + str(len(_zad3)) + " meseca", str(_avg3) + " kom", False),
-                   ("Potrebno za " + _perl, str(int(_primer.get("pred7", 0) or 0)) + " kom", False),
-                   ("Lager danas", str(int(_primer.get("lager", 0) or 0)) + " kom",
-                    int(_primer.get("lager", 0) or 0) <= 0)]
-        for _lbl, _val, _hit in _redovi:
-            _col = "#c0392b" if _hit else "#1a2130"
-            _lev.append(Table([[Paragraph('<font size="8.4" color="#4b5563">' + _lbl + '</font>', TD),
-                                Paragraph('<font size="8.4" color="' + _col + '"><b>' + _val + '</b></font>', TDr)]],
-                              colWidths=[W * 0.24, W * 0.14],
-                              style=TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0),
-                                                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                                                ("TOPPADDING", (0, 0), (-1, -1), 1.5),
-                                                ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5)])))
-        _im = Image(_slika, width=W * 0.55, height=W * 0.55 * (1.42 / 4.5))
-        _pt = Table([[_lev, [Paragraph("Prodaja po mesecima", PS), Spacer(1, 3), _im]]],
-                    colWidths=[W * 0.42, W * 0.58])
-        _pt.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
-                                 ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fbfcfe")),
-                                 ("BOX", (0, 0), (-1, -1), 0.5, LINE),
-                                 ("LEFTPADDING", (0, 0), (-1, -1), 11),
-                                 ("RIGHTPADDING", (0, 0), (-1, -1), 11),
-                                 ("TOPPADDING", (0, 0), (-1, -1), 9),
-                                 ("BOTTOMPADDING", (0, 0), (-1, -1), 9)]))
-        _prim_el.append(_pt)
-        _lg0 = int(_primer.get("lager", 0) or 0)
-        _n_mes0 = sum(1 for _x in _ser0 if int(_x or 0) > 0)
-        _zak = ("Ovaj artikal se prodaje redovno: prodaju ima u <b>" + str(_n_mes0) + " od "
-                + str(len(_ser0)) + " meseci</b>, poslednjeg meseca"
-                + ((" (" + _lbl_last + ")") if _lbl_last else "") + " <b>" + str(_last0)
-                + " komada</b> — a danas ga u objektu <b>nema</b>. "
-                "Svaka nedelja bez robe znači oko <b>" + str(int(_primer.get("ned", 0) or 0))
-                + " komada neostvarene prodaje</b>, i to samo na ovom jednom artiklu. "
-                "U celom sistemu je ovako prazno <b>" + str(_art0) + " artikala</b>.")
-        if _lg0 > 0:
-            _zak = ("Ovaj artikal se prodaje redovno: prodaju ima u <b>" + str(_n_mes0) + " od "
-                    + str(len(_ser0)) + " meseci</b>, poslednjeg meseca"
-                    + ((" (" + _lbl_last + ")") if _lbl_last else "") + " <b>" + str(_last0)
-                    + " komada</b> — a na lageru je ostalo svega <b>" + str(_lg0)
-                    + " komada</b>, što nije dovoljno ni za " + _perl + ". "
-                    "U celom sistemu je na nuli <b>" + str(_art0) + " artikala</b>.")
-        _zt = Table([[Paragraph('<font color="#8f2018">' + _zak + '</font>', TD)]], colWidths=[W])
-        _zt.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fdf1f0")),
-                                 ("LINEBEFORE", (0, 0), (0, -1), 2.5, CRIT),
-                                 ("LEFTPADDING", (0, 0), (-1, -1), 10),
-                                 ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                                 ("TOPPADDING", (0, 0), (-1, -1), 7),
-                                 ("BOTTOMPADDING", (0, 0), (-1, -1), 7)]))
-        _prim_el.append(Spacer(1, 6))
-        _prim_el.append(_zt)
-    if _prim_el:
-        el.append(KeepTogether(_prim_el))
-
-    # ---------- podnožje ----------
-    _zahtev = str(payload.get("zahtev", "") or "")
-    if _zahtev:
-        _zt3 = Table([[Paragraph('<font color="#14532d"><b>Molimo dopunu od oko ' + _zahtev
-                                 + ' komada</b> na navedenim objektima, kako bi objekti zadržali '
-                                   'kontinuitet prodaje.</font>', TD)]], colWidths=[W])
-        _zt3.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#eaf5ee")),
-                                  ("LINEBEFORE", (0, 0), (0, -1), 2.5, colors.HexColor("#157347")),
-                                  ("LEFTPADDING", (0, 0), (-1, -1), 10),
-                                  ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                                  ("TOPPADDING", (0, 0), (-1, -1), 7),
-                                  ("BOTTOMPADDING", (0, 0), (-1, -1), 7)]))
-        el.append(Spacer(1, 8))
-        el.append(_zt3)
-
-    def _foot(canv, doc):
-        canv.saveState()
-        canv.setFont(FN, 7)
-        canv.setFillColor(MUT)
-        _fp = ("Automatski generisano · VapeShop sistemski izveštaj · "
-               "procena na osnovu prodaje i realnog lagera")
-        if _rsd > 0:
-            _fp += " · RSD je procena po prodajnoj ceni objekta"
-        canv.drawCentredString(A4[0] / 2.0, 8.5 * mm, _fp)
-        canv.restoreState()
-
-    _buf = _io.BytesIO()
-    _doc = SimpleDocTemplate(_buf, pagesize=A4, leftMargin=17.5 * mm, rightMargin=17.5 * mm,
-                             topMargin=12 * mm, bottomMargin=14 * mm,
-                             title="Problem sa lagerom - " + _sis)
-    _doc.build(el, onFirstPage=_foot, onLaterPages=_foot)
-    return _buf.getvalue()
-
 
 def _admin_secret(k, d=""):
     try:
@@ -4341,6 +4257,167 @@ def _admin_presek(meta, mesec_key):
     except Exception:
         return None
 
+_MN_KRATKO = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "maj": 5, "jun": 6,
+              "jul": 7, "avg": 8, "sep": 9, "okt": 10, "nov": 11, "dec": 12}
+
+
+def _lbl_u_ym(lbl):
+    """'Avg 2026' -> (2026, 8). Vraća None ako oznaka nije prepoznata."""
+    try:
+        _d = str(lbl).strip().split()
+        if len(_d) != 2:
+            return None
+        _m = _MN_KRATKO.get(_d[0][:3].lower())
+        _g = int(_d[1])
+        return (_g, _m) if _m else None
+    except Exception:
+        return None
+
+
+def _por_otkazana(o):
+    _s = str((o or {}).get("status", "") or "").lower()
+    return ("otkaz" in _s) or ("storn" in _s) or ("odbij" in _s) or ("ponist" in _s) or ("poništ" in _s)
+
+
+def _por_ym(o):
+    """Godina i mesec porudžbine iz 'dd.mm.yyyy'."""
+    try:
+        _d = str((o or {}).get("datum", "") or "").split(" ")[0].split(".")
+        return (int(_d[2]), int(_d[1]))
+    except Exception:
+        return None
+
+
+def _poruceno_po_mesecima(admin_hist, mes_naz, samo_idk=None, samo_ida=None):
+    """Zbir poručenih komada po mesecima iz mes_naz.
+    admin_hist: {str(idk): [ {id, datum, status, stavke:[{ida, kol}]} ]}"""
+    _ym = [_lbl_u_ym(l) for l in (mes_naz or [])]
+    _idx = {y: i for i, y in enumerate(_ym) if y}
+    out = [0] * len(_ym)
+    for _k, _lst in (admin_hist or {}).items():
+        if samo_idk is not None and str(_k) != str(int(samo_idk)):
+            continue
+        for _o in (_lst or []):
+            if _por_otkazana(_o):
+                continue
+            _p = _por_ym(_o)
+            if _p is None or _p not in _idx:
+                continue
+            _i = _idx[_p]
+            for _s in (_o.get("stavke") or []):
+                try:
+                    if samo_ida is not None and int(_s.get("ida", -1)) != int(samo_ida):
+                        continue
+                    out[_i] += int(float(str(_s.get("kol", 0)).replace(",", ".")))
+                except Exception:
+                    continue
+    return out
+
+
+def _ucestalost_trebovanja(admin_hist, mes_naz, svi_idk):
+    """Koliko je objekata poručilo 0, 1, 2, 3+ puta u posmatranom periodu.
+    Broje se RAZLIČITE porudžbine (po ID-ju), ne stavke."""
+    _ym = set(y for y in (_lbl_u_ym(l) for l in (mes_naz or [])) if y)
+    _br = {}
+    for _k, _lst in (admin_hist or {}).items():
+        try:
+            _ik = int(_k)
+        except Exception:
+            continue
+        _ids = set()
+        for _o in (_lst or []):
+            if _por_otkazana(_o):
+                continue
+            if _por_ym(_o) in _ym:
+                _ids.add(str(_o.get("id") or ""))
+        _br[_ik] = len(_ids - {""})
+    _k0 = _k1 = _k2 = _k3 = 0
+    for _ik in svi_idk:
+        _n = _br.get(int(_ik), 0)
+        if _n == 0:
+            _k0 += 1
+        elif _n == 1:
+            _k1 += 1
+        elif _n == 2:
+            _k2 += 1
+        else:
+            _k3 += 1
+    return [("nijednom", _k0), ("1 put", _k1), ("2 puta", _k2), ("3 i više", _k3)]
+
+
+def _lager_unazad(lager_sada, prodato, poruceno):
+    """Rekonstruiši lager na kraju svakog meseca, unazad od današnjeg stanja.
+
+    lager[kraj t-1] = lager[kraj t] + prodato[t] - poruceno[t]
+    Vraća listu iste dužine kao prodato (nikad ispod nule)."""
+    n = len(prodato)
+    out = [0] * n
+    _l = int(lager_sada or 0)
+    for t in range(n - 1, -1, -1):
+        out[t] = max(_l, 0)
+        _l = _l + int(prodato[t] or 0) - int(poruceno[t] or 0)
+    return out
+
+
+def _primer_neredovno(kandidati, admin_hist, mes_naz):
+    """Objekat + artikal koji se DOBRO prodaje, a REDAK je u porudžbinama.
+
+    kandidati: [{idk, ida, obj, art, lager, prodaja:[...]}]
+    Bira se onaj sa najviše meseci prodaje i najmanje porudžbina, kod kog je
+    lager danas 0. Vraća dict za grafik ili None."""
+    _naj, _naj_sc = None, None
+    for c in kandidati:
+        _ser = [int(x or 0) for x in (c.get("prodaja") or [])]
+        if not _ser or sum(_ser) <= 0:
+            continue
+        _por = _poruceno_po_mesecima(admin_hist, mes_naz, c["idk"], c["ida"])
+        _n_por = sum(1 for x in _por if x > 0)
+        _n_mes = sum(1 for x in _ser if x > 0)
+        if _n_mes < 3:
+            continue
+        # želimo: mnogo meseci prodaje, malo porudžbina, lager 0
+        _sc = (1 if int(c.get("lager", 0) or 0) <= 0 else 0) * 100000 \
+            + _n_mes * 1000 - _n_por * 300 + min(sum(_ser), 299)
+        if _naj_sc is None or _sc > _naj_sc:
+            _naj_sc, _naj = _sc, {
+                "obj": c["obj"], "art": c["art"], "meseci": list(mes_naz),
+                "prodaja": _ser, "poruceno": _por, "lager": int(c.get("lager", 0) or 0),
+                "lager_niz": _lager_unazad(int(c.get("lager", 0) or 0), _ser, _por),
+                "uk_prodato": sum(_ser), "uk_poruceno": sum(_por),
+                "n_porudzbina": _n_por,
+            }
+    return _naj
+
+
+def _primer_nedovoljno(objekti_prodaja, admin_hist, mes_naz, lager_po_obj):
+    """Objekat koji poručuje REDOVNO ali MANJE nego što proda.
+
+    objekti_prodaja: {idk: (ime, [prodato po mesecima])}
+    lager_po_obj: {idk: ukupan trenutni lager na problematičnim artiklima}"""
+    _naj, _naj_sc = None, None
+    for _ik, (_ime, _ser) in (objekti_prodaja or {}).items():
+        _ser = [int(x or 0) for x in (_ser or [])]
+        if not _ser or sum(_ser) <= 0:
+            continue
+        _por = _poruceno_po_mesecima(admin_hist, mes_naz, _ik)
+        _n_por = sum(1 for x in _por if x > 0)
+        if _n_por < 3:          # mora da poručuje redovno, inače je to drugi primer
+            continue
+        _manjak = sum(_ser) - sum(_por)
+        if _manjak <= 0:
+            continue
+        _sc = _manjak * 10 + _n_por
+        if _naj_sc is None or _sc > _naj_sc:
+            _lg = int((lager_po_obj or {}).get(_ik, 0) or 0)
+            _naj_sc, _naj = _sc, {
+                "obj": _ime, "meseci": list(mes_naz), "prodaja": _ser, "poruceno": _por,
+                "lager_niz": _lager_unazad(_lg, _ser, _por), "lager": _lg,
+                "uk_prodato": sum(_ser), "uk_poruceno": sum(_por), "manjak": _manjak,
+                "n_porudzbina": _n_por,
+            }
+    return _naj
+
+
 def _treb_posle_preseka(hist_lst, cutoff_date):
     """Iz učitane istorije porudžbina saberi količine po artiklu za porudžbine
     datirane >= cutoff_date, izuzimajući otkazane/stornirane. Vrati {ida: kom}."""
@@ -5045,7 +5122,134 @@ def prikazi_administraciju():
         except Exception:
             _izgub_rsd = 0
         _svi_art.sort(key=lambda r: (-int(r.get("manjak", 0) or 0), -int(r.get("pred", 0) or 0)))
+
+        # ============ DOKAZI za prilog sistemu ============
+        # Sve iz podataka koje već imamo. Ako nešto fali, taj deo izveštaja se izostavi.
+        _dok = {}
+        try:
+            _ahist_p = (meta.get("admin_hist") or {}) if isinstance(meta, dict) else {}
+
+            def _ser_za(_ik, _s):
+                _v = [int(x or 0) for x in (_s.get("prodaja_mesecno") or [])]
+                if not _v:
+                    _v = [int(x or 0) for x in (_ser_rez.get((int(_ik), int(_s.get("ida", -1))), []) or [])]
+                return _v
+
+            # 1) prodato po mesecima — ceo sistem (svi objekti, ne samo problematični)
+            _mes_prod = [0] * len(_mes_naz)
+            _obj_prod = {}          # idk -> (ime, [prodato po mesecima])
+            for _o9 in objekti:
+                _ik9 = int(_o9["idk"])
+                _zbir = [0] * len(_mes_naz)
+                for _s9 in (_o9.get("lst") or []):
+                    _v9 = _ser_za(_ik9, _s9)
+                    for _t9 in range(min(len(_v9), len(_zbir))):
+                        _zbir[_t9] += _v9[_t9]
+                        _mes_prod[_t9] += _v9[_t9]
+                _nm9 = (komfull.get(_ik9, {}) or {}).get("naziv", "") or ("ID " + str(_ik9))
+                _obj_prod[_ik9] = (_nm9.replace(str(sistem), "").strip(" -—") or _nm9, _zbir)
+
+            # 2) poručeno po mesecima — iz istorije porudžbina u adminu
+            _mes_por = _poruceno_po_mesecima(_ahist_p, _mes_naz)
+
+            if _mes_naz and sum(_mes_prod) > 0 and sum(_mes_por) > 0:
+                _dok["meseci"] = list(_mes_naz)
+                _dok["prodato"] = _mes_prod
+                _dok["poruceno"] = _mes_por
+
+            # 2b) raspodela objekata: bez robe / na granici / u redu
+            _z_crv = _z_zut = _z_zel = 0
+            for _o9 in objekti:
+                _pm9 = _por_map_for(_o9["idk"])
+                _n9, _, _ = hitnost_objekta_dodatna(_o9["lst"], _pm9)
+                if _n9 == "crveno":
+                    _z_crv += 1
+                elif _n9 == "zuto":
+                    _z_zut += 1
+                else:
+                    _z_zel += 1
+            _dok["zone_objekti"] = [("Roba nedostaje", _z_crv), ("Na granici", _z_zut),
+                                    ("Zalihe u redu", _z_zel)]
+
+            # 2c) stanje SVIH artikala koji se prodaju (ne samo problematičnih)
+            _a_nula = _a_ispod = _a_ok = 0
+            for _o9 in objekti:
+                _pm9 = _por_map_for(_o9["idk"])
+                for _s9 in (_o9.get("lst") or []):
+                    _pr9 = int(_s9.get("pred", 0) or 0)
+                    if _pr9 <= 0:
+                        continue          # artikal se ne prodaje — ne ulazi u račun
+                    _lg9 = int(_s9.get("lager", 0) or 0) + int(_pm9.get(int(_s9.get("ida", -1)), 0) or 0)
+                    _prag9 = _pr9 * _dani / 30.0
+                    if _lg9 <= 0:
+                        _a_nula += 1
+                    elif _lg9 < _prag9:
+                        _a_ispod += 1
+                    else:
+                        _a_ok += 1
+            if (_a_nula + _a_ispod + _a_ok) > 0:
+                _dok["stanje_artikala"] = [("Lager 0", _a_nula), ("Ispod minimuma", _a_ispod),
+                                           ("Dovoljno", _a_ok)]
+
+            # 3) koliko puta je objekat uopšte poručio
+            if _ahist_p and _mes_naz:
+                _dok["ucestalost"] = _ucestalost_trebovanja(
+                    _ahist_p, _mes_naz, [int(o["idk"]) for o in objekti])
+
+            # 4) objekti sa najvećom izgubljenom prodajom (u dinarima)
+            try:
+                _cene_d = _cene_iz_analitike(mesec_key, sistem)
+            except Exception:
+                _cene_d = {}
+            if _cene_d:
+                _rang = []
+                for _pp in _prob:
+                    _r_rsd = 0; _r_n0 = 0
+                    for _aa in _pp["arts"]:
+                        _c9 = _cene_d.get(int(_aa.get("ida", -1)), 0)
+                        if _c9:
+                            _r_rsd += int(_aa.get("manjak7", 0) or 0) * _c9
+                        if int(_aa.get("lager", 0) or 0) <= 0:
+                            _r_n0 += 1
+                    _nm9 = (komfull.get(int(_pp["idk"]), {}) or {}).get("naziv", "") or ("ID " + str(_pp["idk"]))
+                    _rang.append({"ime": _nm9.replace(str(sistem), "").strip(" -—") or _nm9,
+                                  "na_nuli": _r_n0, "rsd": int(round(_r_rsd))})
+                _rang.sort(key=lambda r: -r["rsd"])
+                _dok["top_obj"] = [r for r in _rang if r["rsd"] > 0][:8]
+
+            # 5) dva imenovana primera
+            if _ahist_p and _mes_naz:
+                _kand = []
+                _lag_obj = {}
+                for _pp in _prob:
+                    _ik9 = int(_pp["idk"])
+                    _nm9 = _obj_prod.get(_ik9, ("ID " + str(_ik9), []))[0]
+                    _lag_obj[_ik9] = sum(int(a.get("lager", 0) or 0) for a in _pp["arts"])
+                    _po_ida = {int(s.get("ida", -1)): s for s in (_pp.get("lst") or [])}
+                    for _aa in _pp["arts"]:
+                        _ida9 = int(_aa.get("ida", -1))
+                        _s9 = _po_ida.get(_ida9)
+                        if _s9 is None:
+                            continue
+                        _kand.append({"idk": _ik9, "ida": _ida9, "obj": _nm9,
+                                      "art": str(_aa.get("naziv", "")),
+                                      "lager": int(_aa.get("lager", 0) or 0),
+                                      "prodaja": _ser_za(_ik9, _s9)})
+                _dok["primer_neredovno"] = _primer_neredovno(_kand, _ahist_p, _mes_naz)
+                _dok["primer_nedovoljno"] = _primer_nedovoljno(
+                    {k: v for k, v in _obj_prod.items() if k in _lag_obj}, _ahist_p, _mes_naz, _lag_obj)
+
+            # 6) vrednost predloga u dinarima
+            if _cene_d:
+                _dok["predlog_rsd"] = int(round(sum(
+                    int(_aa.get("manjak7", 0) or 0) * _cene_d.get(int(_aa.get("ida", -1)), 0)
+                    for _pp in _prob for _aa in _pp["arts"])))
+        except Exception:
+            _dok = {}
+
         _payload_n = {"sistem": str(sistem), "datum": _now().strftime("%d.%m.%Y."), "dani": _dani,
+                      "dokazi": _dok, "n_obj_ukupno": len(objekti), "n_obj_problem": len(_prob),
+                      "predlog_kom": sum(int(a.get("predlog", 0) or 0) for g in _grupe for a in g.get("arts", [])),
                       "lager_datum": _lager_datum, "dodatne_do": _now().strftime("%d.%m.%Y."),
                       "objekti_imena": _imena, "objekti_red": _red_obj, "top_arts": _svi_art[:6],
                       "art_na_nuli": _art_na_nuli, "izgub_rsd": _izgub_rsd,
@@ -5053,61 +5257,44 @@ def prikazi_administraciju():
                       "obj_sa_nulom": _obj_sa_nulom, "izgub7": _izgub7, "primer": _primer_pl}
 
         # ===== Izbor šta se šalje: izveštaj o problemu ili predlog porudžbine =====
-        _TIP_IZV = "Izveštaj o problemu (PDF)"
-        _TIP_PRE = "Predlog porudžbine (Excel)"
-        _tip_key = "ned_mail_tip_" + str(sistem) + "_" + str(mesec_key)
-        st.markdown("<div style='font-size:12.5px;color:#6b7280;margin:6px 0 -6px;'>Šta se šalje</div>",
-                    unsafe_allow_html=True)
-        _tip = st.radio("Šta se šalje", [_TIP_IZV, _TIP_PRE], key=_tip_key, horizontal=True,
-                        label_visibility="collapsed")
-        _je_predlog = (_tip == _TIP_PRE)
-
         _grupe_ok = [g for g in _grupe if (g.get("arts") or [])]
         _predlog_uk = sum(int(a.get("predlog", 0) or 0) for g in _grupe_ok for a in g["arts"])
 
         _dat_str = _now().strftime("%d.%m.%Y.")
-        if _je_predlog:
-            _mail_subj_n = "Predlog porudžbine — " + str(sistem) + " (" + _dat_str + ")"
-            _spisak = ""
-            for _gi, _g in enumerate(_grupe_ok, 1):
-                _kom = sum(int(a.get("predlog", 0) or 0) for a in _g["arts"])
-                _na = len(_g["arts"])
-                _n10, _n100 = _na % 10, _na % 100
-                if _n10 == 1 and _n100 != 11:
-                    _art_rec = "artikal"
-                elif _n10 in (2, 3, 4) and _n100 not in (12, 13, 14):
-                    _art_rec = "artikla"
-                else:
-                    _art_rec = "artikala"
-                _spisak += (str(_gi) + ". " + str(_g.get("objekat", "")) + " — "
-                            + str(_na) + " " + _art_rec + ", predlog " + str(_kom) + " kom\n")
-            _mail_body_n = ("Poštovani,\n\n"
-                            "U prilogu vam šaljemo predlog porudžbine za objekte kod kojih je lager "
-                            "kritičan — trenutne zalihe ne pokrivaju prodaju ni za " + _per_lbl + ".\n\n"
-                            "Objekti sa kritičnim lagerom (" + str(len(_grupe_ok)) + "):\n"
-                            + _spisak + "\n"
-                            "Ukupan predlog: " + str(_predlog_uk) + " kom.\n\n"
-                            "U prilogu je tabela sa predlogom po objektu i artiklu (naziv objekta, "
-                            "naziv artikla, trenutni lager i predloženi broj komada).\n\n"
-                            "Molimo da se roba dopuni kako bi objekti mogli da zadrže kontinuitet prodaje.\n\n"
-                            "Srdačan pozdrav")
-        else:
-            _mail_subj_n = "Problem sa lagerom — " + str(sistem) + " (" + _dat_str + ")"
-            _mail_body_n = ("Poštovani,\n\n"
-                            "U prilogu se nalaze objekti koji imaju problem sa lagerom i ne mogu da "
-                            "zadovolje potražnju ni za " + _per_lbl + ". U prilogu su navedeni objekti "
-                            "poimenično, broj artikala sa lagerom 0, procenjena izgubljena prodaja za " + _per_lbl
-                            + " i primer sa prodajom artikla.\n\n"
-                            "Ukupno objekata sa problemom: " + str(len(_prob)) + ".\n\n"
-                            "Molimo da se roba dopuni kako bi objekti mogli da zadrže kontinuitet prodaje.\n\n"
-                            "Srdačan pozdrav")
+        _mail_subj_n = "Stanje zaliha i predlog dopune — " + str(sistem) + " (" + _dat_str + ")"
+        _spisak = ""
+        for _gi, _g in enumerate(_grupe_ok, 1):
+            _kom = sum(int(a.get("predlog", 0) or 0) for a in _g["arts"])
+            _na = len(_g["arts"])
+            _n10, _n100 = _na % 10, _na % 100
+            if _n10 == 1 and _n100 != 11:
+                _art_rec = "artikal"
+            elif _n10 in (2, 3, 4) and _n100 not in (12, 13, 14):
+                _art_rec = "artikla"
+            else:
+                _art_rec = "artikala"
+            _spisak += (str(_gi) + ". " + str(_g.get("objekat", "")) + " — "
+                        + str(_na) + " " + _art_rec + ", predlog " + str(_kom) + " kom\n")
+        _mail_body_n = ("Poštovani,\n\n"
+                        "U prilogu vam šaljemo pregled stanja zaliha u vašim objektima i predlog "
+                        "dopune. Kod " + str(len(_grupe_ok)) + " objekata trenutne zalihe ne pokrivaju "
+                        "prodaju ni za " + _per_lbl + ".\n\n"
+                        "Prilog ima tri lista:\n"
+                        "1. Izveštaj — kratak pregled sa grafikonima i primerom\n"
+                        "2. Predlog po objektima — koliko komada predlažemo po objektu i artiklu\n"
+                        "3. Tabela — isti podaci u ravnom obliku, za filtriranje\n\n"
+                        "Objekti sa kritičnim lagerom:\n"
+                        + _spisak + "\n"
+                        "Ukupan predlog: " + str(_predlog_uk) + " kom.\n\n"
+                        "Molimo da se roba dopuni kako bi objekti mogli da zadrže kontinuitet prodaje.\n\n"
+                        "Srdačan pozdrav")
 
-        _sfx = ("pre" if _je_predlog else "izv")
+        _sfx = "pre"
         _subj_key = "ned_mail_subj_" + _sfx + "_" + str(sistem) + "_" + str(mesec_key)
         _body_key = "ned_mail_body_" + _sfx + "_" + str(sistem) + "_" + str(mesec_key)
         st.text_input("Naslov mejla", value=_mail_subj_n, key=_subj_key)
         st.text_area("Tekst mejla (možeš da izmeniš pre slanja)", value=_mail_body_n,
-                     height=(260 if _je_predlog else 180), key=_body_key)
+                     height=280, key=_body_key)
 
         # --- Prilog (PDF izveštaj ili Excel predlog) ---
         _pdf_bytes_n = None
@@ -5115,45 +5302,30 @@ def prikazi_administraciju():
         _prilog_mime = ""
         _osnova = str(sistem).replace(" ", "_") + "_" + mesec_key
         try:
-            if _je_predlog:
-                if not _grupe_ok:
-                    st.info("Nema nijednog artikla za predlog — svi objekti imaju dovoljan lager.")
-                else:
-                    _pdf_bytes_n = _nedeljni_predlog_xlsx(str(sistem), _dani, _dat_str, _grupe_ok)
-                    _prilog_ime = "Predlog_porudzbine_" + _osnova + ".xlsx"
-                    _prilog_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            if not _grupe_ok:
+                st.info("Nema nijednog artikla za predlog — svi objekti imaju dovoljan lager.")
             else:
-                _pdf_bytes_n = _nedeljni_prilog_pdf(_payload_n)
-                _prilog_ime = "Prilog_" + _osnova + ".pdf"
-                _prilog_mime = "application/pdf"
+                _pdf_bytes_n = _nedeljni_predlog_xlsx(str(sistem), _dani, _dat_str, _grupe_ok,
+                                                      payload=_payload_n)
+                _prilog_ime = "Stanje_zaliha_i_predlog_" + _osnova + ".xlsx"
+                _prilog_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             if _pdf_bytes_n is not None:
                 _dc1, _dc2 = st.columns([1.4, 3])
                 with _dc1:
                     st.download_button(
-                        ("⬇️ Preuzmi predlog (Excel)" if _je_predlog else "⬇️ Preuzmi prilog (PDF)"),
-                        _pdf_bytes_n, file_name=_prilog_ime, mime=_prilog_mime,
+                        "⬇️ Preuzmi prilog (Excel)", _pdf_bytes_n, file_name=_prilog_ime,
+                        mime=_prilog_mime,
                         key="ned_prilog_dl_" + _sfx + "_" + str(sistem) + "_" + str(mesec_key),
                         use_container_width=True)
                 with _dc2:
-                    if _je_predlog:
-                        st.caption("Prilog ima dva lista: „Predlog porudžbine“ grupisan po objektima "
-                                   "(objekat, artikal, lager, predlog kom, zbir po objektu) i „Tabela“ "
-                                   "— ravan spisak sa filterom, za pivot. Ukupno "
-                                   + str(_predlog_uk) + " kom za " + str(len(_grupe_ok)) + " objekata.")
-                    else:
-                        st.caption("Prilog je jedna strana: uvod, tri ključna broja, tabela objekata sa "
-                                   "problemom i primer sa grafikom prodaje artikla.")
-                        if _primer_pl:
-                            st.caption("📈 Grafik prodaje po mesecima je u prilogu (podaci: "
-                                       + ("iz objave" if _izvor_serije == "objava"
-                                          else "rekonstruisano iz analitika Excel-a") + ").")
-                        else:
-                            st.warning("📉 Grafika nema — uz ovaj sistem nije sačuvana mesečna prodaja po "
-                                       "artiklu" + (", a ni analitika Excel uz objavu."
-                                                    if _izvor_serije == "nema"
-                                                    else ", i u analitika Excel-u nema poklapanja.")
-                                       + " Rešenje: u kartici Objava izveštaja ponovo objavi ovaj sistem za "
-                                         "ovaj mesec (isti fajl, isti parametri) — grafik se odmah pojavljuje.")
+                    st.caption("Prilog ima tri lista: „Izveštaj“ (grafikoni, primer i zahtev), "
+                               "„Predlog po objektima“ (zbir po objektu) i „Tabela“ (ravan spisak "
+                               "sa filterom). Ukupno " + str(_predlog_uk) + " kom za "
+                               + str(len(_grupe_ok)) + " objekata.")
+                    if not (_payload_n.get("dokazi") or {}).get("primer_neredovno"):
+                        st.caption("📉 Primer sa grafikom nije uključen — za ovaj sistem nema mesečne "
+                                   "prodaje po artiklu ili nema istorije porudžbina iz admina. "
+                                   "Rešenje: „Ažuriraj iz admina“ gore, pa ponovo objavi sistem.")
         except Exception as _pe:
             st.error("Greška pri pravljenju priloga: " + str(_pe))
 
