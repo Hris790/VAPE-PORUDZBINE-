@@ -4794,10 +4794,22 @@ def prikazi_administraciju():
     .adm-kpi .n .d{width:8px;height:8px;border-radius:50%;}
     .adm-kpi .n .d.r{background:#e5484d;} .adm-kpi .n .d.o{background:#f2820c;} .adm-kpi .n .d.g{background:#17a34a;} .adm-kpi .n .d.p{background:#7c3aed;}
     .adm-kpi .k{font-size:12px;color:#9ca3af;margin-top:3px;font-weight:500;}
+    .adm-kpi .n .d.z{background:#16a34a;}
     .adm-kpi .cell.c-p{background:#faf7ff;} .adm-kpi .cell.c-r{background:#fff7f7;} .adm-kpi .cell.c-o{background:#fffcf5;} .adm-kpi .cell.c-g{background:#f6fdf9;}
+    .adm-kpi .cell.c-z{background:#dcfce7;border-left:2px solid #86efac;}
     .adm-kpi .cell.c-p .n{color:#7c3aed;} .adm-kpi .cell.c-r .n{color:#d33;} .adm-kpi .cell.c-o .n{color:#c66a00;} .adm-kpi .cell.c-g .n{color:#158a3f;}
+    .adm-kpi .cell.c-z .n{color:#14532d;} .adm-kpi .cell.c-z .k{color:#166534;font-weight:700;}
     table.adm-t tr.row-red td{background:#fff8f8;} table.adm-t tr.row-org td{background:#fffcf6;}
     /* progress */
+    /* „Prikaz" radio stilizovan kao tabovi */
+    div[role="radiogroup"]:has(input[aria-label="Lista objekata"]){gap:26px;border-bottom:1px solid #eef0f4;
+        margin:6px 0 10px;padding-bottom:0;}
+    div[role="radiogroup"]:has(input[aria-label="Lista objekata"]) label{padding:6px 2px 10px;margin:0;}
+    div[role="radiogroup"]:has(input[aria-label="Lista objekata"]) label>div:first-child{display:none;}
+    div[role="radiogroup"]:has(input[aria-label="Lista objekata"]) label p{font-size:14px;font-weight:600;color:#6b7280;}
+    div[role="radiogroup"]:has(input[aria-label="Lista objekata"]) label:has(input:checked) p{color:#7c3aed;}
+    div[role="radiogroup"]:has(input[aria-label="Lista objekata"]) label:has(input:checked){
+        box-shadow:inset 0 -2px 0 0 #7c3aed;}
     .adm-prog{display:flex;align-items:center;gap:12px;margin-bottom:8px;}
     .adm-prog .t{font-size:12.5px;color:#6b7280;font-weight:600;white-space:nowrap;}
     .adm-prog .bar{flex:1;height:5px;background:#eef0f4;border-radius:99px;overflow:hidden;}
@@ -5782,12 +5794,44 @@ def prikazi_administraciju():
     n_done = len([o for o in objekti if o["idk"] in reviewed])
     _pct = int(n_done / max(n_obj, 1) * 100)
 
+    _snap_z = meta.get("start_zone") if isinstance(meta, dict) else None
+
+    def _zavrsen(_o, _v):
+        """Da li je objekat gotov — poručio je, pa ga ne treba više zvati ni slati mu mejl."""
+        _v = _v or {}
+        if (_v.get("trebovali_tip") or "") in ("nas", "njihov"):
+            return True
+        if "Ubačena porudžbina" in (_v.get("reakcije") or []):
+            return True
+        if (_v.get("dnevnik") or {}).get("trebovao_posle_starta"):
+            return True
+        try:
+            _hz = st.session_state.get("hist_" + str(sistem) + "_" + str(_o["idk"]))
+            if _hz and not _hz.get("err") and _porucio_posle_starta(_o["idk"], _hz.get("lst") or [], _snap_z):
+                return True
+        except Exception:
+            pass
+        try:
+            _raw = hitnost_objekta(_o["lst"])[0]
+        except Exception:
+            _raw = _o.get("nivo")
+        return _raw in ("crveno", "zuto") and _o.get("nivo") == "zeleno"
+
+    n_zav = 0
+    for _ok2 in objekti:
+        try:
+            if _zavrsen(_ok2, obrada_map.get(int(_ok2["idk"])) or {}):
+                n_zav += 1
+        except Exception:
+            pass
+
     st.markdown(
         '<div class="adm-kpi">'
         '<div class="cell c-p"><div class="n"><span class="d p"></span>' + str(n_obj) + '</div><div class="k">Objekata za porudžbinu</div></div>'
         '<div class="cell c-r"><div class="n"><span class="d r"></span>' + str(n_red) + '</div><div class="k">Hitno pozvati</div></div>'
         '<div class="cell c-o"><div class="n"><span class="d o"></span>' + str(n_org) + '</div><div class="k">Iskontrolisati</div></div>'
         '<div class="cell c-g"><div class="n"><span class="d g"></span>' + str(n_grn) + '</div><div class="k">Dobra</div></div>'
+        '<div class="cell c-z"><div class="n"><span class="d z"></span>' + str(n_zav) + '</div><div class="k">✓ Završeno</div></div>'
         '</div>', unsafe_allow_html=True)
     st.markdown('<div class="adm-prog"><span class="t">Pregledano ' + str(n_done) + ' / ' + str(n_obj) + '</span>'
                 '<div class="bar"><div style="width:' + str(_pct) + '%"></div></div></div>', unsafe_allow_html=True)
@@ -6072,36 +6116,20 @@ def prikazi_administraciju():
             return '<span class="tb-nj">po njihovom</span>'
         return '<span class="np">—</span>' if rev else '<span class="np">·</span>'
 
-    _snap_z = meta.get("start_zone") if isinstance(meta, dict) else None
+    # Prikaz (umesto st.tabs) — radio se može postaviti iz koda, pa klik na objekat
+    # u listi može da otvori baš njegovu karticu u „Detalj / obrada".
+    _VIEWS = ["Lista objekata", "Detalj / obrada", "📧 Grupno slanje mejlova"]
+    if st.session_state.get("adm_view") not in _VIEWS:
+        st.session_state["adm_view"] = _VIEWS[0]
+    _view = st.radio("Prikaz", _VIEWS, key="adm_view", horizontal=True,
+                     label_visibility="collapsed")
 
-    def _zavrsen(_o, _v):
-        """Da li je objekat gotov — poručio je, pa ga ne treba više zvati ni slati mu mejl."""
-        _v = _v or {}
-        if (_v.get("trebovali_tip") or "") in ("nas", "njihov"):
-            return True
-        if "Ubačena porudžbina" in (_v.get("reakcije") or []):
-            return True
-        if (_v.get("dnevnik") or {}).get("trebovao_posle_starta"):
-            return True
-        try:
-            _hz = st.session_state.get("hist_" + str(sistem) + "_" + str(_o["idk"]))
-            if _hz and not _hz.get("err") and _porucio_posle_starta(_o["idk"], _hz.get("lst") or [], _snap_z):
-                return True
-        except Exception:
-            pass
-        try:
-            _raw = hitnost_objekta(_o["lst"])[0]
-        except Exception:
-            _raw = _o.get("nivo")
-        return _raw in ("crveno", "zuto") and _o.get("nivo") == "zeleno"
-
-    tab_lista, tab_detalj, tab_bulk = st.tabs(["Lista objekata", "Detalj / obrada", "📧 Grupno slanje mejlova"])
-
-    with tab_lista:
+    if _view == _VIEWS[0]:
         _cut_list = _admin_presek(meta, mesec_key)
         _je_zavrseno = _zavrsen
         _rows = ""
         _export_rows = []
+        _list_rows = []          # isto, ali kao tabela u koju može da se klikne
         for o in objekti:
             z = _zona_disp(o["nivo"])
             v = obrada_map.get(o["idk"], {})
@@ -6158,6 +6186,23 @@ def prikazi_administraciju():
                 '<td class="ce">' + _treb_list_cell(v.get("trebovali_tip", ""), o["idk"] in reviewed) + '</td>'
                 + _zavcell +
                 '</tr>')
+            _tt_txt = ""
+            if _treb_mark:
+                _tt_txt = "  ⚠️ posle 01. (" + str(_tt) + ")"
+            _tip_l = (v.get("trebovali_tip", "") or "")
+            _list_rows.append({
+                "ID": int(o["idk"]),
+                "Naziv komitenta": (_nazlist or "— naknadno") + _tt_txt,
+                "Na nuli": int(o["na_nuli"]),
+                "Izgubljeno": int(o["izgub"]),
+                "Zona": z[2] + " " + z[3],
+                "Status": ("  ".join(_chips) if reak else "Nepregledano"),
+                "Trebovali": ("po našem" if _tip_l == "nas"
+                              else ("po njihovom" if _tip_l == "njihov"
+                                    else ("—" if o["idk"] in reviewed else "·"))),
+                "Završeno": ("✓ ZAVRŠENO" if _zav else "—"),
+                "_nivo": o["nivo"],
+            })
         # Izvoz u Excel (iznad liste)
         _lc1, _lc2 = st.columns([1.4, 3])
         with _lc1:
@@ -6174,16 +6219,69 @@ def prikazi_administraciju():
             _nz = sum(1 for r in _export_rows if r["zavrseno"])
             st.caption("Excel: mejl + 1./2./3. poziv (Da/Ne), ko i kada, i Završeno.  ·  Završeno: "
                        + str(_nz) + " / " + str(len(_export_rows)) + " objekata.")
-        st.markdown('<table class="adm-t">'
-            '<thead><tr><th>ID</th><th>Naziv komitenta</th><th>Na nuli</th><th>Izgubljeno</th>'
-            '<th>Zona</th><th>Status</th><th style="text-align:center;">Trebovali</th>'
-            '<th style="text-align:center;">Završeno</th></tr></thead>'
-            '<tbody>' + _rows + '</tbody></table>', unsafe_allow_html=True)
-        st.caption("Status i trebovanje se menjaju u kartici Detalj / obrada.  ·  "
+        # --- Tabela u koju može da se klikne: klik na red otvara taj objekat u Detalju ---
+        _klik_ok = False
+        try:
+            _ldf = pd.DataFrame(_list_rows)
+            _nivoi = list(_ldf["_nivo"]) if "_nivo" in _ldf.columns else []
+            _ldf = _ldf.drop(columns=["_nivo"], errors="ignore")
+
+            def _boja_reda(_r):
+                _n = _nivoi[_r.name] if _r.name < len(_nivoi) else ""
+                _bg = ("#fff8f8" if _n == "crveno" else ("#fffcf6" if _n == "zuto" else ""))
+                return ["background-color: " + _bg if _bg else ""] * len(_r)
+
+            _lsty = _ldf.style.apply(_boja_reda, axis=1)
+            _smap = getattr(_lsty, "map", None) or getattr(_lsty, "applymap")   # pandas <2.1
+            _lsty = _smap(lambda _x: ("color:#14532d;font-weight:700;background-color:#dcfce7"
+                                      if str(_x).startswith("✓") else ""),
+                          subset=["Završeno"])
+            _smap2 = getattr(_lsty, "map", None) or getattr(_lsty, "applymap")
+            _lsty = _smap2(lambda _x: "color:#d33;font-weight:600", subset=["Na nuli"])
+            _lver = int(st.session_state.get("_lista_v", 0))
+            _lkey = "lista_sel_" + str(sistem) + "_" + str(mesec_key) + "_" + str(_lver)
+            _ev = st.dataframe(_lsty, hide_index=True, use_container_width=True,
+                               on_select="rerun", selection_mode="single-row", key=_lkey,
+                               column_config={
+                                   "ID": st.column_config.NumberColumn("ID", width="small", format="%d"),
+                                   "Na nuli": st.column_config.NumberColumn("Na nuli", width="small"),
+                                   "Izgubljeno": st.column_config.NumberColumn("Izgubljeno", width="small"),
+                               })
+            _klik_ok = True
+            _pick = []
+            try:
+                _pick = list((_ev.selection or {}).get("rows") or [])
+            except Exception:
+                try:
+                    _pick = list((_ev or {}).get("selection", {}).get("rows") or [])
+                except Exception:
+                    _pick = []
+            if _pick:
+                _ri = int(_pick[0])
+                if 0 <= _ri < len(objekti):
+                    _oid_k = int(objekti[_ri]["idk"])
+                    _zk = _zona_disp(objekti[_ri]["nivo"])
+                    _nk = (komfull.get(_oid_k, {}) or {}).get("naziv", "")
+                    st.session_state["adm_pick"] = (_zk[2] + "  " + str(_oid_k)
+                                                    + (("  ·  " + _nk) if _nk else "")
+                                                    + "  ·  " + _zk[3])
+                    st.session_state["_lista_v"] = _lver + 1   # poništi izbor da se ne vrti
+                    st.session_state["adm_view"] = _VIEWS[1]
+                    st.rerun()
+        except Exception:
+            _klik_ok = False
+        if not _klik_ok:
+            st.markdown('<table class="adm-t">'
+                '<thead><tr><th>ID</th><th>Naziv komitenta</th><th>Na nuli</th><th>Izgubljeno</th>'
+                '<th>Zona</th><th>Status</th><th style="text-align:center;">Trebovali</th>'
+                '<th style="text-align:center;">Završeno</th></tr></thead>'
+                '<tbody>' + _rows + '</tbody></table>', unsafe_allow_html=True)
+        st.caption(("👆 Klikni na red da otvoriš taj objekat u Detalj / obrada.  ·  " if _klik_ok else "")
+                   + "Status i trebovanje se menjaju u kartici Detalj / obrada.  ·  "
                    "Završeno = objekat je poručio: stigla je nova porudžbina posle starta, "
                    "ili je prešao iz crvene/narandžaste u zelenu, ili je trebovanje ručno zabeleženo.")
 
-    with tab_detalj:
+    if _view == _VIEWS[1]:
         _labels = []
         for o in objekti:
             _zz = _zona_disp(o["nivo"])
@@ -6849,7 +6947,7 @@ def prikazi_administraciju():
                     except Exception as _e:
                         st.error("Greška: " + str(_e))
 
-    with tab_bulk:
+    if _view == _VIEWS[2]:
         st.markdown('<div class="adm-lbl">Grupno slanje mejlova objektima</div>', unsafe_allow_html=True)
         st.caption("Vidiš sve objekte sistema. Filtriraj po zoni / statusu mejla / nazivu, štikliraj koje želiš, "
                    "pa klikni Pošalji izabranima. Slanje radi sve isto kao pojedinačno slanje mejla "
