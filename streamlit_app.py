@@ -765,14 +765,16 @@ def sb_obrada_log(mesec_key, sistem, idk, kind, ko="", kopija=None):
         cli.table("obrada").upsert(_row, on_conflict="mesec,sistem,idk").execute()
 
 
-def sb_oznaci_trebovao(mesec_key, sistem, idk, kada="", n_por=0):
+def sb_oznaci_trebovao(mesec_key, sistem, idk, kada="", n_por=0,
+                       tip=None, njihova=None, info=None):
     """Trajno zabeleži da je objekat POSLAO PORUDŽBINU posle starta.
 
     Zove se pri ažuriranju iz admina. Piše u bazu, pa status ostaje i kad se
     izađe iz aplikacije i uđe ponovo bez novog ažuriranja.
 
-    Ne dira ručni izbor: ako je neko već označio kako je trebovano
-    (po našem / po njihovom), to se ne menja."""
+    tip / njihova / info: automatski prepoznat način trebovanja (po našem ili po
+    njihovom, na osnovu količina) i stvarno poručene količine po artiklu. Kada su
+    prosleđeni, upisuju se u bazu i NE menjaju se ručno — objekat je završen."""
     cli = _sb()
     if cli is None:
         return False
@@ -784,16 +786,24 @@ def sb_oznaci_trebovao(mesec_key, sistem, idk, kada="", n_por=0):
         _tip = str(_r.get("trebovali_tip") or "")
         _dn = dict(_r.get("dnevnik") or {})
         _vec = _dn.get("trebovao_posle_starta") or {}
-        if _tip and _vec:
-            return False                      # već zabeleženo i ručno potvrđeno — ne diraj
-        _dn["trebovao_posle_starta"] = {"at": _now().isoformat(),
+        _stara_njih = dict(_r.get("njihova") or {})
+        _nov_tip = str(tip or "") or (_tip or "nas")
+        _nova_njih = ({str(k): int(v) for k, v in (njihova or {}).items()}
+                      if njihova is not None else _stara_njih)
+        # Ništa novo — ne diraj bazu (da se pri svakom ažuriranju ne prepisuje bez potrebe)
+        if _vec and _tip == _nov_tip and _stara_njih == _nova_njih:
+            return False
+        _dn["trebovao_posle_starta"] = {"at": (_vec.get("at") or _now().isoformat()),
                                         "kada": str(kada or "")[:32],
-                                        "porudzbina": int(n_por or 0)}
+                                        "porudzbina": int(n_por or 0),
+                                        "tip": _nov_tip,
+                                        "auto": bool(tip),
+                                        "info": dict(info or {})}
         _row = {"mesec": mesec_key, "sistem": sistem, "idk": int(idk),
                 "reakcije": list(_r.get("reakcije") or []),
                 "trebovali": True,
-                "trebovali_tip": _tip or "nas",
-                "njihova": _r.get("njihova") or {},
+                "trebovali_tip": _nov_tip,
+                "njihova": _nova_njih,
                 "napomena": _r.get("napomena") or "",
                 "reakcije_ko": dict(_r.get("reakcije_ko") or {}),
                 "dnevnik": _dn, "azurirano": _now().isoformat()}
@@ -4232,6 +4242,75 @@ def _porucio_posle_starta(idk, hist_lst, snap):
     return False
 
 
+def _treb_posle_starta(idk, hist_lst, snap):
+    """Količine po artiklu SAMO iz porudžbina koje je objekat poslao POSLE starta.
+    Isti kriterijum kao _porucio_posle_starta (spisak ID-jeva sa starta, pa datum
+    kao rezerva). Vrati {ida: kom}."""
+    out = {}
+    if not hist_lst or not isinstance(snap, dict):
+        return out
+    import datetime as _dt
+
+    def _dodaj(_o):
+        for _s in (_o.get("stavke") or []):
+            try:
+                _ia = int(_s.get("ida"))
+            except Exception:
+                continue
+            out[_ia] = out.get(_ia, 0) + _to_int_kol(_s.get("kol"))
+
+    _baza = snap.get("narudzbine")
+    if isinstance(_baza, dict) and str(int(idk)) in _baza:
+        _stare = set(str(_x) for _x in (_baza.get(str(int(idk))) or []))
+        for _o in hist_lst:
+            _oid = str(_o.get("id") or "")
+            if _oid and (_oid not in _stare) and not _porudzbina_otkazana(_o):
+                _dodaj(_o)
+        return out
+    try:
+        _sd = _dt.datetime.strptime(str(snap.get("kada") or "").strip().split(" ")[0], "%d.%m.%Y").date()
+    except Exception:
+        return out
+    for _o in hist_lst:
+        if _porudzbina_otkazana(_o):
+            continue
+        try:
+            _dd = _dt.datetime.strptime((_o.get("datum") or "").split(" ")[0], "%d.%m.%Y").date()
+        except Exception:
+            continue
+        if _dd > _sd:
+            _dodaj(_o)
+    return out
+
+
+def _nacin_trebovanja(nase_kol, posle_map):
+    """Na osnovu KOLIČINA odredi da li je objekat trebovao PO NAŠEM ili PO NJIHOVOM.
+
+    nase_kol:  {ida: preporučena količina}  (naša por. iz izveštaja)
+    posle_map: {ida: poručeno}              (šta je stvarno poručio posle starta)
+
+    Po našem  = poručio je uglavnom ono što smo tražili, u traženim količinama.
+    Po njihovom = poručio je znatno manje od traženog ili druge artikle.
+
+    Vrati (tip, info) — tip je 'nas' ili 'njihov'."""
+    _nasi = {int(k): int(v) for k, v in (nase_kol or {}).items() if int(v or 0) > 0}
+    _por = {int(k): int(v) for k, v in (posle_map or {}).items() if int(v or 0) > 0}
+    _trazeno = sum(_nasi.values())
+    _ukupno = sum(_por.values())
+    _pokriveno = sum(min(_por.get(_ia, 0), _kol) for _ia, _kol in _nasi.items())
+    _van = sum(_kol for _ia, _kol in _por.items() if _ia not in _nasi)
+    _pok = (float(_pokriveno) / float(_trazeno)) if _trazeno > 0 else 0.0
+    _ud_van = (float(_van) / float(_ukupno)) if _ukupno > 0 else 0.0
+    if _trazeno <= 0:
+        _tip = "njihov"          # ništa nismo tražili, a oni su poručili po svom
+    elif _pok >= 0.7 and _ud_van <= 0.3:
+        _tip = "nas"
+    else:
+        _tip = "njihov"
+    return _tip, {"trazeno": _trazeno, "poruceno": _ukupno, "pokriveno": _pokriveno,
+                  "van_liste": _van, "procenat": int(round(_pok * 100))}
+
+
 def admin_istorija_bulk(idk_naziv, cutoff_date, max_details=800):
     """Za ceo sistem odjednom: jedan login + jedan /orders POST, pa detalji SAMO za
     porudžbine >= cutoff_date koje se poklapaju sa objektima (po nazivu, potvrda idUser).
@@ -5706,19 +5785,40 @@ def prikazi_administraciju():
             # i kad se izađe pa ponovo uđe bez novog ažuriranja.
             _snap_r = meta.get("start_zone") if isinstance(meta, dict) else None
             _n_zav = 0
+            _n_nas = _n_njih = 0
             for o in objekti:
                 _lz = (_hist_save.get(int(o["idk"])) or [])
                 try:
                     if _porucio_posle_starta(o["idk"], _lz, _snap_r):
+                        # Šta je stvarno poručio posle starta i da li je to PO NAŠEM
+                        # ili PO NJIHOVOM sistemu — određuje se automatski, po količinama.
+                        _pos_map = _treb_posle_starta(o["idk"], _lz, _snap_r)
+                        _nase_kol = {}
+                        for _s in o["lst"]:
+                            try:
+                                _nase_kol[int(_s["ida"])] = int(_s.get("kol", 0) or 0)
+                            except Exception:
+                                pass
+                        _atip, _ainfo = _nacin_trebovanja(_nase_kol, _pos_map)
+                        # u tabelu (kolona „Njihova por.") idu samo artikli iz izveštaja
+                        _anjih = {str(_ia): int(_pos_map.get(_ia, 0)) for _ia in _nase_kol
+                                  if int(_pos_map.get(_ia, 0)) > 0}
                         if sb_oznaci_trebovao(mesec_key, sistem, o["idk"],
-                                              kada=_kada_now, n_por=len(_lz)):
+                                              kada=_kada_now, n_por=len(_lz),
+                                              tip=_atip, njihova=_anjih, info=_ainfo):
                             _n_zav += 1
+                        if _atip == "nas":
+                            _n_nas += 1
+                        else:
+                            _n_njih += 1
                         # osveži čekboks/izbor u detaljnom pregledu
                         st.session_state.pop("treb_" + str(o["idk"]), None)
+                        st.session_state.pop("ed_" + str(o["idk"]), None)
                 except Exception:
                     pass
             st.session_state["_refresh_done"] = {"sis": sistem, "mes": mesec_key,
                                                  "n": _n_hist, "zav": _n_zav,
+                                                 "nas": _n_nas, "njih": _n_njih,
                                                  "inc": (_cut_inc.strftime("%d.%m.%Y") if _cut_inc else "")}
             st.rerun()
     _rf = st.session_state.get("_refresh_done")
@@ -5732,6 +5832,11 @@ def prikazi_administraciju():
                    "Objekata sa takvim porudžbinama: " + str(_rf.get("n", 0)) + "."
                    + ((" · ✅ " + str(_rf.get("zav", 0)) + " objekata je poručilo posle starta i "
                        "trajno je označeno kao ZAVRŠENO.") if _rf.get("zav") else ""))
+        if _rf.get("nas") or _rf.get("njih"):
+            st.info("🔎 Način trebovanja je prepoznat automatski, po količinama: **"
+                    + str(_rf.get("nas", 0)) + "** po našem sistemu · **"
+                    + str(_rf.get("njih", 0)) + "** po njihovom. Poručene količine su upisane u "
+                    "kolonu „Njihova por.“, a ti objekti su zaključani (ne menjaju se ručno).")
 
     # --- Startni rezultat: povuci porudžbine od preseka (jednom, pa se zaključa) ---
     _pk_s = _admin_presek(meta, mesec_key)
@@ -5973,8 +6078,17 @@ def prikazi_administraciju():
             _tip_now = TREB_CODE.get(st.session_state[_key_treb], "")
         else:
             _tip_now = _loaded_tip
-        _njihov_active = (_tip_now == "njihov")
         _auto_treb = (v.get("dnevnik") or {}).get("trebovao_posle_starta") or {}
+        # Objekat koji je posle starta poslao porudžbinu je ZAVRŠEN: način trebovanja
+        # je prepoznat automatski (po količinama) i ne menja se ručno — sve je zaključano.
+        _auto_lock = bool(_auto_treb)
+        if _auto_lock:
+            _tip_now = _loaded_tip or str(_auto_treb.get("tip") or "nas")
+        _njihov_active = (_tip_now == "njihov")
+        if _auto_lock:
+            # widget uvek prikazuje ono što je automatski prepoznato (ne staru ručnu vrednost)
+            st.session_state[_key_treb] = TREB_OPT[["", "nas", "njihov"].index(_tip_now)
+                                                   if _tip_now in ["", "nas", "njihov"] else 0]
         _revb = '<span class="revy">✓ Pregledano</span>' if sel_id in reviewed else '<span class="revn">Nepregledano</span>'
         _zav_ovaj = False
         try:
@@ -5992,6 +6106,39 @@ def prikazi_administraciju():
                     '<span class="zona ' + z[0] + '"><span class="zd"></span>' + z[3] + '</span>'
                     + _naz_html +
                     '<span style="margin-left:auto;">' + _revb + '</span></div>', unsafe_allow_html=True)
+        # --- VELIKA oznaka: objekat je završen i zaključan (ništa se ne dira) ---
+        if _zav_ovaj:
+            _ai = dict(_auto_treb.get("info") or {})
+            _tip_txt = (("PO NAŠEM SISTEMU" if _tip_now == "nas" else "PO NJIHOVOM SISTEMU")
+                        if _tip_now in ("nas", "njihov") else "")
+            _kol_txt = ""
+            if _ai.get("poruceno"):
+                _kol_txt = ('Poručeno ' + str(_ai.get("poruceno", 0)) + ' kom od traženih '
+                            + str(_ai.get("trazeno", 0)) + ' kom (' + str(_ai.get("procenat", 0)) + '% naše porudžbine'
+                            + ((' · ' + str(_ai.get("van_liste", 0)) + ' kom van naše liste')
+                               if _ai.get("van_liste") else '') + ').')
+            _kada_txt = _dt_kratko(_auto_treb.get("at", "")) if _auto_treb.get("at") else ""
+            st.markdown(
+                '<div style="background:#dcfce7;border:2px solid #16a34a;border-radius:12px;'
+                'padding:14px 18px;margin:6px 0 14px;">'
+                '<div style="font-size:19px;font-weight:900;color:#14532d;letter-spacing:.3px;">'
+                '✅ ZAVRŠENO — OBJEKAT JE PORUČIO</div>'
+                + (('<div style="font-size:14px;font-weight:800;color:#166534;margin-top:4px;">Trebovano '
+                    + _tip_txt + '</div>') if _tip_txt else '')
+                + (('<div style="font-size:12.5px;color:#166534;margin-top:3px;">' + _h_escape(_kol_txt)
+                    + '</div>') if _kol_txt else '')
+                + ('<div style="font-size:12px;color:#15803d;margin-top:6px;font-style:italic;">'
+                   '🔒 Prepoznato automatski iz admina'
+                   + ((' · ' + _h_escape(_kada_txt)) if _kada_txt else '')
+                   + ' — količine su upisane u kolonu „Njihova por.“. Zaključano: ništa se ne menja ručno.'
+                   '</div>' if _auto_lock else
+                   '<div style="font-size:12px;color:#15803d;margin-top:6px;font-style:italic;">'
+                   + ('Ručno označeno trebovanje.' if _tip_now in ("nas", "njihov")
+                      else ('Porudžbina je ubačena u admin.'
+                            if "Ubačena porudžbina" in (v.get("reakcije") or [])
+                            else 'Objekat je prešao iz crvene u zelenu zonu.'))
+                   + '</div>')
+                + '</div>', unsafe_allow_html=True)
         _tel_raw = str(_kinfo.get("telefon", "") or "").strip()
         # očisti broj za tel: link (zadrži cifre i vodeći +)
         import re as _reph
@@ -6057,7 +6204,9 @@ def prikazi_administraciju():
 
         _dc1, _dc2 = st.columns([1.7, 1])
         with _dc1:
-            st.markdown('<div class="adm-lbl">Porudžbina i lager · upiši Njihovu por.</div>', unsafe_allow_html=True)
+            st.markdown('<div class="adm-lbl">Porudžbina i lager'
+                        + (' · 🔒 Njihova por. je upisana automatski iz admina'
+                           if _auto_lock else ' · upiši Njihovu por.') + '</div>', unsafe_allow_html=True)
             _arts = sorted(o["lst"], key=lambda x: (int(x["lager"]), -int(x["kol"])))
             _njm = v.get("njihova") or {}
 
@@ -6109,7 +6258,7 @@ def prikazi_administraciju():
                 "Dodatna por.": st.column_config.NumberColumn("Dodatna por.", help="Naša por. minus već poručeno posle 01. — ovo se šalje u admin"),
                 "Njihova por.": st.column_config.NumberColumn("Njihova por.", help="Koliko su stvarno poručili", min_value=0, step=1),
             }
-            if _njihov_active and not _zakljucan:
+            if _njihov_active and not _zakljucan and not _auto_lock:
                 _order = [" ", "Artikal", "Predikcija", "Lager (izv.)", "Posle 01.",
                           "Realni lager", "Naša por.", "Dodatna por.", "Njihova por."]
                 _edited = st.data_editor(_adf[_order], hide_index=True, use_container_width=True,
@@ -6124,10 +6273,13 @@ def prikazi_administraciju():
             else:
                 _order = [" ", "Artikal", "Predikcija", "Lager (izv.)", "Posle 01.",
                           "Realni lager", "Naša por.", "Dodatna por."]
-                if _njihov_active:  # zaključan njihov — prikaži i njihovu kolonu (samo pregled)
+                if _njihov_active or _auto_lock:  # zaključano — prikaži i njihovu kolonu (samo pregled)
                     _order.append("Njihova por.")
                 _sty = _adf[_order].style.set_properties(subset=["Dodatna por."], **{
                     "background-color": "#dcfce7", "color": "#14532d", "font-weight": "700"})
+                if _auto_lock and "Njihova por." in _order:
+                    _sty = _sty.set_properties(subset=["Njihova por."], **{
+                        "background-color": "#e0e7ff", "color": "#312e81", "font-weight": "700"})
                 st.dataframe(_sty, hide_index=True, use_container_width=True, column_config=_colcfg)
                 _njihova_new = {str(int(a["ida"])): int(_njm.get(str(int(a["ida"])), 0)) for a in _arts}
 
@@ -6164,7 +6316,7 @@ def prikazi_administraciju():
                 _mail_to = (_kinfo.get("email") or "").strip()
                 _sk_mail = "mailsent_" + str(sistem) + "_" + str(sel_id)
                 _can_mail = (bool(_exp_xlsx) and _mejl_ok(_mail_to) and smtp_dostupan()
-                             and not _zakljucan)
+                             and not _zakljucan and not _auto_lock)
                 _vec_poslat = "Poslala sam mejl" in (v.get("reakcije") or [])
                 _ck_mail = "_mailconf_" + str(sistem) + "_" + str(sel_id)
                 _dk_mail = "_dosend_" + str(sistem) + "_" + str(sel_id)
@@ -6236,7 +6388,9 @@ def prikazi_administraciju():
                             _confirm_body()
                     else:
                         _confirm_body()
-                if not smtp_dostupan():
+                if _auto_lock:
+                    st.caption("🔒 Objekat je završen (poručio je) — slanje mejla je zaključano.")
+                elif not smtp_dostupan():
                     _nn = _mail_nalog()
                     st.caption("✉️ Slanje mejla nije podešeno za tvoj nalog (Secrets: SMTP_USER"
                                + (("_" + _nn) if _nn else "") + " / SMTP_PASSWORD"
@@ -6367,11 +6521,11 @@ def prikazi_administraciju():
             with _xa:
                 _clk_nas = st.button("📦 Naše → admin", key="axn_" + str(sel_id),
                                      use_container_width=True,
-                                     disabled=(len(_nase_items) == 0 or _zakljucan))
+                                     disabled=(len(_nase_items) == 0 or _zakljucan or _auto_lock))
             with _xb:
                 _clk_nj = st.button("📦 Njihove → admin", key="axj_" + str(sel_id),
                                     use_container_width=True,
-                                    disabled=(len(_njih_items) == 0 or _zakljucan))
+                                    disabled=(len(_njih_items) == 0 or _zakljucan or _auto_lock))
             if _clk_nas:
                 _push_admin("nas", _nase_items)
             if _clk_nj:
@@ -6448,7 +6602,7 @@ def prikazi_administraciju():
                             + _h_escape(str(_lm.get("ko", ""))) + " · " + _h_escape(_dt_kratko(_lm.get("at", "")))
                             + '</div>', unsafe_allow_html=True)
             _r3 = st.checkbox("👤 Prosledi komercijali", value=("Obavestila direktorku" in _loaded),
-                              key="r3_" + str(sel_id), disabled=_zakljucan)
+                              key="r3_" + str(sel_id), disabled=(_zakljucan or _auto_lock))
             react = []
             if _ncall > 0: react.append("Pozvala sam")
             if _r2: react.append("Poslala sam mejl")
@@ -6456,27 +6610,33 @@ def prikazi_administraciju():
             # Otključano i kad je porudžbina sama stigla posle starta — inače bi
             # se automatski zabeležen status obrisao pri sledećem čuvanju.
             _can = bool(react) or bool(_auto_treb) or bool(_loaded_tip)
-            st.markdown('<div class="adm-lbl" style="margin-top:12px;">Trebovanje nakon reakcije</div>', unsafe_allow_html=True)
-            _tip_idx = ["", "nas", "njihov"].index(_loaded_tip) if _loaded_tip in ["", "nas", "njihov"] else 0
-            _treb_lbl = st.radio("Trebovanje", TREB_OPT, index=_tip_idx, disabled=not _can,
+            st.markdown('<div class="adm-lbl" style="margin-top:12px;">Trebovanje nakon reakcije'
+                        + (' · 🔒 zaključano' if _auto_lock else '') + '</div>', unsafe_allow_html=True)
+            _tip_idx = ["", "nas", "njihov"].index(_tip_now) if _tip_now in ["", "nas", "njihov"] else 0
+            _treb_lbl = st.radio("Trebovanje", TREB_OPT, index=_tip_idx,
+                                 disabled=(not _can) or _auto_lock,
                                  key=_key_treb, label_visibility="collapsed")
-            _tip_val = TREB_CODE.get(_treb_lbl, "") if _can else ""
-            if _auto_treb:
-                st.caption("✅ Automatski označeno — objekat je poslao porudžbinu posle starta"
-                           + ((" (zabeleženo " + _dt_kratko(_auto_treb.get("at", "")) + ")")
-                              if _auto_treb.get("at") else "") + ". Možeš da promeniš ako treba.")
+            _tip_val = (TREB_CODE.get(_treb_lbl, "") if _can else "") if not _auto_lock else _tip_now
+            if _auto_lock:
+                _ai2 = dict(_auto_treb.get("info") or {})
+                st.caption("🔒 Prepoznato automatski po količinama iz admina — "
+                           + ("po NAŠEM sistemu" if _tip_now == "nas" else "po NJIHOVOM sistemu")
+                           + ((" (" + str(_ai2.get("procenat", 0)) + "% naše porudžbine)")
+                              if _ai2.get("poruceno") else "")
+                           + ". Ne menja se ručno — objekat je završen.")
             elif not _can:
                 st.caption("🔒 Otključava se kad izabereš bar jednu reakciju.")
             st.markdown('<div class="adm-lbl" style="margin-top:12px;">Napomena (interno)</div>', unsafe_allow_html=True)
             _nap = st.text_area("Napomena", value=(v.get("napomena", "") or ""), key="nap_" + str(sel_id),
                                 height=72, label_visibility="collapsed",
                                 placeholder="npr. zvati posle 15h, tražiti vlasnika...")
-            if st.button("💾 Sačuvaj status", key="savest_" + str(sel_id), type="primary", disabled=_zakljucan):
+            if st.button(("💾 Sačuvaj napomenu" if _auto_lock else "💾 Sačuvaj status"),
+                         key="savest_" + str(sel_id), type="primary", disabled=_zakljucan):
                 if not _can:
                     st.error("Izaberi bar jednu reakciju — ne može da se sačuva samo napomena.")
                 elif ("Obavestila direktorku" in react) and not (_nap or "").strip():
                     st.error("Za prosleđivanje komercijali upiši napomenu — zašto prosleđuješ (obavezno).")
-                elif _tip_val == "njihov" and sum(int(x) for x in _njihova_new.values()) == 0:
+                elif (not _auto_lock) and _tip_val == "njihov" and sum(int(x) for x in _njihova_new.values()) == 0:
                     st.error("Za opciju Po njihovom sistemu upiši koliko su poručili (Njihova por.) pre čuvanja.")
                 else:
                     try:
