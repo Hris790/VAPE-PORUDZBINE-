@@ -1782,11 +1782,11 @@ def knez_admin_ui():
             pass
         st.session_state["_knez_dial_" + str(_idk)] = _tel
 
-    _KT = ["Pregled", "📧 Grupno slanje mejlova"]
+    _KT = ["Pregled", "📧 Grupno slanje mejlova", "📄 Lager liste (PDF → Excel)"]
     try:
-        _kt1, _kt2 = st.tabs(_KT, key="knez_tabs", on_change="rerun")
+        _kt1, _kt2, _kt3 = st.tabs(_KT, key="knez_tabs", on_change="rerun")
     except TypeError:
-        _kt1, _kt2 = st.tabs(_KT)
+        _kt1, _kt2, _kt3 = st.tabs(_KT)
 
     with _kt1:
         _pc1, _pc2 = st.columns([2.2, 1.4])
@@ -2197,6 +2197,119 @@ def knez_admin_ui():
                                                "\n\n".join(_por))
             st.session_state[_verk] += 1
             st.rerun()
+
+    # ===================== LAGER LISTE (PDF -> Excel) =====================
+    with _kt3:
+        st.caption("Pumpe uz odgovor \u0161alju PDF \u201eLager lista\u201c. Ovde se ti PDF-ovi \u010ditaju i "
+                   "prave jedan Excel: ID komitenta \u00b7 naziv artikla \u00b7 izlaz \u00b7 stanje.")
+        _pdf_izvori = []          # [{"ime", "data", "idk", "pumpa", "izvor"}]
+        for r in _pumpe:
+            for _o in (r.get("odg_live") or []):
+                for _pz in (_o.get("prilozi") or []):
+                    if _pz.get("data") and str(_pz.get("ime", "")).lower().endswith(".pdf"):
+                        _pdf_izvori.append({"ime": _pz["ime"], "data": _pz["data"],
+                                            "idk": r["idk"], "pumpa": r["naziv"],
+                                            "izvor": "mejl"})
+        if _pdf_izvori:
+            st.success("\U0001F4E5 Iz odgovora je dostupno " + str(len(_pdf_izvori))
+                       + " PDF priloga. (Ako ne vidi\u0161 sve, klikni \u201e\U0001F4E5 Proveri odgovore\u201c gore.)")
+        else:
+            st.info("Iz odgovora trenutno nema PDF priloga \u2014 klikni \u201e\U0001F4E5 Proveri odgovore\u201c gore, "
+                    "ili ubaci PDF-ove ru\u010dno ispod.")
+        _upl = st.file_uploader("Ili ubaci PDF-ove ru\u010dno (mo\u017ee vi\u0161e odjednom)",
+                                type=["pdf"], accept_multiple_files=True, key="knez_pdf_upl")
+        for _f in (_upl or []):
+            _pdf_izvori.append({"ime": _f.name, "data": _f.getvalue(), "idk": None,
+                                "pumpa": "", "izvor": "ru\u010dno"})
+        if not _pdf_izvori:
+            return
+        if st.button("\U0001F4CA Pro\u010ditaj PDF-ove i napravi Excel", key="knez_pdf_go",
+                     type="primary", use_container_width=True):
+            _stavke = []
+            _izv = []
+            _prog2 = st.progress(0, "\U0001F4C4 \u010citam PDF-ove\u2026")
+            for _i, _p in enumerate(_pdf_izvori):
+                _prog2.progress(int(_i / max(len(_pdf_izvori), 1) * 100),
+                                "\U0001F4C4 " + str(_p["ime"])[:46])
+                _r = knez_citaj_lager_pdf(_p["data"])
+                _idk = _p.get("idk")
+                _pumpa = _p.get("pumpa", "")
+                if _idk is None:
+                    _naj = _knez_nadji_pumpu(_r.get("bs", ""), _r.get("bs_naziv", ""), _pumpe)
+                    if _naj:
+                        _idk = _naj["idk"]; _pumpa = _naj["naziv"]
+                _izv.append({"ime": _p["ime"], "bs": _r.get("bs", ""),
+                             "bs_naziv": _r.get("bs_naziv", ""), "idk": _idk,
+                             "pumpa": _pumpa, "redova": len(_r.get("redovi") or []),
+                             "greska": _r.get("greska", ""), "izvor": _p["izvor"]})
+                for _x in (_r.get("redovi") or []):
+                    _stavke.append({"idk": _idk, "pumpa": _pumpa, "bs": _r.get("bs", ""),
+                                    "sifra": _x.get("sifra", ""), "naziv": _x.get("naziv", ""),
+                                    "izlaz": _x.get("izlaz"), "stanje": _x.get("stanje"),
+                                    "stanje_do": _x.get("stanje_do"), "ulaz": _x.get("ulaz"),
+                                    "vrednost": _x.get("vrednost"), "od": _r.get("od", ""),
+                                    "do": _r.get("do", ""), "fajl": _p["ime"]})
+            _prog2.empty()
+            st.session_state["_knez_pdf_rez"] = {"stavke": _stavke, "izv": _izv}
+            st.rerun()
+
+        _rez = st.session_state.get("_knez_pdf_rez") or {}
+        if _rez.get("izv"):
+            _izv = _rez["izv"]; _stavke = _rez["stavke"]
+            _ok_f = [x for x in _izv if x["redova"] and x["idk"]]
+            _bez_pumpe = [x for x in _izv if x["redova"] and not x["idk"]]
+            _lose = [x for x in _izv if not x["redova"]]
+            st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+            st.dataframe(pd.DataFrame([{
+                "Fajl": x["ime"], "BS": x["bs"], "Pumpa (PDF)": x["bs_naziv"],
+                "ID komitenta": x["idk"] if x["idk"] else "\u2014",
+                "Pumpa (\u0161ifarnik)": x["pumpa"] or "\u2014",
+                "Redova": x["redova"],
+                "Status": ("\u2713 OK" if (x["redova"] and x["idk"])
+                           else ("\u26a0 nema pumpe" if x["redova"] else "\u2717 " + str(x["greska"])[:60])),
+            } for x in _izv]), hide_index=True, use_container_width=True)
+            if _lose:
+                st.error("\u2717 " + str(len(_lose)) + " fajlova nije pro\u010ditano \u2014 vidi kolonu Status. "
+                         "Ako je u pitanju druga\u010diji obrazac, po\u0161alji mi taj PDF pa da ga dodam.")
+            if _bez_pumpe:
+                st.warning("\u26a0 " + str(len(_bez_pumpe)) + " fajlova je pro\u010ditano, ali pumpa nije "
+                           "prepoznata iz \u0161ifarnika (broj BS se ne poklapa). Dodeli ih ru\u010dno:")
+                _opts2 = ["\u2014"] + [str(p["idk"]) + " \u00b7 " + p["naziv"] for p in _pumpe]
+                for _bi, _x in enumerate(_bez_pumpe):
+                    _c1, _c2 = st.columns([3, 1])
+                    with _c1:
+                        _pk2 = st.selectbox(str(_x["ime"])[:60] + "  (BS " + str(_x["bs"]) + ")",
+                                            _opts2, key="knez_pdfmap_" + str(_bi))
+                    with _c2:
+                        st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+                        if st.button("\u2713 Dodeli", key="knez_pdfmapb_" + str(_bi),
+                                     use_container_width=True, disabled=(_pk2 == "\u2014")):
+                            _tid2 = int(str(_pk2).split("\u00b7")[0].strip())
+                            _nz2 = next((p["naziv"] for p in _pumpe if p["idk"] == _tid2), "")
+                            for _s2 in _stavke:
+                                if _s2.get("fajl") == _x["ime"] and not _s2.get("idk"):
+                                    _s2["idk"] = _tid2; _s2["pumpa"] = _nz2
+                            _x["idk"] = _tid2; _x["pumpa"] = _nz2
+                            st.session_state["_knez_pdf_rez"] = {"stavke": _stavke, "izv": _izv}
+                            st.rerun()
+            _spremno = [s for s in _stavke if s.get("idk")]
+            st.caption("Pro\u010ditano ukupno " + str(len(_stavke)) + " redova iz "
+                       + str(len(_izv)) + " fajlova \u00b7 sa ID komitenta: " + str(len(_spremno)) + ".")
+            if _spremno:
+                _pv = pd.DataFrame([{"ID KOMITENTA": s["idk"], "Naziv artikla": s["naziv"],
+                                     "Izlaz": s["izlaz"], "Stanje": s["stanje"]}
+                                    for s in _spremno])
+                st.dataframe(_pv, hide_index=True, use_container_width=True,
+                             height=min(60 + 34 * len(_pv), 460))
+                try:
+                    _xb = knez_lager_xlsx(_spremno, _sel_lbl_k)
+                    st.download_button("\u2b07\ufe0f Preuzmi Excel (" + str(len(_spremno)) + " redova)",
+                                       _xb, file_name=("Knez_lager_" + str(mesec_key) + ".xlsx"),
+                                       mime=("application/vnd.openxmlformats-officedocument"
+                                             ".spreadsheetml.sheet"),
+                                       key="knez_lager_dl", type="primary")
+                except Exception as _xe:
+                    st.error("Excel nije napravljen: " + str(_xe))
 
 
 def potraz_admin_ui():
@@ -4367,6 +4480,205 @@ def knez_odgovori(adrese, nalog=None, od_datum=None, _v=0):
         return (_po, _nep, str(_e)[:200])
 
 
+_KNEZ_POPRAVKA = {
+    "ure??aj": "uređaj", "ure?aj": "uređaj", "urešaj": "uređaj",
+    "vre??ice": "vrećice", "vre?ice": "vrećice",
+    "vre??ica": "vrećica", "vre?ica": "vrećica",
+    "pi??e": "piće", "ka??ika": "kašika",
+}
+
+
+def _knez_ocisti_naziv(s):
+    """PDF iz njihovog programa gubi naša slova (ure??aj) — vrati ih nazad."""
+    _o = str(s or "").strip()
+    for _lose, _dobro in _KNEZ_POPRAVKA.items():
+        _o = _o.replace(_lose, _dobro)
+    import re as _r
+    return _r.sub(r"\s{2,}", " ", _o).strip()
+
+
+def _knez_broj(s):
+    """'2.670,00' -> 2670.0 ; '3,00' -> 3.0 ; prazno -> None"""
+    _t = str(s or "").strip().replace(" ", "").replace(" ", "")
+    if not _t:
+        return None
+    _t = _t.replace(".", "").replace(",", ".")
+    try:
+        return float(_t)
+    except Exception:
+        return None
+
+
+def knez_citaj_lager_pdf(data):
+    """Pročitaj 'Lager lista' PDF koji šalju pumpe.
+
+    Vrati {"bs": '083', "bs_naziv": 'BS ADA MARS', "od": '1.8.2026', "do": '31.8.2026',
+           "redovi": [{sifra, naziv, stanje_do, ulaz, izlaz, stanje, vrednost}], "greska": ''}
+    Radi po POLOŽAJU kolona (ne po razmacima), pa naziv artikla sa razmacima ne smeta."""
+    import io as _io, re as _re
+    _out = {"bs": "", "bs_naziv": "", "od": "", "do": "", "redovi": [], "greska": ""}
+    try:
+        import pdfplumber
+    except Exception:
+        _out["greska"] = ("Za čitanje PDF-a treba biblioteka pdfplumber — dodaj red "
+                          "„pdfplumber“ u requirements.txt na GitHub-u i uradi Reboot.")
+        return _out
+    try:
+        with pdfplumber.open(_io.BytesIO(data)) as _pdf:
+            _sve_reci = []
+            _tekst = []
+            for _pg in _pdf.pages:
+                _tekst.append(_pg.extract_text() or "")
+                for _w in (_pg.extract_words() or []):
+                    _w["_p"] = _pg.page_number
+                    _sve_reci.append(_w)
+            _txt = "\n".join(_tekst)
+    except Exception as _e:
+        _out["greska"] = "PDF se ne može pročitati: " + str(_e)[:140]
+        return _out
+
+    _m = _re.search(r"^\s*(\d{2,4})\s*[-–]\s*(.+?)\s*$", _txt, _re.M)
+    if _m:
+        _out["bs"] = _m.group(1).strip()
+        _out["bs_naziv"] = _knez_ocisti_naziv(_m.group(2))
+    _m2 = _re.search(r"period\s+od\s+([\d.]+)\s+do\s+([\d.]+)", _txt, _re.I)
+    if _m2:
+        _out["od"] = _m2.group(1); _out["do"] = _m2.group(2)
+
+    # --- provera da je to zaista ta tabela ---
+    if not _re.search(r"izlaz", _txt, _re.I) or not _re.search(r"stanje", _txt, _re.I):
+        _out["greska"] = ("Ovo ne izgleda kao \u201eLager lista\u201c \u2014 nisu na\u0111ene kolone "
+                          "Izlaz / Stanje.")
+        return _out
+    _top_h = None
+    for _w in _sve_reci:
+        if _w["text"].strip().lower() == "izlaz":
+            _top_h = _w["top"]
+            break
+
+    # --- grupi\u0161i re\u010di u redove (po vertikalnom polo\u017eaju) ---
+    _redovi = {}
+    for _w in _sve_reci:
+        if _top_h is not None and _w["top"] <= _top_h + 3:
+            continue
+        _k = (_w["_p"], round(_w["top"] / 3.0))
+        _redovi.setdefault(_k, []).append(_w)
+
+    # broj iz tabele UVEK ima decimale (3,00 / 2.670,00) \u2014 po tome se razlikuje
+    # od brojeva u nazivu artikla (HQD 1000, 17MG, 2000 puffs)
+    _RX_BROJ = _re.compile(r"^-?\d{1,3}(?:\.\d{3})*,\d{1,2}$|^-?\d+,\d{1,2}$")
+
+    for _k in sorted(_redovi.keys()):
+        _rw = sorted(_redovi[_k], key=lambda w: w["x0"])
+        _linija = " ".join(_w["text"] for _w in _rw)
+        if _re.search(r"ukupno", _linija, _re.I):
+            continue
+        if len(_rw) < 4 or not _re.match(r"^\d{1,4}$", _rw[0]["text"].strip()):
+            continue                      # prva kolona mora da bude redni broj
+        # od kraja reda skupi do 5 brojeva sa decimalama = Stanje do, Ulaz, Izlaz, Stanje, Vrednost
+        _vals = []
+        _i = len(_rw) - 1
+        while _i >= 0 and len(_vals) < 5:
+            _t = _rw[_i]["text"].strip()
+            if _RX_BROJ.match(_t):
+                _vals.insert(0, _knez_broj(_t))
+                _i -= 1
+            else:
+                break
+        if len(_vals) < 4:
+            continue
+        _ostatak = _rw[1:_i + 1]
+        _sif = ""
+        if _ostatak and _re.match(r"^\d{3,8}$", _ostatak[0]["text"].strip()):
+            _sif = _ostatak[0]["text"].strip()
+            _ostatak = _ostatak[1:]
+        _naz = _knez_ocisti_naziv(" ".join(_w["text"] for _w in _ostatak))
+        if not _naz:
+            continue
+        # mapiranje s DESNA: poslednja je Vrednost, pa Stanje, Izlaz, Ulaz, Stanje do
+        _v = ([None] * (5 - len(_vals))) + _vals
+        _out["redovi"].append({
+            "sifra": _sif, "naziv": _naz,
+            "stanje_do": _v[0], "ulaz": _v[1], "izlaz": _v[2],
+            "stanje": _v[3], "vrednost": _v[4]})
+    if not _out["redovi"]:
+        _out["greska"] = "PDF je pročitan, ali nijedan red tabele nije prepoznat."
+    return _out
+
+
+def _knez_bs_mapa(pumpe):
+    """Iz šifarnika napravi {broj BS: idk} — broj je ono posle poslednje crte
+    u nazivu (npr. „… BS ADA - 83“ -> 83)."""
+    import re as _r
+    _m = {}
+    for _p in (pumpe or []):
+        _nz = str(_p.get("naziv", "") or "")
+        _br = _r.findall(r"[-–]\s*(\d{1,4})\s*$", _nz)
+        if _br:
+            _m.setdefault(int(_br[0]), _p)
+    return _m
+
+
+def _knez_nadji_pumpu(bs, bs_naziv, pumpe):
+    """Pronađi pumpu iz šifarnika po broju BS, a ako ne uspe — po nazivu."""
+    import re as _r
+    _mapa = _knez_bs_mapa(pumpe)
+    try:
+        _p = _mapa.get(int(str(bs).lstrip("0") or "0"))
+        if _p:
+            return _p
+    except Exception:
+        pass
+    _nz = _r.sub(r"^BS\s+", "", str(bs_naziv or "")).strip().lower()
+    if not _nz:
+        return None
+    for _p in (pumpe or []):
+        _c = str(_p.get("naziv", "")).lower()
+        if _nz and _nz in _c:
+            return _p
+    _prva = _nz.split()[0] if _nz.split() else ""
+    if len(_prva) >= 4:
+        for _p in (pumpe or []):
+            if _prva in str(_p.get("naziv", "")).lower():
+                return _p
+    return None
+
+
+def knez_lager_xlsx(stavke, mesec_lbl=""):
+    """Napravi Excel: ID komitenta · Naziv artikla · Izlaz · Stanje (+ kontrolne kolone)."""
+    import io as _io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Lager liste"
+    _hdr = ["ID KOMITENTA", "Pumpa", "BS", "Šifra robe", "Naziv artikla",
+            "Izlaz", "Stanje", "Stanje do", "Ulaz", "Vrednost", "Period od", "Period do", "Fajl"]
+    ws.append(_hdr)
+    for _i in range(1, len(_hdr) + 1):
+        _c = ws.cell(row=1, column=_i)
+        _c.font = Font(name="Arial", bold=True, color="FFFFFF", size=10)
+        _c.fill = PatternFill("solid", fgColor="4C1D95")
+        _c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for _s in stavke:
+        ws.append([_s.get("idk"), _s.get("pumpa", ""), _s.get("bs", ""), _s.get("sifra", ""),
+                   _s.get("naziv", ""), _s.get("izlaz"), _s.get("stanje"),
+                   _s.get("stanje_do"), _s.get("ulaz"), _s.get("vrednost"),
+                   _s.get("od", ""), _s.get("do", ""), _s.get("fajl", "")])
+    for _r in ws.iter_rows(min_row=2):
+        for _c in _r:
+            _c.font = Font(name="Arial", size=10)
+    _sir = [14, 34, 7, 11, 46, 9, 9, 11, 8, 12, 12, 12, 26]
+    for _i, _w in enumerate(_sir, 1):
+        ws.column_dimensions[get_column_letter(_i)].width = _w
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = "A1:" + get_column_letter(len(_hdr)) + str(max(ws.max_row, 1))
+    _buf = _io.BytesIO()
+    wb.save(_buf)
+    return _buf.getvalue()
+
+
 def sb_knez_odgovor_set(mesec_key, idk, zapis):
     """Trajno zabeleži da je pumpa odgovorila (ko, kada, naslov, tekst, imena priloga).
     Sadržaj priloga se NE čuva u bazi — preuzima se iz sandučeta pri proveri."""
@@ -6050,6 +6362,66 @@ def prikazi_administraciju():
         st.session_state["_komfull"] = sb_komitenti_full()
     komfull = st.session_state.get("_komfull") or {}
 
+    # --- Objekti koje je analitika označila da NISU poslali izveštaj ---
+    # Ne ulaze u porudžbinu (nemamo im podatke), ali administracija mora da ih vidi.
+    _bez_iz = (meta.get("bez_izvestaja") or {}) if isinstance(meta, dict) else {}
+    _bez_idk = []
+    if isinstance(_bez_iz, dict):
+        _bez_idk = list(_bez_iz.get("idk") or [])
+    elif isinstance(_bez_iz, (list, tuple)):      # stariji zapis: obična lista
+        _bez_idk = list(_bez_iz)
+    _bez_idk = sorted({int(_x) for _x in _bez_idk if str(_x).strip().lstrip("-").isdigit()})
+    if _bez_idk:
+        _bez_sub = []
+        if isinstance(_bez_iz, dict):
+            if _bez_iz.get("ko"):
+                _bez_sub.append(str(_bez_iz["ko"]))
+            if _bez_iz.get("at"):
+                _bez_sub.append(str(_bez_iz["at"]))
+        st.markdown('<div style="background:#fff7ed;border:1px solid #fdba74;border-left:5px solid #f97316;'
+                    'border-radius:10px;padding:11px 15px;margin:2px 0 10px;">'
+                    '<div style="font-size:11.5px;font-weight:800;color:#9a3412;text-transform:uppercase;'
+                    'letter-spacing:.6px;">📭 Nisu poslali izveštaj — ' + str(len(_bez_idk)) + ' objekata</div>'
+                    '<div style="font-size:13.5px;color:#7c2d12;font-weight:600;margin-top:4px;">'
+                    'Ovi objekti NISU ušli u porudžbinu jer nemamo njihovo stanje i prodaju. '
+                    'Treba ih pozvati / poslati im mejl da dostave izveštaj.</div>'
+                    + (('<div style="font-size:11px;color:#c2410c;margin-top:5px;font-style:italic;">'
+                        + _h_escape(" · ".join(_bez_sub)) + '</div>') if _bez_sub else '')
+                    + '</div>', unsafe_allow_html=True)
+        with st.expander("📭 Spisak objekata koji nisu poslali izveštaj (" + str(len(_bez_idk)) + ")",
+                         expanded=False):
+            _bez_rows = []
+            for _bi in _bez_idk:
+                _bk = komfull.get(int(_bi), {}) or {}
+                _bez_rows.append(
+                    '<tr><td style="padding:6px 9px;border-bottom:1px solid #f1f5f9;font-weight:800;'
+                    'color:#0f172a;white-space:nowrap;">' + str(int(_bi)) + '</td>'
+                    '<td style="padding:6px 9px;border-bottom:1px solid #f1f5f9;color:#0f172a;">'
+                    + _h_escape(str(_bk.get("naziv", "") or "—")) + '</td>'
+                    '<td style="padding:6px 9px;border-bottom:1px solid #f1f5f9;color:#475569;">'
+                    + _h_escape(str(_bk.get("mesto", "") or "")) + '</td>'
+                    '<td style="padding:6px 9px;border-bottom:1px solid #f1f5f9;color:#475569;'
+                    'white-space:nowrap;">' + _h_escape(str(_bk.get("telefon", "") or "")) + '</td>'
+                    '<td style="padding:6px 9px;border-bottom:1px solid #f1f5f9;color:#475569;">'
+                    + _h_escape(str(_bk.get("email", "") or "")) + '</td></tr>')
+            st.markdown(
+                '<table style="width:100%;border-collapse:collapse;font-size:12.5px;">'
+                '<thead><tr style="background:#fff7ed;">'
+                '<th style="padding:7px 9px;text-align:left;color:#9a3412;font-size:11px;'
+                'text-transform:uppercase;letter-spacing:.5px;">ID</th>'
+                '<th style="padding:7px 9px;text-align:left;color:#9a3412;font-size:11px;'
+                'text-transform:uppercase;letter-spacing:.5px;">Naziv</th>'
+                '<th style="padding:7px 9px;text-align:left;color:#9a3412;font-size:11px;'
+                'text-transform:uppercase;letter-spacing:.5px;">Mesto</th>'
+                '<th style="padding:7px 9px;text-align:left;color:#9a3412;font-size:11px;'
+                'text-transform:uppercase;letter-spacing:.5px;">Telefon</th>'
+                '<th style="padding:7px 9px;text-align:left;color:#9a3412;font-size:11px;'
+                'text-transform:uppercase;letter-spacing:.5px;">Mejl</th>'
+                '</tr></thead><tbody>' + "".join(_bez_rows) + '</tbody></table>',
+                unsafe_allow_html=True)
+            st.caption("Spisak zadaje analitika pri objavi. Ovi objekti se ne prikazuju u tabeli "
+                       "porudžbine jer za njih nema predloga — ali se vide ovde.")
+
     # ===== Nedeljni/sistemski sistem: pojednostavljen prikaz =====
     if isinstance(meta, dict) and meta.get("nedeljni"):
         _dani = int(meta.get("nedeljni_dani", 7) or 7)   # period pokrivenosti (7 = nedeljni, 45 = mesec i po...)
@@ -6869,9 +7241,6 @@ def prikazi_administraciju():
         return
 
     n_obj = len(objekti)
-    n_red = sum(1 for o in objekti if o["nivo"] == "crveno")
-    n_org = sum(1 for o in objekti if o["nivo"] == "zuto")
-    n_grn = sum(1 for o in objekti if o["nivo"] == "zeleno")
     n_done = len([o for o in objekti if o["idk"] in reviewed])
     _pct = int(n_done / max(n_obj, 1) * 100)
 
@@ -6898,13 +7267,27 @@ def prikazi_administraciju():
             _raw = _o.get("nivo")
         return _raw in ("crveno", "zuto") and _o.get("nivo") == "zeleno"
 
+    # --- Zona koja se PRIKAZUJE ---
+    # Dopuna porudžbine je zamrznuta na startu (ne menja se), ali boja objekta mora da
+    # prati stvarno stanje: čim je objekat poručio ili smo mu mi ubacili porudžbinu,
+    # prelazi u zeleno — nema više šta da se zove. Zamrznuti nivo ostaje u "nivo".
     n_zav = 0
     for _ok2 in objekti:
         try:
-            if _zavrsen(_ok2, obrada_map.get(int(_ok2["idk"])) or {}):
-                n_zav += 1
+            _zv2 = _zavrsen(_ok2, obrada_map.get(int(_ok2["idk"])) or {})
         except Exception:
-            pass
+            _zv2 = False
+        _ok2["nivo_p"] = "zeleno" if _zv2 else _ok2["nivo"]
+        if _zv2:
+            n_zav += 1
+    # Završeni padaju na dno liste (kao i ranije kad bi prešli u zeleno)
+    objekti.sort(key=lambda r: (HIT_RANG[r["nivo_p"]], -r["izgub"]))
+    ids_sorted = [o["idk"] for o in objekti]
+    obj_by_id = {o["idk"]: o for o in objekti}
+
+    n_red = sum(1 for o in objekti if o["nivo_p"] == "crveno")
+    n_org = sum(1 for o in objekti if o["nivo_p"] == "zuto")
+    n_grn = sum(1 for o in objekti if o["nivo_p"] == "zeleno")
 
     st.markdown(
         '<div class="adm-kpi">'
@@ -6962,9 +7345,10 @@ def prikazi_administraciju():
         except Exception:
             _cut_all = None
         # --- Inkrementalno: već zapamćeno se NE povlači ponovo ---
-        # Za objekte koji su već jednom povučeni tražimo samo razliku (od poslednjeg
-        # ažuriranja unazad 5 dana radi sigurnosti), a punih ~6 meseci samo za objekte
-        # koji do sada nisu obuhvaćeni.
+        # Prvo povlačenje (START) uzme sve do TOG trenutka. Svako sledeće uzima razliku
+        # tačno od DANA kada je poslednji put povučeno (ceo taj dan se ponovo čita, pa
+        # su pokrivene i porudžbine unete kasnije istog dana). Punih ~6 meseci povlači
+        # se samo za objekte koji do sada uopšte nisu obuhvaćeni.
         _cov_r = set(str(x) for x in (meta.get("admin_hist_idk") or []))
         _cov_r |= set(str(x) for x in ((meta.get("admin_hist") or {}).keys()))
         _last_at_r = meta.get("admin_hist_at") if isinstance(meta, dict) else None
@@ -6972,7 +7356,7 @@ def prikazi_administraciju():
         if _last_at_r and _cov_r:
             try:
                 _d_last = datetime.date.fromisoformat(str(_last_at_r)[:10])
-                _cut_inc = _d_last - datetime.timedelta(days=5)
+                _cut_inc = _d_last          # tačno od dana poslednjeg povlačenja
                 if _cut_all and _cut_inc < _cut_all:
                     _cut_inc = _cut_all
             except Exception:
@@ -7207,7 +7591,7 @@ def prikazi_administraciju():
             _oo = obj_by_id.get(int(_oid))
             if not _oo:
                 return
-            _oz = _zona_disp(_oo["nivo"])
+            _oz = _zona_disp(_oo.get("nivo_p", _oo["nivo"]))
             _on = (komfull.get(int(_oid), {}) or {}).get("naziv", "")
             st.session_state["adm_pick"] = (_oz[2] + "  " + str(int(_oid))
                                             + (("  \u00b7  " + _on) if _on else "")
@@ -7227,7 +7611,7 @@ def prikazi_administraciju():
         _rows = []
         _export_rows = []
         for o in objekti:
-            z = _zona_disp(o["nivo"])
+            z = _zona_disp(o.get("nivo_p", o["nivo"]))
             v = obrada_map.get(o["idk"], {})
             reak = v.get("reakcije", [])
             _rko = v.get("reakcije_ko") or {}
@@ -7262,7 +7646,7 @@ def prikazi_administraciju():
                 stat = "".join('<span class="stchip">' + _h_escape(c) + '</span>' for c in _chips)
             else:
                 stat = '<span class="stat">Nepregledano</span>'
-            _rc = "row-red" if o["nivo"] == "crveno" else ("row-org" if o["nivo"] == "zuto" else "")
+            _rc = "row-red" if o.get("nivo_p") == "crveno" else ("row-org" if o.get("nivo_p") == "zuto" else "")
             _treb_mark = ""
             _hf = st.session_state.get("hist_" + str(sistem) + "_" + str(o["idk"]))
             if _hf and not _hf.get("err"):
@@ -7281,7 +7665,7 @@ def prikazi_administraciju():
                 "stat": stat,
                 "treb": _treb_list_cell(v.get("trebovali_tip", ""), o["idk"] in reviewed),
                 "zav": _zavcell,
-                "rc": ("red" if o["nivo"] == "crveno" else ("org" if o["nivo"] == "zuto" else "")),
+                "rc": ("red" if o.get("nivo_p") == "crveno" else ("org" if o.get("nivo_p") == "zuto" else "")),
             })
         # Izvoz u Excel (iznad liste)
         _lc1, _lc2 = st.columns([1.4, 3])
@@ -7355,7 +7739,7 @@ def prikazi_administraciju():
     with tab_detalj:
         _labels = []
         for o in objekti:
-            _zz = _zona_disp(o["nivo"])
+            _zz = _zona_disp(o.get("nivo_p", o["nivo"]))
             _nz = (komfull.get(int(o["idk"]), {}) or {}).get("naziv", "")
             _labels.append(_zz[2] + "  " + str(o["idk"]) + (("  ·  " + _nz) if _nz else "") + "  ·  " + _zz[3])
         _lab2id = {_labels[i]: ids_sorted[i] for i in range(len(objekti))}
@@ -7381,7 +7765,7 @@ def prikazi_administraciju():
 
         sel_id = _lab2id[st.session_state.adm_pick]
         o = obj_by_id[sel_id]
-        z = _zona_disp(o["nivo"])
+        z = _zona_disp(o.get("nivo_p", o["nivo"]))
         v = obrada_map.get(sel_id, {"reakcije": [], "trebovali_tip": ""})
         TREB_OPT = ["— nije trebovano", "Po našem sistemu", "Po njihovom sistemu (ne po našem)"]
         TREB_CODE = {"— nije trebovano": "", "Po našem sistemu": "nas", "Po njihovom sistemu (ne po našem)": "njihov"}
@@ -8060,7 +8444,7 @@ def prikazi_administraciju():
             _bkinfo = komfull.get(_bidk, {}) or {}
             _bnaziv = _bkinfo.get("naziv", "") or ("ID " + str(_bidk))
             _bemail = (_bkinfo.get("email") or "").strip()
-            _bz = _zona_disp(o["nivo"])
+            _bz = _zona_disp(o.get("nivo_p", o["nivo"]))
             _bhist = st.session_state.get("hist_" + str(sistem) + "_" + str(_bidk))
             _btreb_map = _treb_posle_preseka(_bhist.get("lst") or [], _cut_hit) if (_bhist and not _bhist.get("err")) else {}
             _bstavki = 0
@@ -8086,7 +8470,7 @@ def prikazi_administraciju():
                 "mail_sent": _bmail_sent, "mail_ko": _bmail_ko, "mail_n": _bmail_n,
                 "mail_at": _bmail_at, "_mejlovi": _bmej_lst,
                 "_vraceno_baza": (_bobr.get("dnevnik") or {}).get("vraceno"),
-                "_zona": o["nivo"], "_email_ok": _mejl_ok(_bemail), "_has_rows": _bstavki > 0,
+                "_zona": o.get("nivo_p", o["nivo"]), "_email_ok": _mejl_ok(_bemail), "_has_rows": _bstavki > 0,
             })
         _vrac = {}
         if st.session_state.get("_vrac_v"):
@@ -10324,7 +10708,42 @@ class PredictionEngine:
         self.analitika_meseci = analitika_meseci
         self.logs = []; self.adjustments = []; self.has_history = False
         self.has_prices = False
+        self.upozorenja = []      # problemi u ulaznom fajlu (prazne ćelije i sl.)
     def log(self, msg): self.logs.append(msg)
+
+    def _ocisti_brojeve(self, df, kolone, ime_sheeta):
+        """Prazne (ili nebrojčane) ćelije u brojčanim kolonama -> 0, uz jasnu prijavu
+        gde se tačno nalaze, da se greška ispravi u izvornom fajlu."""
+        if df is None or not len(df):
+            return
+        for _k in kolone:
+            if _k not in df.columns:
+                continue
+            _pre = pd.to_numeric(df[_k], errors="coerce")
+            _loše = _pre.isna()
+            _n = int(_loše.sum())
+            if _n:
+                _rows = [int(_i) + 2 for _i in df.index[_loše]][:8]   # +2 = red u Excelu
+                _det = ""
+                for _c in ("ID KOMITENTA", "ID KOMIENTA", "id komitenta"):
+                    if _c in df.columns:
+                        _ob = sorted(set(str(_x) for _x in df.loc[_loše, _c].tolist()))[:6]
+                        _det = " · objekat " + ", ".join(_ob)
+                        break
+                for _c in ("Mesec", "MESEC"):
+                    if _c in df.columns:
+                        _ms = sorted(set(str(_x) for _x in df.loc[_loše, _c].tolist()))[:6]
+                        _det += " · mesec " + ", ".join(_ms)
+                        break
+                self.upozorenja.append(
+                    "Sheet „" + str(ime_sheeta) + "“, kolona „" + str(_k) + "“: "
+                    + str(_n) + " praznih ćelija" + _det
+                    + " · redovi u Excelu: " + ", ".join(str(_r) for _r in _rows)
+                    + ("…" if _n > len(_rows) else "")
+                    + ". Računato je kao 0 — ako nije tako, ispravi u fajlu i objavi ponovo.")
+                self.log("⚠️ " + ime_sheeta + "/" + _k + ": " + str(_n) + " praznih ćelija -> 0")
+            df[_k] = _pre.fillna(0)
+
     def run(self, progress_bar):
         progress_bar.progress(5, "Ucitavanje..."); self._load_sheets()
         progress_bar.progress(15, "Priprema..."); self._prepare_lookups()
@@ -10367,6 +10786,15 @@ class PredictionEngine:
         if s_tl:
             self.trenutni = pd.read_excel(xls, sheet_name=s_tl); self.trenutni.columns=[c.strip() for c in self.trenutni.columns]
             self.log(f"Trenutni lager: {len(self.trenutni)} redova")
+        # --- Prazne ćelije u brojčanim kolonama: popuni nulom i JASNO prijavi ---
+        # (jedna prazna ćelija je ranije rušila celu objavu porukom o NaN)
+        self._ocisti_brojeve(self.prodaja, ["Prodata Kolicina", "Lager"], "prodaja")
+        self._ocisti_brojeve(self.startni, ["Kolicina"], "startni lager")
+        if len(self.trenutni):
+            self._ocisti_brojeve(self.trenutni, ["Lager"], "trenutni lager")
+        if len(self.povrat_df):
+            self._ocisti_brojeve(self.povrat_df, ["Količina POVRATA", "Kolicina POVRATA",
+                                                  "Kolicina"], "povrat")
         self.hist_df = pd.DataFrame()
         self.has_history = False
         _meseci_u_prodaji = self.prodaja[['Godina','Mesec']].drop_duplicates().values.tolist()
@@ -10603,8 +11031,10 @@ class PredictionEngine:
                     if s[-1] > 1: comb = s[-1]
             preds[(it['idk'],it['ida'])]=(max(0,comb),full_avg,avg_5m_raw)
         items=[{'k':k,'p':v[0],'a':v[1],'avg5':v[2]} for k,v in preds.items()]; df_p=pd.DataFrame(items)
-        df_p['pr']=df_p['p'].apply(lambda x: round(x))
-        df_p['ar']=df_p['a'].apply(lambda x: round(x))
+        # prazna/nepostojeća vrednost ne sme da sruši objavu — računa se kao 0
+        df_p['pr']=pd.to_numeric(df_p['p'], errors="coerce").fillna(0).round().astype(int)
+        df_p['ar']=pd.to_numeric(df_p['a'], errors="coerce").fillna(0).round().astype(int)
+        df_p['avg5']=pd.to_numeric(df_p['avg5'], errors="coerce").fillna(0)
         self.pred_dict={r['k']:(int(r['pr']),int(r['ar']),int(r['pr']-r['ar']),r['avg5']) for _,r in df_p.iterrows()}
         self.log(f"Predikcija: {sum(v[0] for v in self.pred_dict.values())} kom")
     def _merge_lager(self):
@@ -11767,8 +12197,8 @@ with tab_obj:
                 _o_maxpa = st.text_input("Maksimum po komadu (po stavci)", value="", placeholder="prazno = bez ograničenja", key="obj_maxpa")
                 _o_tr = st.number_input("Ukupan trosak mkt (RSD)", min_value=0, value=0, step=10000, key="obj_tr")
             with _oc3:
-                _o_excl = st.text_area("Isključeni komitenti (ID, zarez)", value=DEFAULT_EXCLUDED, height=110, key="obj_excl")
-                _o_syx = st.text_area("Objekti koji prodaju SYX (ID, zarez)", value="", height=90, key="obj_syx",
+                _o_excl = st.text_area("Isključeni komitenti (ID, zarez)", value=DEFAULT_EXCLUDED, height=90, key="obj_excl")
+                _o_syx = st.text_area("Objekti koji prodaju SYX (ID, zarez)", value="", height=80, key="obj_syx",
                                       placeholder="prazno = SYX ide svima; ako upišeš ID-jeve, SYX se predlaže samo u tim objektima")
         _o_min_lager = int(_o_ml) if _o_ml.strip().isdigit() else None
         _o_min_order = int(_o_mo) if _o_mo.strip().isdigit() else None
@@ -11835,16 +12265,20 @@ with tab_obj:
                     _old_m = (_old_p or {}).get("meta") or {}
                     _on = (_old_m.get("nap_analitika") or {}).get("tekst", "")
                     _om = (_old_m.get("mail_to_fix") or {}).get("to", "")
+                    _ob = (_old_m.get("bez_izvestaja") or {}).get("idk") or []
                     if _on and not st.session_state.get("obj_napomena"):
                         st.session_state["obj_napomena"] = _on
                     if _om and not st.session_state.get("obj_mail_fix"):
                         st.session_state["obj_mail_fix"] = _om
+                    if _ob and not st.session_state.get("obj_bez"):
+                        st.session_state["obj_bez"] = ", ".join(str(int(_x)) for _x in _ob)
                 except Exception:
                     pass
                 st.session_state[_pf_k] = True
-            with st.expander("📝 Napomena i mejl za administraciju (opciono)",
+            with st.expander("📝 Napomena, mejl i objekti bez izveštaja (opciono)",
                              expanded=bool(st.session_state.get("obj_napomena")
-                                           or st.session_state.get("obj_mail_fix"))):
+                                           or st.session_state.get("obj_mail_fix")
+                                           or st.session_state.get("obj_bez"))):
                 _o_napomena = st.text_area(
                     "Napomena za administraciju", key="obj_napomena", height=80,
                     placeholder="npr. Mejl se šalje petkom. Kontakt osoba je Marko, zvati posle 10h.",
@@ -11857,6 +12291,22 @@ with tab_obj:
                          "Ako ostaviš prazno, administracija sama upisuje mejl.")
                 if (_o_mail_fix or "").strip() and "@" not in _o_mail_fix:
                     st.warning("Mejl ne izgleda ispravno (nema @).")
+                _o_bez = st.text_area(
+                    "📭 Nisu poslali izveštaj (ID komitenta, zarez)", key="obj_bez", height=80,
+                    placeholder="npr. 229, 230, 1087 — npr. pumpe koje nisu poslale stanje i prodaju",
+                    help="Ovi objekti se NE računaju u porudžbinu (nemamo im podatke), ali ih "
+                         "administracija VIDI u posebnom spisku „Nisu poslali izveštaj“ — za razliku "
+                         "od isključenih komitenata, koji se nigde ne prikazuju.")
+            # „Nisu poslali izveštaj“ — ne ulaze u porudžbinu, ALI se vide kod administracije
+            _o_bez_set = set()
+            for _part in (_o_bez or "").replace('\n', ',').split(','):
+                _p = _part.strip()
+                if _p.isdigit():
+                    _o_bez_set.add(int(_p))
+            _o_excluded |= _o_bez_set
+            if _o_bez_set:
+                st.caption("📭 " + str(len(_o_bez_set)) + " objekata je označeno kao „nisu poslali "
+                           "izveštaj“ — ne ulaze u porudžbinu, ali ih administracija vidi.")
 
             if not sb_dostupan():
                 st.info("Objava nije moguća dok Supabase nije podešen.")
@@ -11897,6 +12347,13 @@ with tab_obj:
                                 "to": _mf_an[:200],
                                 "ko": st.session_state.get("admin_user", "Analitika"),
                                 "at": _now().strftime("%d.%m.%Y %H:%M")}
+                        # Objekti koji NISU poslali izveštaj — ne ulaze u porudžbinu,
+                        # ali administracija mora da ih vidi (za razliku od isključenih).
+                        if _o_bez_set:
+                            _payload["meta"]["bez_izvestaja"] = {
+                                "idk": sorted(int(_x) for _x in _o_bez_set),
+                                "ko": st.session_state.get("admin_user", "Analitika"),
+                                "at": _now().strftime("%d.%m.%Y %H:%M")}
                         try:
                             _payload["direktor"] = direktor_blok(_eng, _res)
                         except Exception:
@@ -11910,6 +12367,10 @@ with tab_obj:
                             _xb64 = None
                         sb_objavi(_mk2, _osist, _payload, xlsx_b64=_xb64)
                         st.success(f"\u2705 Objavljeno: {_osist} \u2014 {_mlbl2} \u00b7 {len(_stavke)} stavki, {_payload['meta']['n_objekata']} objekata. Osveži (F5) da se ažurira lista gore.")
+                        if getattr(_eng, "upozorenja", None):
+                            st.warning("⚠️ U fajlu ima praznih ćelija — objava je prošla, "
+                                       "ali proveri ovo:\n\n"
+                                       + "\n\n".join("• " + str(_u) for _u in _eng.upozorenja))
                     except Exception as _e:
                         st.error(f"Greška pri objavi: {_e}")
                         import traceback as _tb
