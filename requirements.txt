@@ -6,3 +6,4 @@ supabase
 reportlab
 matplotlib
 requests
+pdfplumber
