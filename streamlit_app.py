@@ -724,6 +724,23 @@ def sb_obrada_log(mesec_key, sistem, idk, kind, ko="", kopija=None):
     reakcije_ko = dict(_r.get("reakcije_ko") or {})
     dnevnik = dict(_r.get("dnevnik") or {})
     _at = _now().isoformat()
+    if kind == "otvoreno":
+        # samo trag da je neko otvorio objekat i gledao ga — za merenje vremena.
+        # Ne pali nikakvu reakciju i ne menja status objekta.
+        _lst_o = list(dnevnik.get("otvaranja") or [])
+        _lst_o.append({"ko": ko or "", "at": _at})
+        dnevnik["otvaranja"] = _lst_o[-60:]
+        _row = {"mesec": mesec_key, "sistem": sistem, "idk": int(idk),
+                "reakcije": reakcije, "trebovali": bool(_r.get("trebovali_tip")),
+                "trebovali_tip": _r.get("trebovali_tip") or "",
+                "njihova": _r.get("njihova") or {}, "napomena": _r.get("napomena") or "",
+                "reakcije_ko": reakcije_ko, "dnevnik": dnevnik,
+                "azurirano": _at}
+        try:
+            cli.table("obrada").upsert(_row, on_conflict="mesec,sistem,idk").execute()
+        except Exception:
+            pass
+        return
     if kind == "poziv":
         dnevnik.setdefault("pozivi", []).append({"ko": ko or "", "at": _at})
         if "Pozvala sam" not in reakcije:
@@ -2435,18 +2452,40 @@ def knez_admin_ui():
 
             # ---------- 3) Pregledna tabela ----------
             st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
-            _f1, _f2 = st.columns([2, 3])
+            _f1, _fs, _f2 = st.columns([1.5, 1.6, 2.6])
             with _f1:
+                st.markdown("<div style='height:22px;'></div>", unsafe_allow_html=True)
                 _samo_prob = st.toggle("Prikaži samo probleme", value=bool(_prob),
                                        key="knez_flt_prob")
+            with _fs:
+                _SORT = ["Status (isti problemi zajedno)", "Pumpa (A–Š)", "Najviše redova",
+                         "Najmanje redova", "Fajl"]
+                _sort = st.selectbox("Sortiraj po", _SORT, key="knez_sort")
             with _f2:
-                st.markdown('<div style="font-size:12.5px;color:#6b7280;padding-top:6px;">'
+                st.markdown('<div style="font-size:12.5px;color:#6b7280;padding-top:30px;">'
                             '<b style="color:#15803d;">✓ ' + str(_n_ok) + '</b> pročitano  ·  '
                             '<b style="color:#b45309;">⚠ ✗ ' + str(len(_prob))
                             + '</b> za proveru  ·  ukupno ' + str(len(_izv))
                             + ' fajlova</div>', unsafe_allow_html=True)
             _pri = _prob if _samo_prob else _izv
-            _pri = sorted(_pri, key=lambda x: (x["st_ikona"] == "✓", str(x.get("pumpa") or "")))
+            _rang_ik = {"✗": 0, "⚠": 1, "✓": 2}     # prvo ono što ne valja
+
+            def _nz_sort(_x):
+                return str(_x.get("pumpa") or _x.get("bs_naziv") or "").lower()
+
+            if _sort == _SORT[1]:
+                _pri = sorted(_pri, key=lambda x: (_nz_sort(x), str(x.get("ime", ""))))
+            elif _sort == _SORT[2]:
+                _pri = sorted(_pri, key=lambda x: (-int(x.get("redova", 0) or 0), _nz_sort(x)))
+            elif _sort == _SORT[3]:
+                _pri = sorted(_pri, key=lambda x: (int(x.get("redova", 0) or 0), _nz_sort(x)))
+            elif _sort == _SORT[4]:
+                _pri = sorted(_pri, key=lambda x: (str(x.get("ime", "")).lower(), _nz_sort(x)))
+            else:
+                # po statusu (podrazumevano): isti problemi jedan ispod drugog —
+                # gleda se VRSTA problema (prvih par reči), pa onda ime pumpe
+                _pri = sorted(_pri, key=lambda x: (_rang_ik.get(x["st_ikona"], 9),
+                                                   str(x.get("st_txt", ""))[:26], _nz_sort(x)))
             if _pri:
                 _boja = {"✓": ("#dcfce7", "#166534"), "⚠": ("#fef3c7", "#92400e"),
                          "✗": ("#fee2e2", "#991b1b")}
@@ -6742,6 +6781,120 @@ def _statistika_agg(mesec_key):
     return agg
 
 
+def _efik_dogadjaji(mesec_key):
+    """Svi potezi administracije u mesecu: [(vreme, ko, sistem, vrsta, idk)].
+    Vrsta: otvoreno / poziv / mejl / komercijala / ubaceno / prijava."""
+    _out = []
+    _VRSTE = (("otvaranja", "otvoreno"), ("pozivi", "poziv"), ("mejlovi", "mejl"),
+              ("komercijala", "komercijala"), ("ubaceno", "ubaceno"))
+    for _sis in (sb_sisteme(mesec_key) or []):
+        try:
+            _obr = sb_load_obrada(mesec_key, _sis)
+        except Exception:
+            continue
+        for _idk, _v in (_obr or {}).items():
+            _dn = _v.get("dnevnik") or {}
+            for _kljuc, _vrsta in _VRSTE:
+                for _e in (_dn.get(_kljuc) or []):
+                    _t = _dt_parse(_e.get("at"))
+                    if _t:
+                        _out.append((_t, str(_e.get("ko", "") or "Bez oznake"),
+                                     str(_sis), _vrsta, int(_idk)))
+        try:
+            _meta = ((sb_ucitaj(mesec_key, _sis) or {}).get("meta") or {})
+        except Exception:
+            _meta = {}
+        for _k, _info in (_meta.get("nedeljni_prijave") or {}).items():
+            _t = _dt_parse((_info or {}).get("at"))
+            if _t:
+                try:
+                    _ik = int(_k)
+                except Exception:
+                    _ik = 0
+                _out.append((_t, str((_info or {}).get("ko", "") or "Bez oznake"),
+                             str(_sis), "prijava", _ik))
+    _out.sort(key=lambda x: x[0])
+    return _out
+
+
+def _dt_parse(s):
+    """'2026-09-17T11:43:05' ili '17.09.2026 11:43' -> datetime (ili None)."""
+    _s = str(s or "").strip()
+    if not _s:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(_s)
+    except Exception:
+        pass
+    for _f in ("%d.%m.%Y %H:%M", "%d.%m.%Y. %H:%M", "%d.%m.%Y %H:%M:%S", "%d.%m.%Y"):
+        try:
+            return datetime.datetime.strptime(_s, _f)
+        except Exception:
+            continue
+    return None
+
+
+# Koliko dugo se smatra da je rad „u toku" posle poslednjeg poteza, i koliki
+# razmak znači da je osoba prestala da radi (pa je to pauza, ne rad).
+EFIK_PAUZA_MIN = 20
+EFIK_POTEZ_MIN = 2
+
+
+def _efik_vreme(dogadjaji, pauza_min=EFIK_PAUZA_MIN, potez_min=EFIK_POTEZ_MIN):
+    """Procena AKTIVNOG vremena iz razmaka među potezima.
+
+    Potezi jedne osobe koji su bliži od `pauza_min` čine jednu sesiju rada.
+    Vreme sesije = od prvog do poslednjeg poteza + `potez_min` (za sam poslednji
+    potez). Usamljen potez se računa kao `potez_min` minuta.
+    Vreme se deli po sistemima: svaki razmak pripada sistemu poteza kojim počinje.
+
+    Vraća {"ukupno": min, "po_sistemu": {}, "po_osobi": {}, "po_danu": {},
+           "po_osobi_sistem": {(ko,sis): min}, "sesije": [...]}"""
+    _res = {"ukupno": 0.0, "po_sistemu": {}, "po_osobi": {}, "po_danu": {},
+            "po_osobi_sistem": {}, "sesije": []}
+    _po_ko = {}
+    for _t, _ko, _sis, _vr, _idk in (dogadjaji or []):
+        _po_ko.setdefault(_ko, []).append((_t, _sis, _vr, _idk))
+
+    def _dodaj(ko, sis, dan, minuta):
+        if minuta <= 0:
+            return
+        _res["ukupno"] += minuta
+        _res["po_sistemu"][sis] = _res["po_sistemu"].get(sis, 0.0) + minuta
+        _res["po_osobi"][ko] = _res["po_osobi"].get(ko, 0.0) + minuta
+        _res["po_danu"][dan] = _res["po_danu"].get(dan, 0.0) + minuta
+        _res["po_osobi_sistem"][(ko, sis)] = _res["po_osobi_sistem"].get((ko, sis), 0.0) + minuta
+
+    for _ko, _lst in _po_ko.items():
+        _lst.sort(key=lambda x: x[0])
+        _sesija = []
+        for _e in _lst + [None]:
+            if _sesija and (_e is None
+                            or (_e[0] - _sesija[-1][0]).total_seconds() > pauza_min * 60):
+                # zatvori sesiju
+                for _i in range(len(_sesija) - 1):
+                    _min = (_sesija[_i + 1][0] - _sesija[_i][0]).total_seconds() / 60.0
+                    _dodaj(_ko, _sesija[_i][1], _sesija[_i][0].date().isoformat(), _min)
+                _dodaj(_ko, _sesija[-1][1], _sesija[-1][0].date().isoformat(), potez_min)
+                _traj = ((_sesija[-1][0] - _sesija[0][0]).total_seconds() / 60.0) + potez_min
+                _res["sesije"].append({"ko": _ko, "od": _sesija[0][0], "do": _sesija[-1][0],
+                                       "minuta": _traj, "poteza": len(_sesija),
+                                       "objekata": len({_s[3] for _s in _sesija}),
+                                       "sistemi": sorted({_s[1] for _s in _sesija})})
+                _sesija = []
+            if _e is not None:
+                _sesija.append(_e)
+    return _res
+
+
+def _efik_hm(minuta):
+    """125.4 -> '2h 05m' ; 9 -> '9m'"""
+    _m = int(round(float(minuta or 0)))
+    if _m < 60:
+        return str(_m) + "m"
+    return str(_m // 60) + "h " + ("0" + str(_m % 60))[-2:] + "m"
+
+
 def render_statistika(mesec_key, sel_lbl):
     """Prikaz „ko je šta uradio" za izabrani mesec (koristi se i kod administracije i kod direktora)."""
     agg = _statistika_agg(mesec_key)
@@ -8548,6 +8701,18 @@ def prikazi_administraciju():
 
         sel_id = _lab2id[st.session_state.adm_pick]
         o = obj_by_id[sel_id]
+        # --- Beleženje da je objekat OTVOREN (za merenje aktivnog vremena) ---
+        # Upisuje se jednom po objektu u toku jedne sesije rada — ne na svako
+        # osvežavanje ekrana, da ne opterećuje bazu.
+        _otv_k = "_otv_log_" + str(mesec_key) + "_" + str(sistem)
+        _otv_set = st.session_state.setdefault(_otv_k, set())
+        if not _zakljucan and int(sel_id) not in _otv_set:
+            _otv_set.add(int(sel_id))
+            try:
+                sb_obrada_log(mesec_key, sistem, sel_id, "otvoreno",
+                              st.session_state.get("admin_user", ""))
+            except Exception:
+                pass
         z = _zona_disp(o.get("nivo_p", o["nivo"]))
         v = obrada_map.get(sel_id, {"reakcije": [], "trebovali_tip": ""})
         TREB_OPT = ["— nije trebovano", "Po našem sistemu", "Po njihovom sistemu (ne po našem)"]
@@ -11173,6 +11338,112 @@ def prikazi_direktore():
                 st.download_button("⬇️ Preuzmi PDF", st.session_state["dir_pdf"],
                     file_name="Izvestaj_administracije_" + mesec_key + ".pdf", mime="application/pdf",
                     key="dir_pdf_dl", use_container_width=True)
+
+        # ===== Aktivno vreme rada (procena) =====
+        st.markdown('<div style="margin:18px 0 4px;font-size:12px;text-transform:uppercase;'
+                    'letter-spacing:.6px;color:#9aa0ad;font-weight:700;">'
+                    '⏱ Aktivno vreme rada (procena)</div>', unsafe_allow_html=True)
+        _dog = _efik_dogadjaji(mesec_key)
+        if not _dog:
+            st.caption("Za ovaj mesec još nema zabeleženih poteza administracije.")
+        else:
+            _vr = _efik_vreme(_dog)
+            _obj_sis, _pot_sis = {}, {}
+            for _t, _ko, _sis, _vrsta, _idk in _dog:
+                _obj_sis.setdefault(_sis, set()).add(_idk)
+                _pot_sis[_sis] = _pot_sis.get(_sis, 0) + 1
+            _dana = len(_vr["po_danu"])
+            _ses = _vr["sesije"]
+            _k1, _k2, _k3, _k4 = st.columns(4)
+            for _kol, _br, _opis in (
+                    (_k1, _efik_hm(_vr["ukupno"]), "Ukupno aktivno"),
+                    (_k2, str(_dana), "Radnih dana"),
+                    (_k3, _efik_hm(_vr["ukupno"] / max(_dana, 1)), "Prosečno dnevno"),
+                    (_k4, str(len(_ses)), "Sesija rada")):
+                with _kol:
+                    st.markdown('<div style="background:#faf7ff;border:1px solid #e9d5ff;'
+                                'border-radius:12px;padding:13px 16px;">'
+                                '<div style="font-size:21px;font-weight:800;color:#6d28d9;">'
+                                + _h_escape(str(_br)) + '</div>'
+                                '<div style="font-size:11.5px;color:#8b7fa8;margin-top:2px;">'
+                                + _opis + '</div></div>', unsafe_allow_html=True)
+            _red_s = []
+            for _sis in sorted(_vr["po_sistemu"], key=lambda s: -_vr["po_sistemu"][s]):
+                _m = _vr["po_sistemu"][_sis]
+                _n_obj = len(_obj_sis.get(_sis, set()))
+                _tempo = (_n_obj / (_m / 60.0)) if _m > 0 else 0
+                _red_s.append('<tr><td class="nz">' + _h_escape(_sis) + '</td>'
+                              '<td class="br">' + _efik_hm(_m) + '</td>'
+                              '<td class="br">' + str(_n_obj) + '</td>'
+                              '<td class="br">' + str(_pot_sis.get(_sis, 0)) + '</td>'
+                              '<td class="br">' + (("%.0f" % _tempo) if _tempo else "—")
+                              + '</td>'
+                              '<td class="br">' + (_efik_hm(_m / _n_obj) if _n_obj else "—")
+                              + '</td></tr>')
+            st.markdown('<div class="knez-tab-wrap" style="margin-top:10px;">'
+                        '<table class="knez-tab"><thead><tr><th>Sistem</th>'
+                        '<th style="text-align:right;width:110px;">Aktivno vreme</th>'
+                        '<th style="text-align:right;width:90px;">Objekata</th>'
+                        '<th style="text-align:right;width:80px;">Poteza</th>'
+                        '<th style="text-align:right;width:110px;">Objekata/sat</th>'
+                        '<th style="text-align:right;width:110px;">Po objektu</th></tr></thead>'
+                        '<tbody>' + "".join(_red_s) + '</tbody></table></div>',
+                        unsafe_allow_html=True)
+            _red_o = []
+            for _ko in sorted(_vr["po_osobi"], key=lambda k: -_vr["po_osobi"][k]):
+                _sis_ko = sorted([(_s, _m) for (_k2x, _s), _m in _vr["po_osobi_sistem"].items()
+                                  if _k2x == _ko], key=lambda x: -x[1])
+                _dn_ko = len({_s["od"].date() for _s in _ses if _s["ko"] == _ko})
+                _red_o.append('<tr><td class="nz">' + _h_escape(_ko) + '</td>'
+                              '<td class="br">' + _efik_hm(_vr["po_osobi"][_ko]) + '</td>'
+                              '<td class="br">' + str(_dn_ko) + '</td>'
+                              '<td class="fj">'
+                              + _h_escape(", ".join(_s + " (" + _efik_hm(_m) + ")"
+                                                    for _s, _m in _sis_ko[:4]))
+                              + '</td></tr>')
+            st.markdown('<div class="knez-tab-wrap" style="margin-top:10px;">'
+                        '<table class="knez-tab"><thead><tr><th>Ko je radio</th>'
+                        '<th style="text-align:right;width:110px;">Aktivno vreme</th>'
+                        '<th style="text-align:right;width:90px;">Dana</th>'
+                        '<th>Na kojim sistemima</th></tr></thead><tbody>'
+                        + "".join(_red_o) + '</tbody></table></div>', unsafe_allow_html=True)
+            st.caption("Procena, ne štoperica: potezi jedne osobe u razmaku do "
+                       + str(EFIK_PAUZA_MIN) + " minuta broje se kao jedna sesija rada; veći "
+                       "razmak je pauza. Meri se samo rad KROZ APLIKACIJU — ne i vreme u "
+                       "adminu, ni dužina samog telefonskog razgovora. Zato je ovo donja "
+                       "granica stvarnog rada.")
+            with st.expander("📅 Po danima i pojedinačne sesije", expanded=False):
+                _dn_sort = sorted(_vr["po_danu"].items())
+                _maxd = max([_m for _, _m in _dn_sort] or [1])
+                _red_d = []
+                for _d, _m in _dn_sort:
+                    _sir = int(_m / _maxd * 100)
+                    _red_d.append(
+                        '<tr><td class="nz">' + _dt_kratko(_d)[:10] + '</td>'
+                        '<td class="br">' + _efik_hm(_m) + '</td>'
+                        '<td><div style="background:#ede9fe;border-radius:6px;height:12px;'
+                        'width:' + str(max(_sir, 2)) + '%;"></div></td></tr>')
+                st.markdown('<div class="knez-tab-wrap"><table class="knez-tab"><thead><tr>'
+                            '<th style="width:120px;">Dan</th>'
+                            '<th style="text-align:right;width:110px;">Vreme</th>'
+                            '<th></th></tr></thead><tbody>' + "".join(_red_d)
+                            + '</tbody></table></div>', unsafe_allow_html=True)
+                _red_x = []
+                for _s in sorted(_ses, key=lambda s: s["od"], reverse=True)[:40]:
+                    _red_x.append('<tr><td class="nz">' + _s["od"].strftime("%d.%m. %H:%M")
+                                  + ' – ' + _s["do"].strftime("%H:%M") + '</td>'
+                                  '<td class="br">' + _efik_hm(_s["minuta"]) + '</td>'
+                                  '<td>' + _h_escape(_s["ko"]) + '</td>'
+                                  '<td class="br">' + str(_s["objekata"]) + '</td>'
+                                  '<td class="fj">' + _h_escape(", ".join(_s["sistemi"])[:60])
+                                  + '</td></tr>')
+                st.markdown('<div class="knez-tab-wrap" style="margin-top:10px;">'
+                            '<table class="knez-tab"><thead><tr><th>Sesija</th>'
+                            '<th style="text-align:right;width:90px;">Trajanje</th>'
+                            '<th style="width:140px;">Ko</th>'
+                            '<th style="text-align:right;width:90px;">Objekata</th>'
+                            '<th>Sistemi</th></tr></thead><tbody>' + "".join(_red_x)
+                            + '</tbody></table></div>', unsafe_allow_html=True)
 
         st.markdown('<div style="margin:18px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;'
                     'color:#9aa0ad;font-weight:700;">⚠️ Upozorenja prosleđena od administracije</div>', unsafe_allow_html=True)
