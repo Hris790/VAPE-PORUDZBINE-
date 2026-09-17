@@ -2821,6 +2821,558 @@ def knez_admin_ui():
                     st.error("Excel nije napravljen: " + str(_xe))
 
 
+# ========================= PRIKUPLJANJE IZVEŠTAJA =========================
+# Jedna kartica za SVE sisteme: svaki sistem ima svoj naslov mejla i svoje
+# adrese (pamte se u bazi, važe za sve mesece). Odatle se šalje zahtev za
+# mesečni izveštaj i odatle se, na klik, povlače odgovori iz sandučeta.
+
+PRIKUP_POD = "PRIKUP-PODESAVANJA"       # „mesec" pod kojim stoje podešavanja
+PRIKUP_SCAN = "PRIKUP::_SCAN"           # red u kome stoji kada je čitano sanduče
+
+
+def _prikup_sis(sistem):
+    """Ključ pod kojim se pamti sistem (da se ne sudari sa redovima porudžbina)."""
+    return "PRIKUP::" + str(sistem or "").strip()
+
+
+def _prikup_adrese(tekst):
+    """Iz teksta („a@b.rs, c@d.rs" ili u novim redovima) napravi čistu listu adresa."""
+    import re as _r
+    _out, _vid = [], set()
+    for _a in _r.split(r"[,;\s]+", str(tekst or "")):
+        _a = _ocisti_mejl(_a)
+        if _a and _mejl_ok(_a) and _a.lower() not in _vid:
+            _vid.add(_a.lower())
+            _out.append(_a)
+    return _out
+
+
+PRIKUP_NASLOV_DEFAULT = "Izveštaj o prodaji i stanju zaliha — {mesec}"
+PRIKUP_TELO_DEFAULT = (
+    "Poštovani,\n\n"
+    "molimo Vas da nam za {sistem} pošaljete:\n\n"
+    "•  prodaju u periodu od {od} do {do}\n"
+    "•  stanje zaliha na dan {do}\n\n"
+    "Podatke možete poslati kao odgovor na ovaj mejl (Excel ili tabela u poruci).\n\n"
+    "Hvala unapred.\n\n"
+    "Srdačan pozdrav,")
+
+
+def _prikup_tekst(sablon, mesec_key, sistem=""):
+    _od, _do = _knez_period(mesec_key)
+    return (str(sablon or "").replace("{od}", _od).replace("{do}", _do)
+            .replace("{mesec}", mesec_label(mesec_key))
+            .replace("{sistem}", str(sistem or "")))
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def sb_prikup_podesavanja():
+    """{sistem: {"naslov":…, "adrese":[…], "telo":…, "ko":…, "at":…}} — važi za sve mesece."""
+    cli = _sb()
+    if cli is None:
+        return {}
+    try:
+        res = (cli.table("obrada").select("sistem,dnevnik")
+               .eq("mesec", PRIKUP_POD).eq("idk", 0).execute())
+        _out = {}
+        for _r in (res.data or []):
+            _naz = str(_r.get("sistem") or "")
+            if not _naz.startswith("PRIKUP::"):
+                continue
+            _p = (_r.get("dnevnik") or {}).get("prikup") or {}
+            _out[_naz[len("PRIKUP::"):]] = {
+                "naslov": str(_p.get("naslov") or ""),
+                "adrese": [str(_a) for _a in (_p.get("adrese") or [])],
+                "telo": str(_p.get("telo") or ""),
+                "ko": str(_p.get("ko") or ""), "at": str(_p.get("at") or "")}
+        return _out
+    except Exception:
+        return {}
+
+
+def sb_prikup_podesi(sistem, naslov, adrese, telo="", ko=""):
+    """Zapamti naslov mejla i adrese za taj sistem (važi dok se ne promeni)."""
+    cli = _sb()
+    if cli is None:
+        return False
+    try:
+        cli.table("obrada").upsert(
+            {"mesec": PRIKUP_POD, "sistem": _prikup_sis(sistem), "idk": 0,
+             "reakcije": [], "trebovali": False, "trebovali_tip": "", "njihova": {},
+             "napomena": "", "reakcije_ko": {},
+             "dnevnik": {"prikup": {"naslov": str(naslov or "")[:200],
+                                    "adrese": [str(_a)[:120] for _a in (adrese or [])][:20],
+                                    "telo": str(telo or "")[:4000],
+                                    "ko": str(ko or ""), "at": _now().isoformat()}},
+             "azurirano": _now().isoformat()},
+            on_conflict="mesec,sistem,idk").execute()
+        try:
+            sb_prikup_podesavanja.clear()
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def sb_prikup_stanje(mesec_key):
+    """Za izabrani mesec: {sistem: {"mejlovi":[…], "odgovori":[…]}}."""
+    cli = _sb()
+    if cli is None:
+        return {}
+    try:
+        res = (cli.table("obrada").select("sistem,dnevnik")
+               .eq("mesec", mesec_key).eq("idk", 0).like("sistem", "PRIKUP::%").execute())
+        _out = {}
+        for _r in (res.data or []):
+            _naz = str(_r.get("sistem") or "")
+            _dn = _r.get("dnevnik") or {}
+            _out[_naz[len("PRIKUP::"):]] = {"mejlovi": list(_dn.get("mejlovi") or []),
+                                            "odgovori": list(_dn.get("odgovori") or []),
+                                            "scan": dict(_dn.get("scan") or {})}
+        return _out
+    except Exception:
+        return {}
+
+
+def _prikup_dnevnik(mesec_key, sistem):
+    cli = _sb()
+    if cli is None:
+        return None, {}
+    try:
+        res = (cli.table("obrada").select("dnevnik")
+               .eq("mesec", mesec_key).eq("sistem", _prikup_sis(sistem))
+               .eq("idk", 0).limit(1).execute())
+        return cli, dict((res.data[0].get("dnevnik") or {}) if res.data else {})
+    except Exception:
+        return cli, {}
+
+
+def _prikup_upisi(cli, mesec_key, sistem, dnevnik):
+    cli.table("obrada").upsert(
+        {"mesec": mesec_key, "sistem": _prikup_sis(sistem), "idk": 0,
+         "reakcije": [], "trebovali": False, "trebovali_tip": "", "njihova": {},
+         "napomena": "", "reakcije_ko": {}, "dnevnik": dnevnik,
+         "azurirano": _now().isoformat()},
+        on_conflict="mesec,sistem,idk").execute()
+
+
+def sb_prikup_mejl_log(mesec_key, sistem, adrese, ko=""):
+    """Zabeleži da je zahtev poslat tom sistemu (ko, kada, na koje adrese)."""
+    cli, _dn = _prikup_dnevnik(mesec_key, sistem)
+    if cli is None:
+        return False
+    try:
+        _lst = list(_dn.get("mejlovi") or [])
+        _lst.append({"at": _now().isoformat(), "ko": str(ko or ""),
+                     "adrese": [str(_a)[:120] for _a in (adrese or [])][:20]})
+        _dn["mejlovi"] = _lst[-40:]
+        _prikup_upisi(cli, mesec_key, sistem, _dn)
+        return True
+    except Exception:
+        return False
+
+
+def sb_prikup_odgovor_set(mesec_key, sistem, zapis):
+    """Trajno zabeleži odgovor sistema. Vraća True ako je zapis NOV."""
+    cli, _dn = _prikup_dnevnik(mesec_key, sistem)
+    if cli is None:
+        return False
+
+    def _kl(_z):
+        return (str(_z.get("od", "")) + "|" + str(_z.get("at", ""))
+                + "|" + str(_z.get("naslov", ""))[:60])
+    try:
+        _lst = list(_dn.get("odgovori") or [])
+        if any(_kl(_p) == _kl(zapis) for _p in _lst):
+            return False
+        _lst.append({"od": zapis.get("od", ""), "ime": zapis.get("ime", ""),
+                     "at": zapis.get("at", ""), "naslov": zapis.get("naslov", ""),
+                     "tekst": str(zapis.get("tekst", ""))[:800],
+                     "prilozi": [{"ime": _p.get("ime", ""), "vel": int(_p.get("vel", 0) or 0)}
+                                 for _p in (zapis.get("prilozi") or [])],
+                     "upisano": _now().isoformat()})
+        _dn["odgovori"] = _lst[-30:]
+        _prikup_upisi(cli, mesec_key, sistem, _dn)
+        return True
+    except Exception:
+        return False
+
+
+def sb_prikup_scan_get(mesec_key):
+    cli = _sb()
+    if cli is None:
+        return {}
+    try:
+        res = (cli.table("obrada").select("dnevnik")
+               .eq("mesec", mesec_key).eq("sistem", PRIKUP_SCAN).eq("idk", 0)
+               .limit(1).execute())
+        if not res.data:
+            return {}
+        return ((res.data[0].get("dnevnik") or {}).get("scan") or {})
+    except Exception:
+        return {}
+
+
+def sb_prikup_scan_set(mesec_key, kada_iso, do_dana_iso, nadjeno=0, ko=""):
+    cli = _sb()
+    if cli is None:
+        return False
+    try:
+        cli.table("obrada").upsert(
+            {"mesec": mesec_key, "sistem": PRIKUP_SCAN, "idk": 0,
+             "reakcije": [], "trebovali": False, "trebovali_tip": "", "njihova": {},
+             "napomena": "", "reakcije_ko": {},
+             "dnevnik": {"scan": {"kada": kada_iso, "do_dana": do_dana_iso,
+                                  "nadjeno": int(nadjeno or 0), "ko": str(ko or "")}},
+             "azurirano": _now().isoformat()},
+            on_conflict="mesec,sistem,idk").execute()
+        return True
+    except Exception:
+        return False
+
+
+def prikup_admin_ui():
+    st.markdown("<div style='font-size:18px;font-weight:800;margin:4px 0 10px;'>"
+                "📨 Prikupljanje izveštaja</div>", unsafe_allow_html=True)
+    if not sb_dostupan():
+        st.error("Veza sa bazom trenutno nije podešena. Javi se analitičaru.")
+        return
+
+    _mk_opts = _knez_meseci(18)
+    _mk_lbls = [mesec_label(k) for k in _mk_opts]
+    _pc1, _pc2 = st.columns([1.2, 4])
+    with _pc1:
+        _sel_lbl = st.selectbox("Mesec izveštaja", _mk_lbls,
+                                index=(1 if len(_mk_lbls) > 1 else 0), key="prikup_mes")
+    mesec_key = _mk_opts[_mk_lbls.index(_sel_lbl)]
+    _od, _do = _knez_period(mesec_key)
+    with _pc2:
+        st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+        st.caption("Traži se prodaja **" + _od.rstrip(".") + " – " + _do
+                   + "** i stanje zaliha na **" + _do + "**")
+
+    # --- spisak sistema ---
+    _pod = sb_prikup_podesavanja()
+    _sistemi = sorted(set(sb_svi_sistemi()) | set(_pod.keys()) | set(sb_sisteme(mesec_key)))
+    _sistemi = [s for s in _sistemi if s and not str(s).startswith("PRIKUP::")]
+    if not _sistemi:
+        st.info("Još nema nijednog sistema. Analitičar treba prvo da objavi bar jedan izveštaj.")
+        return
+    _stanje = sb_prikup_stanje(mesec_key)
+
+    _n_uk = len(_sistemi)
+    _n_adr = sum(1 for s in _sistemi if (_pod.get(s) or {}).get("adrese"))
+    _n_pos = sum(1 for s in _sistemi if (_stanje.get(s) or {}).get("mejlovi"))
+    _n_odg = sum(1 for s in _sistemi if (_stanje.get(s) or {}).get("odgovori"))
+    st.markdown(
+        '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:6px 0 12px;">'
+        '<div style="background:#faf7ff;border:1px solid #e9d5ff;border-radius:12px;padding:15px 18px;">'
+        '<div style="font-size:22px;font-weight:800;color:#7c3aed;">' + str(_n_uk) + '</div>'
+        '<div style="font-size:12px;color:#8b7fa8;margin-top:3px;">Sistema</div></div>'
+        '<div style="background:#f6fdf9;border:1px solid #bbf7d0;border-radius:12px;padding:15px 18px;">'
+        '<div style="font-size:22px;font-weight:800;color:#158a3f;">' + str(_n_adr) + '</div>'
+        '<div style="font-size:12px;color:#6f9a80;margin-top:3px;">Sa upisanim adresama</div></div>'
+        '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:15px 18px;">'
+        '<div style="font-size:22px;font-weight:800;color:#1e40af;">' + str(_n_pos) + '</div>'
+        '<div style="font-size:12px;color:#6b82ad;margin-top:3px;">Poslat zahtev ('
+        + _h_escape(_sel_lbl) + ')</div></div>'
+        '<div style="background:#dcfce7;border:1px solid #86efac;border-radius:12px;padding:15px 18px;">'
+        '<div style="font-size:22px;font-weight:800;color:#14532d;">' + str(_n_odg) + '</div>'
+        '<div style="font-size:12px;color:#166534;margin-top:3px;font-weight:700;">📥 Odgovorili</div>'
+        '</div></div>', unsafe_allow_html=True)
+
+    # ---------- Provera odgovora u sandučetu (pamti dokle je pročitano) ----------
+    _scan_db = sb_prikup_scan_get(mesec_key)
+    _od_def = _now().date().replace(day=1)
+    try:
+        _prvi = None
+        for s in _sistemi:
+            for _m0 in ((_stanje.get(s) or {}).get("mejlovi") or []):
+                _d0 = str(_m0.get("at", ""))[:10]
+                if len(_d0) == 10 and (_prvi is None or _d0 < _prvi):
+                    _prvi = _d0
+        if _prvi:
+            _dp = datetime.date.fromisoformat(_prvi)
+            if _dp < _od_def:
+                _od_def = _dp
+    except Exception:
+        pass
+    try:
+        if _scan_db.get("do_dana"):
+            _dd = datetime.date.fromisoformat(str(_scan_db["do_dana"])[:10])
+            if _dd > _od_def:
+                _od_def = _dd
+    except Exception:
+        pass
+    _nx = st.session_state.pop("_prikup_od_next", None)
+    if _nx:
+        st.session_state["prikup_od_dat"] = _nx
+
+    _odg_k = "_prikup_odg_" + str(mesec_key)
+    _odg_ses = st.session_state.get(_odg_k) or {}
+
+    _sc1, _sc2, _sc3 = st.columns([1.5, 1.3, 3])
+    with _sc1:
+        st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+        _chk = st.button("📥 Proveri odgovore", key="prikup_scan", use_container_width=True,
+                         help="Čita sanduče i vezuje poruke za sistem po adresi pošiljaoca. "
+                              "Već pročitano se pamti — čita se samo razlika.")
+        if _scan_db.get("kada"):
+            st.markdown('<div style="font-size:10.5px;color:#9ca3af;line-height:1.35;'
+                        'margin:-6px 0 2px;">Poslednje ažuriranje: '
+                        + _h_escape(_dt_kratko(_scan_db.get("kada")))
+                        + (("  ·  " + _h_escape(str(_scan_db.get("ko"))))
+                           if _scan_db.get("ko") else "")
+                        + '<br>čita se samo razlika od tada</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div style="font-size:10.5px;color:#9ca3af;line-height:1.35;'
+                        'margin:-6px 0 2px;">Još nije ažurirano za ovaj mesec</div>',
+                        unsafe_allow_html=True)
+    with _sc2:
+        _od_dat = st.date_input("Čitaj poruke od", value=_od_def, key="prikup_od_dat",
+                                format="DD.MM.YYYY",
+                                help="Posle svake provere se sam pomeri na taj dan. Ako hoćeš "
+                                     "sve ispočetka, vrati datum na 1. u mesecu.")
+    with _sc3:
+        st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+        st.caption("Odgovor se vezuje za sistem po adresi sa koje je stigao — zato adrese "
+                   "moraju biti upisane ispod. Poruke sa nepoznatih adresa prikazuju se "
+                   "posebno, na dnu.")
+
+    if _chk:
+        _mapa = {}                       # adresa -> sistem
+        for s in _sistemi:
+            for _a in ((_pod.get(s) or {}).get("adrese") or []):
+                _mapa[str(_a).lower()] = s
+        if not _mapa:
+            st.warning("Nema nijedne upisane adrese — prvo upiši adrese po sistemima, "
+                       "pa onda proveri odgovore.")
+        else:
+            import time as _tm0
+            _t0 = _tm0.time()
+            with st.spinner("📥 Čitam sanduče od " + _od_dat.strftime("%d.%m.%Y") + "…"):
+                _po, _nep, _err = knez_odgovori(set(_mapa.keys()), od_datum=_od_dat)
+            if _err and not _po:
+                st.error("Čitanje sandučeta nije uspelo: " + str(_err))
+            _n_up = 0
+            for _a, _lst in (_po or {}).items():
+                _s = _mapa.get(str(_a).lower())
+                if not _s:
+                    continue
+                for _z in _lst:
+                    try:
+                        if sb_prikup_odgovor_set(mesec_key, _s, _z):
+                            _n_up += 1
+                    except Exception:
+                        pass
+
+            def _kl(_z):
+                return (str(_z.get("od", "")), str(_z.get("at", "")),
+                        str(_z.get("naslov", ""))[:60])
+            _spoj = {_a: list(_l) for _a, _l in (_odg_ses.get("po") or {}).items()}
+            for _a, _lst in (_po or {}).items():
+                _ex = _spoj.setdefault(_a, [])
+                _imam = {_kl(_z) for _z in _ex}
+                for _z in _lst:
+                    if _kl(_z) not in _imam:
+                        _ex.append(_z)
+                        _imam.add(_kl(_z))
+            _nep_spoj = list(_odg_ses.get("nep") or [])
+            _imam_n = {_kl(_z) for _z in _nep_spoj}
+            for _z in (_nep or []):
+                if _kl(_z) not in _imam_n:
+                    _nep_spoj.append(_z)
+                    _imam_n.add(_kl(_z))
+            st.session_state[_odg_k] = {"po": _spoj, "nep": _nep_spoj,
+                                        "kada": _now().strftime("%d.%m.%Y. %H:%M")}
+            try:
+                sb_prikup_scan_set(mesec_key, _now().isoformat(), _now().date().isoformat(),
+                                   nadjeno=sum(len(_l) for _l in (_po or {}).values()),
+                                   ko=st.session_state.get("admin_user", ""))
+                st.session_state["_prikup_od_next"] = _now().date()
+            except Exception:
+                pass
+            st.success("Pročitano za " + str(round(_tm0.time() - _t0, 1)) + " s  ·  novih "
+                       "odgovora: " + str(_n_up))
+            _stanje = sb_prikup_stanje(mesec_key)
+            _odg_ses = st.session_state.get(_odg_k) or {}
+
+    _odg_live = (_odg_ses.get("po") or {})
+
+    # ---------- Zajednički tekst mejla ----------
+    _telo_zaj = str((_pod.get("*") or {}).get("telo") or PRIKUP_TELO_DEFAULT)
+    with st.expander("✉️ Tekst mejla (isti za sve sisteme)", expanded=False):
+        with st.form("prikup_telo_forma", border=False):
+            _telo_novi = st.text_area("Telo poruke", value=_telo_zaj, height=230,
+                                      key="prikup_telo",
+                                      help="Može da sadrži {sistem}, {mesec}, {od} i {do} — "
+                                           "to se pri slanju zameni pravim vrednostima.")
+            if st.form_submit_button("💾 Sačuvaj tekst", type="primary"):
+                if sb_prikup_podesi("*", "", [], _telo_novi,
+                                    st.session_state.get("admin_user", "")):
+                    st.success("Tekst je sačuvan.")
+                    st.rerun()
+                else:
+                    st.error("Čuvanje nije uspelo.")
+        st.caption("Ovako izgleda za izabrani mesec:")
+        st.code(_prikup_tekst(_telo_zaj, mesec_key, "NAZIV SISTEMA"), language=None)
+
+    # ---------- Sistemi, jedan ispod drugog ----------
+    st.markdown('<div style="margin:16px 0 6px;font-size:12px;text-transform:uppercase;'
+                'letter-spacing:.6px;color:#9aa0ad;font-weight:700;">Sistemi</div>',
+                unsafe_allow_html=True)
+    st.caption("U naslovu može da stoji {mesec} — pri slanju se zameni imenom meseca "
+               "(za izabrani mesec to je „" + mesec_label(mesec_key) + "“). Adrese se "
+               "razdvajaju zarezom; sve upisano važi i za naredne mesece, dok se ne promeni.")
+
+    with st.form("prikup_forma", border=False):
+        st.markdown('<div class="prikup-hdr"><div>Sistem</div><div>Naslov mejla</div>'
+                    '<div>Adrese (razdvoji zarezom)</div></div>', unsafe_allow_html=True)
+        _uneto = {}
+        for s in _sistemi:
+            _p = _pod.get(s) or {}
+            _c1, _c2, _c3 = st.columns([1.5, 2.3, 2.6])
+            with _c1:
+                _st_s = _stanje.get(s) or {}
+                _zn = ("✅" if _st_s.get("odgovori") else ("📤" if _st_s.get("mejlovi") else "•"))
+                st.markdown('<div class="prikup-ime">' + _zn + " " + _h_escape(s)
+                            + '</div>', unsafe_allow_html=True)
+            with _c2:
+                _uneto[s] = {"naslov": st.text_input(
+                    "Naslov — " + s, value=str(_p.get("naslov") or PRIKUP_NASLOV_DEFAULT),
+                    key="prikup_n_" + s, label_visibility="collapsed")}
+            with _c3:
+                _uneto[s]["adrese"] = st.text_input(
+                    "Adrese — " + s, value=", ".join(_p.get("adrese") or []),
+                    key="prikup_a_" + s, label_visibility="collapsed",
+                    placeholder="ime@firma.rs, drugo@firma.rs")
+        _sacuvaj = st.form_submit_button("💾 Sačuvaj naslove i adrese", type="primary")
+
+    if _sacuvaj:
+        import re as _rep
+        _n_ok, _lose = 0, []
+        for s in _sistemi:
+            _u = _uneto.get(s) or {}
+            _adr = _prikup_adrese(_u.get("adrese"))
+            _sirovo = [x for x in _rep.split(r"[,;\s]+", str(_u.get("adrese") or "")) if x]
+            if len(_sirovo) != len(_adr):
+                _lose.append(s)
+            if sb_prikup_podesi(s, _u.get("naslov"), _adr, "",
+                                st.session_state.get("admin_user", "")):
+                _n_ok += 1
+        if _lose:
+            st.warning("Neke adrese nisu ispravne i nisu sačuvane kod: " + ", ".join(_lose))
+        st.success("Sačuvano za " + str(_n_ok) + " sistema.")
+        st.rerun()
+
+    # ---------- Slanje i odgovori, po sistemu ----------
+    st.markdown('<div style="margin:18px 0 6px;font-size:12px;text-transform:uppercase;'
+                'letter-spacing:.6px;color:#9aa0ad;font-weight:700;">Slanje i odgovori</div>',
+                unsafe_allow_html=True)
+    if not smtp_dostupan():
+        st.info("Slanje mejla trenutno nije podešeno (SMTP). Adrese i naslovi mogu da se "
+                "upišu, a slanje će raditi čim analitičar podesi nalog.")
+
+    for s in _sistemi:
+        _p = _pod.get(s) or {}
+        _adr = _p.get("adrese") or []
+        _st_s = _stanje.get(s) or {}
+        _mj = _st_s.get("mejlovi") or []
+        _odg = list(_st_s.get("odgovori") or [])
+        for _a in _adr:
+            for _z in (_odg_live.get(str(_a).lower()) or []):
+                if not any((str(_x.get("od", "")), str(_x.get("at", ""))) ==
+                           (str(_z.get("od", "")), str(_z.get("at", ""))) for _x in _odg):
+                    _odg.append(_z)
+        _zn = ("✅ odgovorili" if _odg else ("📤 poslato, čeka se odgovor" if _mj
+                                            else ("• nije poslato" if _adr else "⚠️ nema adrese")))
+        with st.expander(s + "   —   " + _zn, expanded=False):
+            if not _adr:
+                st.warning("Za ovaj sistem nije upisana nijedna adresa.")
+            else:
+                st.caption("Šalje se na: " + ", ".join(_adr))
+            _r1, _r2 = st.columns([1.2, 3])
+            with _r1:
+                _posalji = st.button("✉️ Pošalji zahtev", key="prikup_send_" + s,
+                                     use_container_width=True,
+                                     disabled=(not _adr or not smtp_dostupan()))
+            with _r2:
+                if _mj:
+                    _z = _mj[-1]
+                    st.caption("Poslednji put poslato: " + _dt_kratko(_z.get("at"))
+                               + (("  ·  " + str(_z.get("ko"))) if _z.get("ko") else "")
+                               + "  ·  ukupno puta: " + str(len(_mj)))
+                else:
+                    st.caption("Za " + _sel_lbl + " još nije poslat zahtev.")
+            if _posalji:
+                _naslov = _prikup_tekst(_p.get("naslov") or PRIKUP_NASLOV_DEFAULT, mesec_key, s)
+                _telo = _prikup_tekst(_telo_zaj, mesec_key, s) + "\n" + _potpis_tekst()
+                _greske = []
+                with st.spinner("Šaljem…"):
+                    for _a in _adr:
+                        try:
+                            posalji_mejl_sa_prilogom(_a, _naslov, _telo)
+                        except Exception as _e:
+                            _greske.append(_a + ": " + str(_e)[:120])
+                if _greske:
+                    st.error("Nije poslato na: " + "  ·  ".join(_greske))
+                _uspele = [a for a in _adr if not any(g.startswith(a + ":") for g in _greske)]
+                if _uspele:
+                    sb_prikup_mejl_log(mesec_key, s, _uspele,
+                                       st.session_state.get("admin_user", ""))
+                    st.success("Poslato na " + str(len(_uspele)) + " adresa.")
+                    st.rerun()
+            if _odg:
+                st.markdown('<div style="margin:10px 0 4px;font-size:12px;font-weight:700;'
+                            'color:#166534;">📥 Odgovori (' + str(len(_odg)) + ')</div>',
+                            unsafe_allow_html=True)
+                for _z in _odg[-10:]:
+                    _pril = _z.get("prilozi") or []
+                    st.markdown(
+                        '<div style="border:1px solid #e5e7eb;border-radius:10px;padding:10px 12px;'
+                        'margin:0 0 8px;background:#fcfcfd;">'
+                        '<div style="font-size:13px;font-weight:700;color:#1f2430;">'
+                        + _h_escape(str(_z.get("ime") or _z.get("od", ""))) + '</div>'
+                        '<div style="font-size:11.5px;color:#9ca3af;margin:2px 0 6px;">'
+                        + _h_escape(str(_z.get("od", ""))) + "  ·  "
+                        + _h_escape(str(_z.get("at", ""))) + '</div>'
+                        '<div style="font-size:12.5px;color:#374151;font-weight:600;">'
+                        + _h_escape(str(_z.get("naslov", ""))) + '</div>'
+                        + ('<div style="font-size:12px;color:#6b7280;margin-top:6px;'
+                           'white-space:pre-wrap;">' + _h_escape(str(_z.get("tekst", ""))[:400])
+                           + '</div>' if _z.get("tekst") else "")
+                        + ('<div style="margin-top:7px;font-size:11.5px;color:#5b21b6;">📎 '
+                           + _h_escape(", ".join(str(_x.get("ime", "")) for _x in _pril))
+                           + '</div>' if _pril else ""),
+                        unsafe_allow_html=True)
+                    for _i, _x in enumerate(_pril):
+                        if _x.get("data"):
+                            try:
+                                st.download_button(
+                                    "⬇️ " + str(_x.get("ime") or "prilog"), _x["data"],
+                                    file_name=str(_x.get("ime") or "prilog"),
+                                    key=("prikup_dl_" + s + "_" + str(_z.get("at", ""))
+                                         + "_" + str(_i)))
+                            except Exception:
+                                pass
+
+    # ---------- Poruke sa nepoznatih adresa ----------
+    _nep = _odg_ses.get("nep") or []
+    if _nep:
+        with st.expander("❓ Poruke sa adresa koje nisu ni u jednom sistemu ("
+                         + str(len(_nep)) + ")", expanded=False):
+            st.caption("Ako neka od njih pripada nekom sistemu, dodaj tu adresu gore i "
+                       "ponovo klikni „Proveri odgovore“.")
+            for _z in _nep[:40]:
+                st.markdown('<div style="border-top:1px solid #f2f3f7;padding:7px 0;'
+                            'font-size:12.5px;"><b>' + _h_escape(str(_z.get("od", "")))
+                            + '</b>  ·  ' + _h_escape(str(_z.get("at", "")))
+                            + '<br><span style="color:#6b7280;">'
+                            + _h_escape(str(_z.get("naslov", "")))
+                            + '</span></div>', unsafe_allow_html=True)
+
+
 def potraz_admin_ui():
     st.markdown("<div style='font-size:18px;font-weight:800;margin:4px 0 10px;'>💳 Izveštaj potraživanja</div>", unsafe_allow_html=True)
     _lst = sb_potraz_list()
@@ -3536,6 +4088,106 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
           Paragraph("Mesec: " + mesec_lbl + "   ·   generisano " + _now().strftime("%d.%m.%Y"), Hsub)]
 
     sistemi = sb_sisteme(mesec_key)
+
+    # ===== Aktivno vreme rada (procena) =====
+    try:
+        _dogp = _efik_dogadjaji(mesec_key)
+    except Exception:
+        _dogp = []
+    if _dogp:
+        from reportlab.platypus import Table, TableStyle
+        _vrp = _efik_vreme(_dogp)
+        _objp, _potp = {}, {}
+        for _t, _ko, _sis, _vrsta, _idk in _dogp:
+            _objp.setdefault(_sis, set()).add(_idk)
+            _potp[_sis] = _potp.get(_sis, 0) + 1
+        _danap = len(_vrp["po_danu"])
+        el.append(Paragraph("Aktivno vreme rada (procena)", Hsys))
+        el.append(Paragraph(
+            "Ukupno <b>" + _efik_hm(_vrp["ukupno"]) + "</b> kroz <b>" + str(_danap)
+            + "</b> radnih dana  ·  prosečno <b>" + _efik_hm(_vrp["ukupno"] / max(_danap, 1))
+            + "</b> dnevno  ·  <b>" + str(len(_vrp["sesije"])) + "</b> sesija rada.", Nar))
+        el.append(Spacer(1, 5))
+
+        def _tabela(zaglavlje, redovi, sirine, levo=()):
+            _t = Table([zaglavlje] + redovi, colWidths=sirine, hAlign="LEFT")
+            for _ci in levo:
+                _t.setStyle(TableStyle([("ALIGN", (_ci, 0), (_ci, -1), "LEFT")]))
+            _t.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#7c3aed")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), FB),
+                ("FONTNAME", (0, 1), (-1, -1), FN),
+                ("FONTSIZE", (0, 0), (-1, -1), 8.2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+                 [colors.white, colors.HexColor("#faf8ff")]),
+                ("LINEBELOW", (0, 0), (-1, -2), 0.4, colors.HexColor("#ede9fe")),
+                ("TEXTCOLOR", (0, 1), (0, -1), colors.HexColor("#312e81")),
+            ]))
+            return _t
+
+        def _poravnaj(t, desno):
+            t.setStyle(TableStyle([("ALIGN", (_c, 0), (_c, -1), "RIGHT") for _c in desno]))
+            return t
+
+        _rp = []
+        for _sis in sorted(_vrp["po_sistemu"], key=lambda s: -_vrp["po_sistemu"][s]):
+            _m = _vrp["po_sistemu"][_sis]
+            _no = len(_objp.get(_sis, set()))
+            _rp.append([str(_sis)[:34], _efik_hm(_m), str(_no), str(_potp.get(_sis, 0)),
+                        ("%.0f" % (_no / (_m / 60.0))) if _m > 0 else "—",
+                        _efik_hm(_m / _no) if _no else "—"])
+        el.append(_poravnaj(
+            _tabela(["Sistem", "Aktivno vreme", "Objekata", "Poteza", "Obj./sat", "Po objektu"],
+                    _rp, [58 * mm, 24 * mm, 19 * mm, 17 * mm, 19 * mm, 22 * mm]),
+            (1, 2, 3, 4, 5)))
+        el.append(Spacer(1, 7))
+        _ro = []
+        for _ko in sorted(_vrp["po_osobi"], key=lambda k: -_vrp["po_osobi"][k]):
+            _dn_ko = len({_s["od"].date() for _s in _vrp["sesije"] if _s["ko"] == _ko})
+            _sis_ko = sorted([(_s, _m) for (_k2, _s), _m in _vrp["po_osobi_sistem"].items()
+                              if _k2 == _ko], key=lambda x: -x[1])
+            _ro.append([str(_ko)[:24], _efik_hm(_vrp["po_osobi"][_ko]), str(_dn_ko),
+                        ", ".join(_s[:18] + " " + _efik_hm(_m) for _s, _m in _sis_ko[:3])[:60]])
+        el.append(_poravnaj(
+            _tabela(["Ko je radio", "Aktivno vreme", "Dana", "Na kojim sistemima"],
+                    _ro, [38 * mm, 24 * mm, 14 * mm, 83 * mm]),
+            (1, 2)))
+        el.append(Spacer(1, 6))
+        # grafik po danima
+        try:
+            _dn_s = sorted(_vrp["po_danu"].items())
+            if len(_dn_s) > 1:
+                _figd, _axd = _plt.subplots(figsize=(9.0, 1.65))
+                _axd.bar([_d[8:10] + "." for _d, _ in _dn_s],
+                         [_m / 60.0 for _, _m in _dn_s], color="#7c3aed", width=0.62)
+                _axd.set_ylabel("sati", fontsize=7.5, color="#6b7280")
+                _axd.tick_params(axis="both", labelsize=7, colors="#6b7280")
+                for _sp in ("top", "right"):
+                    _axd.spines[_sp].set_visible(False)
+                _axd.spines["left"].set_color("#e5e7eb")
+                _axd.spines["bottom"].set_color("#e5e7eb")
+                _axd.grid(axis="y", color="#f1eefb", linewidth=0.8)
+                _axd.set_axisbelow(True)
+                _figd.tight_layout()
+                _bd = _io.BytesIO()
+                _figd.savefig(_bd, format="png", dpi=200, facecolor="white")
+                _plt.close(_figd)
+                _bd.seek(0)
+                el.append(Image(_bd, width=174 * mm, height=32 * mm))
+        except Exception:
+            pass
+        el.append(Paragraph(
+            "<font color='#9188a5'>Procena, ne štoperica: potezi jedne osobe u razmaku do "
+            + str(EFIK_PAUZA_MIN) + " minuta broje se kao jedna sesija rada, veći razmak je "
+            "pauza. Meri se samo rad kroz aplikaciju — ne i vreme u adminu ni dužina samog "
+            "telefonskog razgovora, pa je ovo donja granica stvarnog rada.</font>", Nar))
+        el.append(Spacer(1, 4))
+        el.append(HRFlowable(width="100%", thickness=0.7, color=colors.HexColor("#ede9fe")))
+        el.append(Spacer(1, 8))
+
     if not sistemi:
         el.append(Paragraph("Nema objavljenih sistema za ovaj mesec.", Nar))
         doc.build(el)
@@ -3902,6 +4554,127 @@ def _zadaci_xlsx(rows, sistem, mesec_lbl):
     _buf = _io.BytesIO(); _wb.save(_buf); return _buf.getvalue()
 
 
+BARKOD_MES = "BARKODOVI"                 # „mesec" pod kojim stoji šifarnik barkodova
+BARKOD_SIS = "ARTIKLI"
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def sb_barkod_get():
+    """Šifarnik barkodova: {id_artikla: barkod}. Prazno ako još nije učitan."""
+    cli = _sb()
+    if cli is None:
+        return {}
+    try:
+        res = (cli.table("obrada").select("dnevnik")
+               .eq("mesec", BARKOD_MES).eq("sistem", BARKOD_SIS).eq("idk", 0)
+               .limit(1).execute())
+        if not res.data:
+            return {}
+        _m = ((res.data[0].get("dnevnik") or {}).get("barkod") or {})
+        _out = {}
+        for _k, _v in _m.items():
+            try:
+                _out[int(_k)] = str(_v or "").strip()
+            except Exception:
+                pass
+        return _out
+    except Exception:
+        return {}
+
+
+def sb_barkod_set(mapa, ko=""):
+    """Zapamti šifarnik barkodova ({id_artikla: barkod})."""
+    cli = _sb()
+    if cli is None:
+        return False
+    try:
+        _m = {}
+        for _k, _v in (mapa or {}).items():
+            try:
+                _b = str(_v or "").strip()
+                if _b:
+                    _m[str(int(_k))] = _b[:40]
+            except Exception:
+                pass
+        cli.table("obrada").upsert(
+            {"mesec": BARKOD_MES, "sistem": BARKOD_SIS, "idk": 0,
+             "reakcije": [], "trebovali": False, "trebovali_tip": "", "njihova": {},
+             "napomena": "", "reakcije_ko": {},
+             "dnevnik": {"barkod": _m, "ko": str(ko or ""), "at": _now().isoformat()},
+             "azurirano": _now().isoformat()},
+            on_conflict="mesec,sistem,idk").execute()
+        try:
+            sb_barkod_get.clear()
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def _barkod(ida, mapa=None):
+    """Barkod artikla kao TEKST (da Excel ne pojede vodeću nulu). Prazno ako ga nema."""
+    try:
+        _m = sb_barkod_get() if mapa is None else mapa
+        return str(_m.get(int(ida), "") or "")
+    except Exception:
+        return ""
+
+
+def barkod_iz_excela(data):
+    """Iz Excel tabele izvuci {id_artikla: barkod}. Kolone se traže po nazivu
+    („ID artikla"/„šifra" i „barkod"/„EAN"); ako naslova nema, uzimaju se
+    prve dve kolone. Vraća (mapa, poruka)."""
+    import io as _io
+    from openpyxl import load_workbook as _lw
+    try:
+        _wb = _lw(_io.BytesIO(data), data_only=True, read_only=True)
+    except Exception as _e:
+        return ({}, "Fajl se ne čita: " + str(_e)[:120])
+    _naj, _poruka = {}, ""
+    for _ws in _wb.worksheets:
+        _rows = list(_ws.iter_rows(values_only=True))[:5000]
+        if not _rows:
+            continue
+        _ci, _cb = None, None
+        _start = 0
+        for _ri, _r in enumerate(_rows[:10]):
+            for _i, _v in enumerate(_r or []):
+                _t = str(_v or "").strip().lower()
+                if _ci is None and (_t.startswith("id artikla") or _t.startswith("ida")
+                                    or _t in ("id", "šifra", "sifra", "šifra artikla",
+                                              "sifra artikla")):
+                    _ci = _i
+                if _cb is None and ("barkod" in _t or "barcode" in _t or _t.startswith("ean")):
+                    _cb = _i
+            if _ci is not None and _cb is not None:
+                _start = _ri + 1
+                break
+            _ci, _cb = None, None
+        if _ci is None or _cb is None:
+            _ci, _cb, _start = 0, 1, 0          # bez naslova: prve dve kolone
+        _m = {}
+        for _r in _rows[_start:]:
+            if not _r or len(_r) <= max(_ci, _cb):
+                continue
+            try:
+                _id = int(str(_r[_ci]).strip().split(".")[0])
+            except Exception:
+                continue
+            _b = _r[_cb]
+            if _b is None:
+                continue
+            _b = str(_b).strip()
+            if _b.endswith(".0"):
+                _b = _b[:-2]
+            if _b and _b.lower() != "none":
+                _m[_id] = _b
+        if len(_m) > len(_naj):
+            _naj = _m
+            _poruka = "List „" + str(_ws.title) + "“ — pronađeno " + str(len(_m)) + " barkodova."
+    return (_naj, _poruka or "U fajlu nije pronađena nijedna kolona sa barkodom.")
+
+
 def _objekat_order_xlsx(naziv, idk, mesec_lbl, rows, meseci=None):
     """Excel za slanje objektu (mejlom): status (kružić), naziv artikla, Lager
     (realni: lager + poručeno posle 01.), Predikcija (za zadati broj meseci) i
@@ -3916,8 +4689,9 @@ def _objekat_order_xlsx(naziv, idk, mesec_lbl, rows, meseci=None):
     _thin = _SD(style="thin", color="E5E0F0")
     _bord = _BD(left=_thin, right=_thin, top=_thin, bottom=_thin)
     _pred_lbl = "Predikcija"
-    _ncols = 5
-    _last = "E"
+    _bk = sb_barkod_get()
+    _ncols = 6
+    _last = "F"
     # Naslov (koji objekat / mesec)
     _ws.merge_cells("A1:" + _last + "1")
     _t = _ws["A1"]
@@ -3927,7 +4701,7 @@ def _objekat_order_xlsx(naziv, idk, mesec_lbl, rows, meseci=None):
     _t.alignment = _AL(horizontal="left", vertical="center")
     _ws.row_dimensions[1].height = 22
     # Zaglavlje tabele
-    _hdr = ["Status", "Naziv artikla", "Lager", _pred_lbl, "Porudžbina"]
+    _hdr = ["Status", "Naziv artikla", "Barkod", "Lager", _pred_lbl, "Porudžbina"]
     _ws.append([])  # red 2 prazan
     _ws.append(_hdr)
     _hr = 3
@@ -3940,18 +4714,22 @@ def _objekat_order_xlsx(naziv, idk, mesec_lbl, rows, meseci=None):
         _c.border = _bord
     for _r in rows:
         _ws.append([str(_r.get("kruzic", "")), str(_r.get("naziv", "")),
+                    (str(_r.get("barkod", "")) or _barkod(_r.get("ida"), _bk)),
                     int(_r.get("lager", 0) or 0), int(_r.get("predikcija", 0) or 0),
                     int(_r.get("dodatna", 0) or 0)])
         _rr = _ws.max_row
+        # barkod ostaje TEKST — inače Excel pojede vodeću nulu i pretvori ga u broj
+        _ws.cell(row=_rr, column=3).number_format = "@"
         for _ci in range(1, _ncols + 1):
             _ws.cell(row=_rr, column=_ci).alignment = _AL(
                 horizontal=("left" if _ci == 2 else "center"), vertical="center")
             _ws.cell(row=_rr, column=_ci).border = _bord
     _ws.column_dimensions["A"].width = 9
     _ws.column_dimensions["B"].width = 48
-    _ws.column_dimensions["C"].width = 10
-    _ws.column_dimensions["D"].width = 14
-    _ws.column_dimensions["E"].width = 13
+    _ws.column_dimensions["C"].width = 17
+    _ws.column_dimensions["D"].width = 10
+    _ws.column_dimensions["E"].width = 14
+    _ws.column_dimensions["F"].width = 13
     _ws.freeze_panes = "A4"
     _buf = _io.BytesIO()
     _wb.save(_buf)
@@ -4353,70 +5131,79 @@ def _nedeljni_predlog_xlsx(sistem, dani, datum, grupe, payload=None):
         _w2.title = "Predlog po objektima"
 
     # ============================================================ LIST 2: po objektima
+    _bk = sb_barkod_get()
     _w2.sheet_view.showGridLines = False
-    _sir(_w2, {"A": 46, "B": 12, "C": 12, "D": 13})
-    _w2.merge_cells("A1:D1")
+    _sir(_w2, {"A": 46, "B": 17, "C": 12, "D": 12, "E": 13})
+    _w2.merge_cells("A1:E1")
     _c(_w2, "A1", "Predlog porudžbine · " + str(sistem) + " · " + str(datum), True, 13, INK)
     _w2.row_dimensions[1].height = 22
-    _w2.merge_cells("A2:D2")
+    _w2.merge_cells("A2:E2")
     _c(_w2, "A2", "Objekti kod kojih lager ne pokriva prodaju ni za " + _perl
        + ". Predlog = koliko komada nedostaje do pokrivenosti za " + _perl + ".", False, 9, MUTC)
     _r = 4
-    for _h, _t in zip("ABCD", ["Objekat / artikal", "Lager", "Predikcija", "Predlog (kom)"]):
+    for _h, _t in zip("ABCDE", ["Objekat / artikal", "Barkod", "Lager", "Predikcija",
+                                "Predlog (kom)"]):
         _c(_w2, _h + str(_r), _t, True, 10, INK, _f_hdr, ha=("left" if _h == "A" else "center"))
         _w2[_h + str(_r)].border = _bord
     _r += 1
     _prvi = _r
     for _g in grupe:
         _c(_w2, "A" + str(_r), str(_g.get("objekat", "")), True, 10, INK, _f_obj)
-        for _h in "BCD":
+        for _h in "BCDE":
             _c(_w2, _h + str(_r), None, fill=_f_obj)
         _od = _r + 1
         _r += 1
         for _a in (_g.get("arts") or []):
             _c(_w2, "A" + str(_r), "    " + str(_a.get("naziv", "")))
-            _c(_w2, "B" + str(_r), int(_a.get("lager", 0) or 0), ha="center")
-            _c(_w2, "C" + str(_r), int(_a.get("pred", 0) or 0), ha="center")
-            _c(_w2, "D" + str(_r), int(_a.get("predlog", 0) or 0), True, ha="center")
-            for _h in "ABCD":
+            _c(_w2, "B" + str(_r), (str(_a.get("barkod", "")) or _barkod(_a.get("ida"), _bk)),
+               ha="center")
+            _w2["B" + str(_r)].number_format = "@"
+            _c(_w2, "C" + str(_r), int(_a.get("lager", 0) or 0), ha="center")
+            _c(_w2, "D" + str(_r), int(_a.get("pred", 0) or 0), ha="center")
+            _c(_w2, "E" + str(_r), int(_a.get("predlog", 0) or 0), True, ha="center")
+            for _h in "ABCDE":
                 _w2[_h + str(_r)].border = _bord
             _r += 1
         _c(_w2, "A" + str(_r), "    Ukupno — " + str(_g.get("objekat", "")), True, 9, INK2, _f_sum)
-        for _h in "BC":
+        for _h in "BCD":
             _c(_w2, _h + str(_r), None, fill=_f_sum)
         # SUBTOTAL i ovde, da ga ukupan zbir ispod ne bi brojao dvaput
-        _c(_w2, "D" + str(_r), "=SUBTOTAL(9,D" + str(_od) + ":D" + str(_r - 1) + ")",
+        _c(_w2, "E" + str(_r), "=SUBTOTAL(9,E" + str(_od) + ":E" + str(_r - 1) + ")",
            True, 10, INK, _f_sum, ha="center")
-        for _h in "ABCD":
+        for _h in "ABCDE":
             _w2[_h + str(_r)].border = _bord
         _r += 2
     _c(_w2, "A" + str(_r), "UKUPAN PREDLOG", True, 11, "FFFFFF", _f_tam)
-    for _h in "BC":
+    for _h in "BCD":
         _c(_w2, _h + str(_r), None, fill=_f_tam)
-    _c(_w2, "D" + str(_r), "=SUBTOTAL(9,D" + str(_prvi) + ":D" + str(_r - 1) + ")",
+    _c(_w2, "E" + str(_r), "=SUBTOTAL(9,E" + str(_prvi) + ":E" + str(_r - 1) + ")",
        True, 12, "FFFFFF", _f_tam, ha="center")
     _w2.freeze_panes = "A5"
 
     # ============================================================ LIST 3: ravna tabela
     _w3 = _wb.create_sheet("Tabela")
-    _sir(_w3, {"A": 40, "B": 38, "C": 10, "D": 12, "E": 14})
-    for _h, _t in zip("ABCDE", ["Objekat", "Artikal", "Lager", "Predikcija", "Predlog (kom)"]):
+    _sir(_w3, {"A": 40, "B": 38, "C": 17, "D": 10, "E": 12, "F": 14})
+    for _h, _t in zip("ABCDEF", ["Objekat", "Artikal", "Barkod", "Lager", "Predikcija",
+                                 "Predlog (kom)"]):
         _c(_w3, _h + "1", _t, True, 10, "FFFFFF", _f_tam)
     _r = 2
     for _g in grupe:
         for _a in (_g.get("arts") or []):
             _c(_w3, "A" + str(_r), str(_g.get("objekat", "")))
             _c(_w3, "B" + str(_r), str(_a.get("naziv", "")))
-            _c(_w3, "C" + str(_r), int(_a.get("lager", 0) or 0), ha="center")
-            _c(_w3, "D" + str(_r), int(_a.get("pred", 0) or 0), ha="center")
-            _c(_w3, "E" + str(_r), int(_a.get("predlog", 0) or 0), True, ha="center")
+            _c(_w3, "C" + str(_r), (str(_a.get("barkod", "")) or _barkod(_a.get("ida"), _bk)),
+               ha="center")
+            _w3["C" + str(_r)].number_format = "@"
+            _c(_w3, "D" + str(_r), int(_a.get("lager", 0) or 0), ha="center")
+            _c(_w3, "E" + str(_r), int(_a.get("pred", 0) or 0), ha="center")
+            _c(_w3, "F" + str(_r), int(_a.get("predlog", 0) or 0), True, ha="center")
             _r += 1
     _c(_w3, "A" + str(_r), "UKUPNO", True, 10, INK, _f_sum)
-    for _h in "BCD":
+    for _h in "BCDE":
         _c(_w3, _h + str(_r), None, fill=_f_sum)
-    _c(_w3, "E" + str(_r), "=SUM(E2:E" + str(_r - 1) + ")", True, 11, INK, _f_sum, ha="center")
+    _c(_w3, "F" + str(_r), "=SUM(F2:F" + str(_r - 1) + ")", True, 11, INK, _f_sum, ha="center")
     if _r > 2:
-        _w3.auto_filter.ref = "A1:E" + str(_r - 1)
+        _w3.auto_filter.ref = "A1:F" + str(_r - 1)
     _w3.freeze_panes = "A2"
 
     # Redosled kartica: prvo ono što se koristi (predlog i tabela), pa izveštaj,
@@ -5686,13 +6473,81 @@ MEJL_TEKST_DEFAULT = _cfg("MEJL_TEKST", (
     "Srdačan pozdrav,"))
 
 
-def _mejl_tekst(naziv_objekta=""):
-    """Tekst mejla za objekat; {objekat} se zamenjuje nazivom ako je upotrebljen."""
-    _t = str(MEJL_TEKST_DEFAULT or "")
+# Naslov mejla uz predlog porudžbine. {objekat}, {sistem} i {datum} se zamenjuju.
+MEJL_NASLOV_DEFAULT = _cfg("MEJL_NASLOV", "VAPE SHOP - {objekat} - PORUDŽBINA - {datum}")
+
+MEJL_SABLON_MES = "MEJL-SABLON"          # „mesec" pod kojim stoji šablon
+MEJL_SABLON_SIS = "PORUDZBINE"
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def sb_mejl_sablon_get():
+    """Naslov i tekst mejla za porudžbine, ako su ručno promenjeni i sačuvani.
+    Vraća {"naslov":…, "telo":…, "ko":…, "at":…} ili prazno."""
+    cli = _sb()
+    if cli is None:
+        return {}
     try:
-        return _t.replace("{objekat}", str(naziv_objekta or ""))
+        res = (cli.table("obrada").select("dnevnik")
+               .eq("mesec", MEJL_SABLON_MES).eq("sistem", MEJL_SABLON_SIS).eq("idk", 0)
+               .limit(1).execute())
+        if not res.data:
+            return {}
+        return ((res.data[0].get("dnevnik") or {}).get("sablon") or {})
     except Exception:
-        return _t
+        return {}
+
+
+def sb_mejl_sablon_set(naslov, telo, ko=""):
+    """Zapamti ručno promenjen naslov i tekst mejla (važi dok se ne promeni)."""
+    cli = _sb()
+    if cli is None:
+        return False
+    try:
+        cli.table("obrada").upsert(
+            {"mesec": MEJL_SABLON_MES, "sistem": MEJL_SABLON_SIS, "idk": 0,
+             "reakcije": [], "trebovali": False, "trebovali_tip": "", "njihova": {},
+             "napomena": "", "reakcije_ko": {},
+             "dnevnik": {"sablon": {"naslov": str(naslov or "")[:300],
+                                    "telo": str(telo or "")[:6000],
+                                    "ko": str(ko or ""), "at": _now().isoformat()}},
+             "azurirano": _now().isoformat()},
+            on_conflict="mesec,sistem,idk").execute()
+        try:
+            sb_mejl_sablon_get.clear()
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def _mejl_zameni(sablon, naziv_objekta="", sistem="", datum=None):
+    """Zameni {objekat}, {sistem} i {datum} u šablonu."""
+    _d = datum or _now().strftime("%d.%m.%Y.")
+    try:
+        return (str(sablon or "").replace("{objekat}", str(naziv_objekta or ""))
+                .replace("{sistem}", str(sistem or "")).replace("{datum}", str(_d)))
+    except Exception:
+        return str(sablon or "")
+
+
+def _mejl_tekst(naziv_objekta="", sistem=""):
+    """Tekst mejla za objekat. Ako je tekst ručno promenjen i sačuvan — koristi se taj."""
+    try:
+        _s = (sb_mejl_sablon_get() or {}).get("telo")
+    except Exception:
+        _s = None
+    return _mejl_zameni(_s or MEJL_TEKST_DEFAULT, naziv_objekta, sistem)
+
+
+def _mejl_naslov(naziv_objekta="", sistem=""):
+    """Naslov mejla za objekat; isti šablon važi i za pojedinačno i za grupno slanje."""
+    try:
+        _s = (sb_mejl_sablon_get() or {}).get("naslov")
+    except Exception:
+        _s = None
+    return _mejl_zameni(_s or MEJL_NASLOV_DEFAULT, naziv_objekta, sistem)
 
 
 VAPE_LOGO_B64 = "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"
@@ -7047,6 +7902,17 @@ def prikazi_administraciju():
     [class*="st-key-predaj_izvestaj"] button:hover{background:#0284c7 !important;border-color:#0284c7 !important;}
     .stMultiSelect [data-baseweb="tag"]{background:#f2effc !important;color:#5b21b6 !important;border:none !important;}
     .stMultiSelect [data-baseweb="tag"] span{color:#5b21b6 !important;}
+    /* Prikupljanje izveštaja — spisak sistema */
+    .prikup-hdr{display:grid;grid-template-columns:1.5fr 2.3fr 2.6fr;gap:12px;
+        font-size:11px;color:#b0b4bd;font-weight:700;text-transform:uppercase;
+        letter-spacing:.5px;padding:0 0 6px;border-bottom:1px solid #eef0f4;margin-bottom:6px;}
+    .prikup-ime{font-size:13.5px;font-weight:600;color:#2a2f3a;padding:8px 0 0;
+        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    [class*="st-key-prikup_send_"] button{background:#16a34a !important;border-color:#16a34a !important;
+        color:#fff !important;font-weight:600 !important;font-size:13px !important;
+        padding:7px 12px !important;border-radius:8px !important;box-shadow:none !important;}
+    [class*="st-key-prikup_send_"] button:hover{background:#128a3e !important;border-color:#128a3e !important;}
+    [class*="st-key-prikup_n_"] input,[class*="st-key-prikup_a_"] input{font-size:13px !important;}
     </style>""", unsafe_allow_html=True)
 
     _adm_user = st.session_state.get("admin_user", "Administracija")
@@ -7071,13 +7937,17 @@ def prikazi_administraciju():
         st.error("Veza sa bazom trenutno nije podešena. Javi se analitičaru.")
         return
 
-    _adm_mode = st.radio("Prikaz", ["📦 Porudžbine", "💳 Potraživanja", "⛽ Izveštaj Knez Petrol"],
+    _adm_mode = st.radio("Prikaz", ["📦 Porudžbine", "💳 Potraživanja", "⛽ Izveštaj Knez Petrol",
+                                    "📨 Prikupljanje izveštaja"],
                          horizontal=True, key="adm_mode", label_visibility="collapsed")
     if "Potra" in _adm_mode:
         potraz_admin_ui()
         return
     if "Knez" in _adm_mode:
         knez_admin_ui()
+        return
+    if "Prikupljanje" in _adm_mode:
+        prikup_admin_ui()
         return
 
     _pub = sb_meseci()
@@ -7811,7 +8681,8 @@ def prikazi_administraciju():
                                  "manjak": int(a.get("manjak7", 0) or 0)})
             _grupe.append({"objekat": _nz_s, "arts": [
                 {"naziv": str(a.get("naziv", "")), "lager": int(a.get("lager", 0) or 0),
-                 "pred": int(a.get("pred", 0) or 0), "predlog": int(a.get("manjak7", 0) or 0)}
+                 "pred": int(a.get("pred", 0) or 0), "predlog": int(a.get("manjak7", 0) or 0),
+                 "ida": int(a.get("ida", 0) or 0)}
                 for a in p["arts"] if int(a.get("manjak7", 0) or 0) > 0]})
             if _ima_nulu:
                 _obj_sa_nulom += 1
@@ -8964,9 +9835,11 @@ def prikazi_administraciju():
 
             # --- Izvoz za objekat (mejl): kružić + naziv + lager + predikcija + dodatna por. ---
             # U aplikaciji ostaju sve kolone (gore); ovaj Excel je samo za slanje objektu.
+            _ida_po_nazivu = {str(a["naziv"]): int(a["ida"]) for a in _arts}
             _exp_rows = [{"kruzic": r[" "], "naziv": r["Artikal"], "lager": r["Realni lager"],
                           "predikcija": int(r.get("Predikcija", 0) or 0),
-                          "dodatna": r["Dodatna por."]}
+                          "dodatna": r["Dodatna por."],
+                          "ida": _ida_po_nazivu.get(str(r["Artikal"]), 0)}
                          for r in _rows_adf if int(r.get("Dodatna por.", 0) or 0) > 0]
             # --- Excel za preuzimanje + Prosledi mejl (automatski, sa prilogom) ---
             _exp_xlsx = None
@@ -9002,13 +9875,12 @@ def prikazi_administraciju():
 
                 def _posalji_mejl_objektu():
                     try:
-                        _subj = ("VAPE SHOP - " + str(_naziv_kom or ("ID " + str(sel_id)))
-                                 + " - PORUDŽBINA - " + _now().strftime("%d.%m.%Y."))
+                        _subj = _mejl_naslov(_naziv_kom or ("ID " + str(sel_id)), sistem)
                         _fname_mail = _fname if _exp_rows else (str(sel_id) + ".xlsx")
                         with st.spinner("✉️ Slanje mejla u toku… (može da potraje do 2 minuta, "
                                         "ne zatvaraj stranu)"):
                             posalji_mejl_sa_prilogom(_mail_to, _subj,
-                                                     _mejl_tekst(_naziv_kom), _exp_xlsx,
+                                                     _mejl_tekst(_naziv_kom, sistem), _exp_xlsx,
                                                      _fname_mail)
                         _kk1 = st.session_state.get("_zadnja_kopija")
                         st.session_state[_sk_mail] = {"ok": True, "msg": "Poslato na " + _mail_to,
@@ -9373,6 +10245,114 @@ def prikazi_administraciju():
                         pass
                     st.rerun()
 
+        # --- Naslov i tekst mejla: vidi se i može ručno da se promeni ---
+        _sab = sb_mejl_sablon_get() or {}
+        _sab_naslov = str(_sab.get("naslov") or MEJL_NASLOV_DEFAULT)
+        _sab_telo = str(_sab.get("telo") or MEJL_TEKST_DEFAULT)
+        with st.expander("✉️ Naslov i tekst mejla — pogledaj i promeni", expanded=False):
+            st.caption("Ovo ide u SVAKI mejl, i kod grupnog i kod pojedinačnog slanja. "
+                       "U tekstu i naslovu mogu da stoje {objekat}, {sistem} i {datum} — "
+                       "pri slanju se zamene pravim vrednostima."
+                       + (("  ·  poslednja izmena: " + _dt_kratko(_sab.get("at"))
+                           + (("  ·  " + str(_sab.get("ko"))) if _sab.get("ko") else ""))
+                          if _sab.get("at") else "  ·  trenutno se koristi podrazumevani tekst"))
+            with st.form("mejl_sablon_forma_" + str(sistem), border=False):
+                _nov_naslov = st.text_input("Naslov mejla", value=_sab_naslov,
+                                            key="sab_naslov_" + str(sistem))
+                _nov_telo = st.text_area("Tekst mejla", value=_sab_telo, height=260,
+                                         key="sab_telo_" + str(sistem))
+                _sc1, _sc2 = st.columns([1.2, 1.2])
+                with _sc1:
+                    _sacuvaj_sab = st.form_submit_button("💾 Sačuvaj", type="primary",
+                                                         use_container_width=True)
+                with _sc2:
+                    _vrati_sab = st.form_submit_button("↩️ Vrati podrazumevani",
+                                                       use_container_width=True)
+            if _sacuvaj_sab:
+                if sb_mejl_sablon_set(_nov_naslov, _nov_telo,
+                                      st.session_state.get("admin_user", "")):
+                    st.success("Sačuvano — od sada se šalje ovaj naslov i tekst.")
+                    st.rerun()
+                else:
+                    st.error("Čuvanje nije uspelo.")
+            if _vrati_sab:
+                if sb_mejl_sablon_set(MEJL_NASLOV_DEFAULT, MEJL_TEKST_DEFAULT,
+                                      st.session_state.get("admin_user", "")):
+                    st.success("Vraćen je podrazumevani naslov i tekst.")
+                    st.rerun()
+            _prim_naz = ""
+            for _o0 in objekti:
+                _prim_naz = (komfull.get(int(_o0["idk"]), {}) or {}).get("naziv", "")
+                if _prim_naz:
+                    break
+            st.markdown('<div style="font-size:11px;color:#b0b4bd;font-weight:600;'
+                        'text-transform:uppercase;letter-spacing:.5px;margin:10px 0 4px;">'
+                        'Ovako izgleda poslat mejl</div>', unsafe_allow_html=True)
+            st.code("Naslov:  " + _mejl_zameni(_sab_naslov, _prim_naz, sistem) + "\n\n"
+                    + _mejl_zameni(_sab_telo, _prim_naz, sistem) + "\n"
+                    + _potpis_tekst(), language=None)
+
+        # --- Barkodovi artikala (idu u Excel predlog) ---
+        _bk_mapa = sb_barkod_get()
+        _bk_nazivi = {}
+        for _o9 in objekti:
+            for _a9 in _o9["lst"]:
+                _bk_nazivi.setdefault(int(_a9["ida"]), str(_a9.get("naziv", "")))
+        _bk_fali = sorted(i for i in _bk_nazivi if not _bk_mapa.get(i))
+        with st.expander("🏷️ Barkodovi artikala — " + (
+                (str(len(_bk_mapa)) + " upisano"
+                 + (("  ·  fali za " + str(len(_bk_fali)) + " artikala") if _bk_fali else
+                    "  ·  svi artikli imaju barkod"))
+                if _bk_mapa else "još nisu učitani"), expanded=False):
+            st.caption("Barkod se upisuje u kolonu „Barkod“ u Excelu koji ide objektu. "
+                       "Učitaj tabelu (Excel) sa dve kolone — ID artikla i Barkod — ili ih "
+                       "upiši ručno u tabeli ispod. Važi za sve sisteme i sve mesece.")
+            _bf = st.file_uploader("Tabela sa barkodovima (.xlsx)", type=["xlsx", "xlsm"],
+                                   key="bk_upload_" + str(sistem),
+                                   label_visibility="collapsed")
+            if _bf is not None:
+                _nova, _por = barkod_iz_excela(_bf.getvalue())
+                st.caption(_por)
+                if _nova:
+                    _pregled = pd.DataFrame(
+                        [{"ID artikla": _i, "Artikal": _bk_nazivi.get(_i, "(nije u ovom sistemu)"),
+                          "Barkod": _b} for _i, _b in sorted(_nova.items())])
+                    st.dataframe(_pregled, hide_index=True, use_container_width=True, height=240)
+                    if st.button("💾 Sačuvaj barkodove", key="bk_save_" + str(sistem),
+                                 type="primary"):
+                        _spoj = dict(_bk_mapa)
+                        _spoj.update(_nova)
+                        if sb_barkod_set(_spoj, st.session_state.get("admin_user", "")):
+                            st.success("Sačuvano — ukupno " + str(len(_spoj)) + " barkodova.")
+                            st.rerun()
+                        else:
+                            st.error("Čuvanje nije uspelo.")
+            if _bk_nazivi:
+                _bk_df = pd.DataFrame([{"ID artikla": _i, "Artikal": _bk_nazivi[_i],
+                                        "Barkod": str(_bk_mapa.get(_i, "") or "")}
+                                       for _i in sorted(_bk_nazivi)])
+                with st.form("bk_rucno_" + str(sistem), border=False):
+                    _bk_ed = st.data_editor(
+                        _bk_df, hide_index=True, use_container_width=True,
+                        key="bk_ed_" + str(sistem), num_rows="fixed",
+                        column_config={
+                            "ID artikla": st.column_config.NumberColumn(disabled=True, width="small"),
+                            "Artikal": st.column_config.TextColumn(disabled=True, width="large"),
+                            "Barkod": st.column_config.TextColumn(help="npr. 6973023740025")})
+                    if st.form_submit_button("💾 Sačuvaj ručne izmene", type="primary"):
+                        _spoj = dict(_bk_mapa)
+                        for _, _rr9 in _bk_ed.iterrows():
+                            _b9 = str(_rr9.get("Barkod", "") or "").strip()
+                            if _b9:
+                                _spoj[int(_rr9["ID artikla"])] = _b9
+                            else:
+                                _spoj.pop(int(_rr9["ID artikla"]), None)
+                        if sb_barkod_set(_spoj, st.session_state.get("admin_user", "")):
+                            st.success("Sačuvano.")
+                            st.rerun()
+                        else:
+                            st.error("Čuvanje nije uspelo.")
+
         _selk = "bulk_sel_" + str(sistem) + "_" + str(mesec_key)
         _verk = "bulk_ver_" + str(sistem) + "_" + str(mesec_key)
         if _selk not in st.session_state:
@@ -9645,7 +10625,8 @@ def prikazi_administraciju():
                     if _bdod2 > 0:
                         _blg2 = int(a["lager"]) + _bpor2
                         _bsd2 = "🔴" if _blg2 == 0 else ("🟡" if _blg2 <= 2 else "🟢")
-                        _bexp_rows2.append({"kruzic": _bsd2, "naziv": str(a["naziv"]), "lager": _blg2,
+                        _bexp_rows2.append({"kruzic": _bsd2, "naziv": str(a["naziv"]),
+                                            "ida": _bida2, "lager": _blg2,
                                             "predikcija": int(round(int(a.get("pred", 0) or 0) * _bmeseci)),
                                             "dodatna": _bdod2})
                 _bsk2 = "mailsent_" + str(sistem) + "_" + str(_bidk2)
@@ -9661,9 +10642,9 @@ def prikazi_administraciju():
                     _mpm2 = _refn2.search(r'MP\s*\d+', str(_bnaziv2 or ""), _refn2.IGNORECASE)
                     _mp2 = _mpm2.group(0).upper().replace(" ", "") if _mpm2 else str(_bidk2)
                     _bfname2 = ((_safe_sis2 + " ") if _safe_sis2 else "") + _mp2 + ".xlsx"
-                    _bsubj2 = ("VAPE SHOP - " + str(_bnaziv2) + " - PORUDŽBINA - "
-                               + _now().strftime("%d.%m.%Y."))
-                    posalji_mejl_sa_prilogom(_bemail2, _bsubj2, _mejl_tekst(_bnaziv2),
+                    _bsubj2 = _mejl_zameni(_sab_naslov, _bnaziv2, sistem)
+                    posalji_mejl_sa_prilogom(_bemail2, _bsubj2,
+                                             _mejl_zameni(_sab_telo, _bnaziv2, sistem),
                                              _bxlsx2, _bfname2, sesija=_ses)
                     st.session_state[_bsk2] = {"ok": True, "msg": "Poslato na " + _bemail2}
                     _n_ok += 1
