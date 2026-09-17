@@ -2292,7 +2292,7 @@ def knez_admin_ui():
                     "se ne \u010duvaju u bazi \u2014 treba ih jednom povu\u0107i iz sandu\u010deta da bi se napravio "
                     "Excel. \u201eProveri odgovore\u201c gore \u010dita samo NOVE poruke, pa za fajlove klikni ovo:")
             if st.button("\U0001F4CE Povuci sve priloge iz sandu\u010deta (" + str(_zna_pdf) + ")",
-                         key="knez_pull_prilozi", use_container_width=True):
+                         key="knez_pull_prilozi"):
                 _adr_p = set((r["email"] or "").lower() for r in _pumpe if r["_email_ok"])
                 import time as _tmp0
                 _tp0 = _tmp0.time()
@@ -2334,8 +2334,15 @@ def knez_admin_ui():
                      "3. Commit \u2192 pa u Streamlit-u \u201eManage app\u201c \u2192 **Reboot app**\n\n"
                      "Posle toga klikni ponovo \u201ePro\u010ditaj PDF-ove i napravi Excel\u201c.")
             return
-        if st.button("\U0001F4CA Pro\u010ditaj PDF-ove i napravi Excel", key="knez_pdf_go",
-                     type="primary", use_container_width=True):
+        _gc1, _gc2 = st.columns([1.15, 3])
+        with _gc1:
+            _go_pdf = st.button("📊 Pročitaj PDF-ove", key="knez_pdf_go", type="primary",
+                                use_container_width=True)
+        with _gc2:
+            st.markdown('<div style="font-size:12px;color:#9ca3af;padding-top:9px;">'
+                        'Pročita sve PDF-ove iz odgovora i napravi jedan Excel.</div>',
+                        unsafe_allow_html=True)
+        if _go_pdf:
             _stavke = []
             _izv = []
             _prog2 = st.progress(0, "\U0001F4C4 \u010citam PDF-ove\u2026")
@@ -2441,19 +2448,31 @@ def knez_admin_ui():
             _pri = _prob if _samo_prob else _izv
             _pri = sorted(_pri, key=lambda x: (x["st_ikona"] == "✓", str(x.get("pumpa") or "")))
             if _pri:
-                st.dataframe(pd.DataFrame([{
-                    "": _x["st_ikona"],
-                    "Pumpa": ((_x.get("pumpa") or _x.get("bs_naziv") or "—").replace(
-                        "KNEZ PETROL DOO ZEMUN,", "").replace("KNEZ PETROL DOO ZEMUN", "").strip(" -,")),
-                    "ID": _x.get("idk") or "—",
-                    "Fajl": _x["ime"],
-                    "Redova": _x["redova"],
-                    "Status": _x["st_txt"],
-                } for _x in _pri]), hide_index=True, use_container_width=True,
-                    height=min(56 + 35 * len(_pri), 420),
-                    column_config={"": st.column_config.TextColumn(width="small"),
-                                   "ID": st.column_config.TextColumn(width="small"),
-                                   "Redova": st.column_config.NumberColumn(width="small")})
+                _boja = {"✓": ("#dcfce7", "#166534"), "⚠": ("#fef3c7", "#92400e"),
+                         "✗": ("#fee2e2", "#991b1b")}
+                _tr = []
+                for _x in _pri:
+                    _bg, _fg = _boja.get(_x["st_ikona"], ("#f1f5f9", "#334155"))
+                    _nzp = ((_x.get("pumpa") or _x.get("bs_naziv") or "—")
+                            .replace("KNEZ PETROL DOO ZEMUN,", "")
+                            .replace("KNEZ PETROL DOO ZEMUN", "").strip(" -,"))
+                    _tr.append(
+                        '<tr>'
+                        '<td class="ik"><span class="chip" style="background:' + _bg
+                        + ';color:' + _fg + ';">' + _x["st_ikona"] + '</span></td>'
+                        '<td class="nz">' + _h_escape(_nzp) + '</td>'
+                        '<td class="id">' + _h_escape(str(_x.get("idk") or "—")) + '</td>'
+                        '<td class="fj">' + _h_escape(str(_x["ime"])[:46]) + '</td>'
+                        '<td class="br">' + str(_x["redova"]) + '</td>'
+                        '<td class="st" style="color:' + _fg + ';">'
+                        + _h_escape(str(_x["st_txt"])) + '</td></tr>')
+                st.markdown(
+                    '<div class="knez-tab-wrap"><table class="knez-tab">'
+                    '<thead><tr><th style="width:44px;"></th><th>Pumpa</th>'
+                    '<th style="width:64px;">ID</th><th style="width:190px;">Fajl</th>'
+                    '<th style="width:74px;text-align:right;">Redova</th>'
+                    '<th>Status</th></tr></thead><tbody>'
+                    + "".join(_tr) + '</tbody></table></div>', unsafe_allow_html=True)
             elif _samo_prob:
                 st.success("✅ Nema nijednog problema — svi fajlovi su pročitani kako treba.")
 
@@ -2528,11 +2547,19 @@ def knez_admin_ui():
                                       "stanje_do": None, "ulaz": None, "vrednost": None,
                                       "od": "", "do": "",
                                       "fajl": "RUČNO (" + str(_rl.get("ko", "")) + ")"})
-            _ima_fajl = {int(s["idk"]) for s in _spremno}
-            _spremno = _spremno + [s for s in _rucne_st if int(s["idk"]) not in _ima_fajl]
+            # Ručno upisano IMA PREDNOST — ako si za pumpu upisala podatke, važe oni
+            # (i kad je ta pumpa poslala fajl), jer si ih ti namerno ispravila.
+            _rucni_idk = {int(_s["idk"]) for _s in _rucne_st}
+            # pumpa koja je ručno obrađena, a ništa nije imala (sve nule) — takođe je rešena
+            for r in _pumpe:
+                _rl0 = ((_obr.get(int(r["idk"])) or {}).get("dnevnik") or {}).get("rucni_lager") or {}
+                if _rl0:
+                    _rucni_idk.add(int(r["idk"]))
+            _spremno = [s for s in _spremno
+                        if int(s["idk"]) not in _rucni_idk] + _rucne_st
 
             # ---------- 8) Pumpe bez izveštaja / sa problemom -> ručni unos ----------
-            _pumpe_ok = {int(s["idk"]) for s in _spremno}
+            _pumpe_ok = {int(s["idk"]) for s in _spremno} | _rucni_idk
             _fajl_po_pumpi = {int(_x["idk"]): _x for _x in _izv if _x.get("idk")}
             _za_rucno = []
             for r in _pumpe:
@@ -2561,15 +2588,31 @@ def knez_admin_ui():
                         'automatski ulazi u Excel.</div>', unsafe_allow_html=True)
             if not _za_rucno:
                 st.success("✅ Sve pumpe iz šifarnika imaju podatke.")
-            elif not _kat_p:
+            if not _kat_p:
                 st.info("Ručni unos nije moguć dok nemam naš šifarnik artikala (objavi jedan sistem).")
             else:
+                # Može i pumpa koja NIJE na spisku — ako baš hoćeš da joj promeniš brojeve
+                _sve_p = st.toggle("Prikaži sve pumpe (i one koje su uredno poslale)",
+                                   value=(not _za_rucno), key="knez_sve_pumpe",
+                                   help="Uključi ako hoćeš ručno da promeniš podatke nekoj pumpi "
+                                        "koja nije na spisku problema.")
+                _spisak = list(_za_rucno)
+                if _sve_p:
+                    _imam = {_z["idk"] for _z in _spisak}
+                    for r in _pumpe:
+                        if int(r["idk"]) not in _imam:
+                            _rl1 = (((_obr.get(int(r["idk"])) or {}).get("dnevnik") or {})
+                                    .get("rucni_lager") or {})
+                            _spisak.append({"idk": int(r["idk"]), "naziv": r["naziv"],
+                                            "razlog": ("✍️ ručno upisano" if _rl1 else "✓ uredno poslala")})
+                    _spisak.sort(key=lambda z: (z["razlog"].startswith("✓"), str(z["naziv"])))
                 _lbl_r = [str(_z["idk"]) + " · " + _z["naziv"].replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,")
-                          + "  —  " + _z["razlog"] for _z in _za_rucno]
+                          + "  —  " + _z["razlog"] for _z in _spisak] or ["—"]
                 _izb = st.selectbox("Pumpa", _lbl_r, key="knez_rucna_pumpa",
                                     label_visibility="collapsed")
-                _zi = _lbl_r.index(_izb)
-                _tid = _za_rucno[_zi]["idk"]
+                _zi = _lbl_r.index(_izb) if _izb in _lbl_r else 0
+                _za_rucno = _spisak or [{"idk": 0, "naziv": "—", "razlog": ""}]
+                _tid = _za_rucno[min(_zi, len(_za_rucno) - 1)]["idk"]
                 _stara = (((_obr.get(_tid) or {}).get("dnevnik") or {}).get("rucni_lager") or {})
                 _stara_map = {int(_x["ida"]): _x for _x in (_stara.get("redovi") or []) if _x.get("ida")}
                 if _stara:
@@ -2596,6 +2639,10 @@ def knez_admin_ui():
                                        "Izlaz (prodaja)": float(_stara_map.get(_i, {}).get("izlaz", 0) or 0),
                                        "Stanje (lager)": float(_stara_map.get(_i, {}).get("stanje", 0) or 0)}
                                       for _i, _n in sorted(_kat_p.items())])
+                st.markdown('<div class="knez-ed-hdr">✍️ Ručni unos &nbsp;·&nbsp; '
+                            + _h_escape(str(_za_rucno[min(_zi, len(_za_rucno) - 1)]["naziv"])
+                                        .replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,"))
+                            + '</div>', unsafe_allow_html=True)
                 # Sve u FORMI: dok kucaš ništa se ne osvežava i ekran ne skače —
                 # upisuje se tek kad klikneš „Sačuvaj".
                 with st.form("knez_rucni_form_" + str(mesec_key) + "_" + str(_tid),
@@ -2611,10 +2658,15 @@ def knez_admin_ui():
                                                                              format="%d"),
                             "Stanje (lager)": st.column_config.NumberColumn(min_value=0, step=1,
                                                                             format="%d")})
-                    st.caption("Upiši sve što treba pa klikni Sačuvaj — dok kucaš ništa se ne "
-                               "pomera i ništa se ne šalje u bazu.")
-                    _cuvaj = st.form_submit_button("💾 Sačuvaj za ovu pumpu", type="primary",
-                                                   use_container_width=True)
+                    _fc1, _fc2 = st.columns([2.6, 1])
+                    with _fc1:
+                        st.caption("Upiši sve što treba pa klikni Sačuvaj — dok kucaš ništa se ne "
+                                   "pomera i ništa se ne šalje u bazu.")
+                        _nula_ok = st.checkbox("Ova pumpa nema ništa (sve nule) — svejedno sačuvaj",
+                                               key="knez_rucni_nule_" + str(_tid))
+                    with _fc2:
+                        _cuvaj = st.form_submit_button("💾 Sačuvaj", type="primary",
+                                                       use_container_width=True)
                 if _cuvaj:
                     _red_nov = [{"ida": int(_rr["ID artikla"]), "naziv": str(_rr["Naziv artikla"]),
                                  "izlaz": float(_rr["Izlaz (prodaja)"] or 0),
@@ -2622,13 +2674,16 @@ def knez_admin_ui():
                                 for _, _rr in _ed_r.iterrows()
                                 if (float(_rr["Izlaz (prodaja)"] or 0) > 0
                                     or float(_rr["Stanje (lager)"] or 0) > 0)]
-                    if not _red_nov:
-                        st.warning("Nisi upisala nijednu količinu.")
+                    if not _red_nov and not _nula_ok:
+                        st.warning("Nisi upisala nijednu količinu. Ako pumpa stvarno nema ništa, "
+                                   "čekiraj „sve nule“ pa sačuvaj — skloniću je sa spiska.")
                     elif sb_knez_rucni_set(mesec_key, _tid, _red_nov,
-                                           ko=st.session_state.get("admin_user", "")):
+                                           ko=st.session_state.get("admin_user", ""),
+                                           prazno=bool(not _red_nov)):
                         st.session_state["_knez_scan_flash"] = (
-                            "💾 Upisano ručno: " + str(len(_red_nov)) + " artikala za "
-                            + str(_za_rucno[_zi]["naziv"])[:40] + " — ušlo je u Excel.")
+                            "💾 Upisano ručno za " + str(_za_rucno[_zi]["naziv"])[:40] + ": "
+                            + (str(len(_red_nov)) + " artikala — ušlo je u Excel."
+                               if _red_nov else "nema ničega (sve nule) — sklonjena sa spiska."))
                         st.rerun()
                     else:
                         st.error("Nije sačuvano — Supabase nije dostupan.")
@@ -2649,8 +2704,7 @@ def knez_admin_ui():
                                "sledećeg meseca. Ako je ipak naš, dodeli mu ID.")
                     if _nepoz_novi:
                         if st.button("✕ Iksiraj SVE ovde — nijedan nije naš ("
-                                     + str(len(_nepoz_novi)) + ")", key="knez_art_sve_x",
-                                     use_container_width=True):
+                                     + str(len(_nepoz_novi)) + ")", key="knez_art_sve_x"):
                             if sb_knez_nije_nase_dodaj(list(_nepoz_novi.items()),
                                                        ko=st.session_state.get("admin_user", "")):
                                 st.session_state["_knez_scan_flash"] = (
@@ -2716,12 +2770,14 @@ def knez_admin_ui():
             if _spremno:
                 try:
                     _xb = knez_lager_xlsx(_spremno, _sel_lbl_k)
-                    st.download_button("⬇️ Izvezi u Excel (" + str(len(_spremno)) + " redova)",
-                                       _xb, file_name=("Knez_lager_" + str(mesec_key) + ".xlsx"),
-                                       mime=("application/vnd.openxmlformats-officedocument"
-                                             ".spreadsheetml.sheet"),
-                                       key="knez_lager_dl", type="primary",
-                                       use_container_width=True)
+                    _ec1, _ec2 = st.columns([1.15, 3])
+                    with _ec1:
+                        st.download_button("⬇️ Izvezi u Excel", _xb,
+                                           file_name=("Knez_lager_" + str(mesec_key) + ".xlsx"),
+                                           mime=("application/vnd.openxmlformats-officedocument"
+                                                 ".spreadsheetml.sheet"),
+                                           key="knez_lager_dl", type="primary",
+                                           use_container_width=True)
                 except Exception as _xe:
                     st.error("Excel nije napravljen: " + str(_xe))
 
@@ -5152,8 +5208,9 @@ def sb_knez_nije_nase_vrati(kljucevi, ko=""):
         return False
 
 
-def sb_knez_rucni_set(mesec_key, idk, redovi, ko=""):
+def sb_knez_rucni_set(mesec_key, idk, redovi, ko="", prazno=False):
     """Ručno upisano stanje/prodaja za pumpu koja nije poslala (ili se fajl ne čita).
+    prazno=True znači „proverila sam, nema ničega" — pumpa je rešena, ali bez redova.
     Pamti se u bazi, uz ostatak dnevnika te pumpe."""
     cli = _sb()
     if cli is None:
@@ -5164,12 +5221,13 @@ def sb_knez_rucni_set(mesec_key, idk, redovi, ko=""):
                .eq("mesec", mesec_key).eq("sistem", KNEZ_SIS).eq("idk", int(idk)).limit(1).execute())
         _r = res.data[0] if res.data else {}
         _dn = dict(_r.get("dnevnik") or {})
-        if redovi:
+        if redovi or prazno:
             _dn["rucni_lager"] = {"redovi": [{"ida": int(_x["ida"]),
                                               "naziv": str(_x.get("naziv", ""))[:120],
                                               "izlaz": float(_x.get("izlaz") or 0),
                                               "stanje": float(_x.get("stanje") or 0)}
-                                             for _x in redovi if _x.get("ida")],
+                                             for _x in (redovi or []) if _x.get("ida")],
+                                  "prazno": bool(prazno and not redovi),
                                   "ko": str(ko or ""), "at": _now().isoformat()}
         else:
             _dn.pop("rucni_lager", None)
@@ -12364,6 +12422,95 @@ def create_excel(engine, ukljuci_model=True):
 DEFAULT_EXCLUDED = "1023, 1027, 1034, 1043, 1057, 1060, 1061, 1076, 1315, 1347, 1349, 1359"
 st.set_page_config(page_title="VAPE Analitika", page_icon="\U0001f4a8", layout="wide", initial_sidebar_state="collapsed")
 st.markdown("""<style>
+/* ===== Dok aplikacija radi ===== */
+/* Streamlit inače zatamni ceo ekran (izgleda kao da se zaledilo). Umesto toga:
+   ekran ostaje čitljiv, a gore se pojavi kartica „Radim…" + tanka traka.
+   Kartica se pojavljuje tek posle pola sekunde, da kratki klikovi ne trepere. */
+[data-testid="stElementContainer"][data-stale="true"],
+[data-testid="stVerticalBlock"][data-stale="true"],
+div[data-stale="true"] { opacity: 1 !important; }
+
+@keyframes vape-traka { 0% { background-position: 0% 50%; }
+                        100% { background-position: 200% 50%; } }
+@keyframes vape-ulaz   { from { opacity: 0; transform: translate(-50%, -14px); }
+                         to   { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes vape-disi   { 0%,100% { box-shadow: 0 6px 22px rgba(124,58,237,.18); }
+                         50%     { box-shadow: 0 6px 30px rgba(124,58,237,.42); } }
+
+[data-testid="stApp"][data-test-script-state="running"]::before,
+[data-testid="stApp"][data-test-script-state="rerunRequested"]::before {
+    content: ""; position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 999998;
+    background: linear-gradient(90deg,#7c3aed,#c4b5fd,#7c3aed,#c4b5fd);
+    background-size: 200% 100%;
+    animation: vape-traka 1.1s linear infinite;
+}
+[data-testid="stApp"][data-test-script-state="running"]::after,
+[data-testid="stApp"][data-test-script-state="rerunRequested"]::after {
+    content: "⏳  Radim… sačekaj trenutak";
+    position: fixed; top: 14px; left: 50%; transform: translate(-50%, 0); z-index: 999999;
+    background: #ffffff; color: #4c1d95; border: 1px solid #ddd6fe; border-radius: 12px;
+    padding: 11px 22px; font-size: 14.5px; font-weight: 700; letter-spacing: .2px;
+    white-space: nowrap; pointer-events: none;
+    opacity: 0;
+    animation: vape-ulaz .22s ease .5s forwards, vape-disi 1.6s ease-in-out .7s infinite;
+}
+/* ===== Dugmad: manja, sa ljubičastim naglaskom (ne ogromna crvena) ===== */
+.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
+    border-radius: 10px !important;
+    min-height: 34px !important; height: auto !important;
+    padding: 5px 16px !important;
+    font-size: 13.5px !important; font-weight: 700 !important;
+    line-height: 1.25 !important;
+    transition: all .12s ease !important;
+}
+.stButton > button[kind="secondary"], .stDownloadButton > button[kind="secondary"],
+.stFormSubmitButton > button[kind="secondaryFormSubmit"] {
+    background: #ffffff !important; color: #5b21b6 !important;
+    border: 1px solid #e2d9fb !important;
+    box-shadow: 0 1px 2px rgba(76,29,149,.05) !important;
+}
+.stButton > button[kind="secondary"]:hover, .stDownloadButton > button[kind="secondary"]:hover,
+.stFormSubmitButton > button[kind="secondaryFormSubmit"]:hover {
+    border-color: #a78bfa !important; background: #faf7ff !important; color: #4c1d95 !important;
+}
+.stButton > button[kind="primary"], .stDownloadButton > button[kind="primary"],
+.stFormSubmitButton > button[kind="primaryFormSubmit"] {
+    background: linear-gradient(180deg,#8b5cf6 0%,#7c3aed 100%) !important;
+    color: #ffffff !important; border: 0 !important;
+    box-shadow: 0 2px 8px rgba(124,58,237,.28) !important;
+}
+.stButton > button[kind="primary"]:hover, .stDownloadButton > button[kind="primary"]:hover,
+.stFormSubmitButton > button[kind="primaryFormSubmit"]:hover {
+    background: linear-gradient(180deg,#7c3aed 0%,#6d28d9 100%) !important;
+    box-shadow: 0 3px 12px rgba(124,58,237,.38) !important;
+}
+.stButton > button[kind="tertiary"] { padding: 2px 6px !important; min-height: 26px !important; }
+
+/* ===== Naše tabele (Knez): obojeno zaglavlje, čiste linije ===== */
+.knez-tab-wrap { border: 1px solid #e9e3fb; border-radius: 12px; overflow: hidden;
+                 box-shadow: 0 1px 3px rgba(76,29,149,.06); margin: 2px 0 10px; }
+table.knez-tab { width: 100%; border-collapse: collapse; font-size: 13px; background: #fff; }
+table.knez-tab thead th {
+    background: linear-gradient(180deg,#7c3aed 0%,#6d28d9 100%); color: #fff;
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px;
+    text-align: left; padding: 9px 12px; white-space: nowrap;
+}
+table.knez-tab tbody td { padding: 9px 12px; border-top: 1px solid #f1eefb; color: #1f2937;
+                          vertical-align: middle; }
+table.knez-tab tbody tr:nth-child(even) td { background: #faf8ff; }
+table.knez-tab tbody tr:hover td { background: #f3eeff; }
+table.knez-tab td.nz { font-weight: 700; color: #312e81; }
+table.knez-tab td.id { color: #6b7280; font-variant-numeric: tabular-nums; }
+table.knez-tab td.fj { color: #6b7280; font-size: 12px; }
+table.knez-tab td.br { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+table.knez-tab td.st { font-size: 12.5px; font-weight: 600; }
+table.knez-tab td.ik { text-align: center; }
+table.knez-tab .chip { display: inline-block; min-width: 24px; padding: 2px 7px;
+                       border-radius: 20px; font-weight: 800; font-size: 12px; }
+/* naslovna traka iznad tabele za ručni unos (sama tabela je Streamlit-ova) */
+.knez-ed-hdr { background: linear-gradient(180deg,#7c3aed 0%,#6d28d9 100%); color: #fff;
+               font-size: 12.5px; font-weight: 700; letter-spacing: .3px;
+               padding: 8px 14px; border-radius: 10px 10px 0 0; margin: 8px 0 -8px; }
 section[data-testid="stSidebar"] { display: none !important; }
 header[data-testid="stHeader"] { display: none !important; }
 #MainMenu { visibility: hidden !important; }
