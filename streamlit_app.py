@@ -2349,10 +2349,14 @@ def knez_admin_ui():
                     _naj = _knez_nadji_pumpu(_r.get("bs", ""), _r.get("bs_naziv", ""), _pumpe)
                     if _naj:
                         _idk = _naj["idk"]; _pumpa = _naj["naziv"]
+                _p_ok, _p_txt = _knez_period_status(_r.get("od", ""), _r.get("do", ""), mesec_key)
                 _izv.append({"ime": _p["ime"], "bs": _r.get("bs", ""),
                              "bs_naziv": _r.get("bs_naziv", ""), "idk": _idk,
                              "pumpa": _pumpa, "redova": len(_r.get("redovi") or []),
-                             "greska": _r.get("greska", ""), "izvor": _p["izvor"]})
+                             "greska": _r.get("greska", ""), "izvor": _p["izvor"],
+                             "od": _r.get("od", ""), "do": _r.get("do", ""),
+                             "per_ok": bool(_p_ok), "per_txt": _p_txt,
+                             "otisak": _knez_otisak(_r.get("redovi") or [])})
                 for _x in (_r.get("redovi") or []):
                     _stavke.append({"idk": _idk, "pumpa": _pumpa, "bs": _r.get("bs", ""),
                                     "sifra": _x.get("sifra", ""), "naziv": _x.get("naziv", ""),
@@ -2375,25 +2379,112 @@ def knez_admin_ui():
         _rez = st.session_state.get("_knez_pdf_rez") or {}
         if _rez.get("izv"):
             _izv = _rez["izv"]; _stavke = _rez["stavke"]
-            _ok_f = [x for x in _izv if x["redova"] and x["idk"]]
-            _bez_pumpe = [x for x in _izv if x["redova"] and not x["idk"]]
-            _lose = [x for x in _izv if not x["redova"]]
+
+            # ---------- 1) Ista pumpa poslala VIŠE fajlova ----------
+            # Ako su fajlovi isti — uzima se jedan. Ako NISU — to je problem i mora
+            # da se odluči koji važi (inače bi stanje te pumpe bilo pogrešno).
+            _po_pumpi = {}
+            for _x in _izv:
+                if _x.get("idk") and _x.get("redova"):
+                    _po_pumpi.setdefault(int(_x["idk"]), []).append(_x)
+            _dupli_isti, _dupli_razl = {}, {}
+            for _ik, _fs in _po_pumpi.items():
+                if len(_fs) < 2:
+                    continue
+                if len({_f.get("otisak") for _f in _fs}) == 1:
+                    _dupli_isti[_ik] = _fs
+                else:
+                    _dupli_razl[_ik] = _fs
+            _izbor_f = st.session_state.get("_knez_izbor_fajla") or {}
+            _uzmi = {}
+            for _ik, _fs in _dupli_isti.items():
+                _uzmi[_ik] = sorted(_fs, key=lambda f: (-f["redova"], f["ime"]))[0]["ime"]
+            for _ik, _fs in _dupli_razl.items():
+                _uzmi[_ik] = _izbor_f.get(str(_ik)) or sorted(
+                    _fs, key=lambda f: (-f["redova"], f["ime"]))[0]["ime"]
+
+            # ---------- 2) Status po fajlu ----------
+            for _x in _izv:
+                _ik = _x.get("idk")
+                if not _x.get("redova"):
+                    _x["st_ikona"] = "✗"
+                    _x["st_txt"] = "nije pročitan — " + (str(_x.get("greska", ""))[:70]
+                                                         or "nepoznat obrazac")
+                elif not _ik:
+                    _x["st_ikona"] = "⚠"
+                    _x["st_txt"] = "pumpa nije prepoznata (BS " + str(_x.get("bs") or "?") + ")"
+                elif not _x.get("per_ok"):
+                    _x["st_ikona"] = "⚠"
+                    _x["st_txt"] = "parametri nisu kako treba — " + str(_x.get("per_txt", ""))
+                elif int(_ik) in _dupli_razl:
+                    _x["st_ikona"] = "⚠"
+                    _x["st_txt"] = ("dva fajla i NISU ista — "
+                                    + ("ovaj se koristi" if _uzmi.get(int(_ik)) == _x["ime"]
+                                       else "ovaj se NE koristi"))
+                elif int(_ik) in _dupli_isti:
+                    _x["st_ikona"] = "✓"
+                    _x["st_txt"] = ("dva ista fajla — uzet jedan" if _uzmi.get(int(_ik)) == _x["ime"]
+                                    else "duplikat, preskočen")
+                else:
+                    _x["st_ikona"] = "✓"
+                    _x["st_txt"] = "OK"
+            _n_ok = sum(1 for _x in _izv if _x["st_ikona"] == "✓")
+            _prob = [_x for _x in _izv if _x["st_ikona"] != "✓"]
+
+            # ---------- 3) Pregledna tabela ----------
             st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
-            st.dataframe(pd.DataFrame([{
-                "Fajl": x["ime"], "BS": x["bs"], "Pumpa (PDF)": x["bs_naziv"],
-                "ID komitenta": x["idk"] if x["idk"] else "\u2014",
-                "Pumpa (\u0161ifarnik)": x["pumpa"] or "\u2014",
-                "Redova": x["redova"],
-                "Status": ("\u2713 OK" if (x["redova"] and x["idk"])
-                           else ("\u26a0 nema pumpe" if x["redova"] else "\u2717 " + str(x["greska"])[:60])),
-            } for x in _izv]), hide_index=True, use_container_width=True)
-            if _lose:
-                st.error("\u2717 " + str(len(_lose)) + " fajlova nije pro\u010ditano \u2014 vidi kolonu Status. "
-                         "Ako je u pitanju druga\u010diji obrazac, po\u0161alji mi taj PDF pa da ga dodam.")
+            _f1, _f2 = st.columns([2, 3])
+            with _f1:
+                _samo_prob = st.toggle("Prikaži samo probleme", value=bool(_prob),
+                                       key="knez_flt_prob")
+            with _f2:
+                st.markdown('<div style="font-size:12.5px;color:#6b7280;padding-top:6px;">'
+                            '<b style="color:#15803d;">✓ ' + str(_n_ok) + '</b> pročitano  ·  '
+                            '<b style="color:#b45309;">⚠ ✗ ' + str(len(_prob))
+                            + '</b> za proveru  ·  ukupno ' + str(len(_izv))
+                            + ' fajlova</div>', unsafe_allow_html=True)
+            _pri = _prob if _samo_prob else _izv
+            _pri = sorted(_pri, key=lambda x: (x["st_ikona"] == "✓", str(x.get("pumpa") or "")))
+            if _pri:
+                st.dataframe(pd.DataFrame([{
+                    "": _x["st_ikona"],
+                    "Pumpa": ((_x.get("pumpa") or _x.get("bs_naziv") or "—").replace(
+                        "KNEZ PETROL DOO ZEMUN,", "").replace("KNEZ PETROL DOO ZEMUN", "").strip(" -,")),
+                    "ID": _x.get("idk") or "—",
+                    "Fajl": _x["ime"],
+                    "Redova": _x["redova"],
+                    "Status": _x["st_txt"],
+                } for _x in _pri]), hide_index=True, use_container_width=True,
+                    height=min(56 + 35 * len(_pri), 420),
+                    column_config={"": st.column_config.TextColumn(width="small"),
+                                   "ID": st.column_config.TextColumn(width="small"),
+                                   "Redova": st.column_config.NumberColumn(width="small")})
+            elif _samo_prob:
+                st.success("✅ Nema nijednog problema — svi fajlovi su pročitani kako treba.")
+
+            # ---------- 4) Dva različita fajla: izaberi koji važi ----------
+            if _dupli_razl:
+                st.warning("⚠️ " + str(len(_dupli_razl)) + " pumpi je poslalo DVA RAZLIČITA fajla "
+                           "(nije ista lista). Izaberi koji važi:")
+                for _ik, _fs in sorted(_dupli_razl.items()):
+                    _nz_p = next((_f.get("pumpa") for _f in _fs if _f.get("pumpa")), "ID " + str(_ik))
+                    _opc = [_f["ime"] + "  (" + str(_f["redova"]) + " redova, period "
+                            + str(_f.get("od", "")) + "–" + str(_f.get("do", "")) + ")" for _f in _fs]
+                    _tren = next((_i for _i, _f in enumerate(_fs)
+                                  if _f["ime"] == _uzmi.get(_ik)), 0)
+                    _sel_f = st.radio(_nz_p, _opc, index=_tren, key="knez_dvafajla_" + str(_ik))
+                    _nov = _fs[_opc.index(_sel_f)]["ime"]
+                    if _nov != _uzmi.get(_ik):
+                        _izbor_f[str(_ik)] = _nov
+                        st.session_state["_knez_izbor_fajla"] = _izbor_f
+                        st.rerun()
+
+            # ---------- 5) Pumpa nije prepoznata iz šifarnika ----------
+            _bez_pumpe = [_x for _x in _izv if _x["redova"] and not _x["idk"]]
             if _bez_pumpe:
-                st.warning("\u26a0 " + str(len(_bez_pumpe)) + " fajlova je pro\u010ditano, ali pumpa nije "
-                           "prepoznata iz \u0161ifarnika (broj BS se ne poklapa). Dodeli ih ru\u010dno:")
-                _opts2 = ["\u2014"] + [str(p["idk"]) + " \u00b7 " + p["naziv"] for p in _pumpe]
+                st.warning("⚠ " + str(len(_bez_pumpe)) + " fajlova je pročitano, ali pumpa nije "
+                           "prepoznata iz šifarnika (broj BS se ne poklapa). Dodeli ih ručno:")
+                _opts2 = ["—"] + [str(p["idk"]) + " · " + p["naziv"] for p in _pumpe]
                 for _bi, _x in enumerate(_bez_pumpe):
                     _c1, _c2 = st.columns([3, 1])
                     with _c1:
@@ -2401,9 +2492,9 @@ def knez_admin_ui():
                                             _opts2, key="knez_pdfmap_" + str(_bi))
                     with _c2:
                         st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-                        if st.button("\u2713 Dodeli", key="knez_pdfmapb_" + str(_bi),
-                                     use_container_width=True, disabled=(_pk2 == "\u2014")):
-                            _tid2 = int(str(_pk2).split("\u00b7")[0].strip())
+                        if st.button("✓ Dodeli", key="knez_pdfmapb_" + str(_bi),
+                                     use_container_width=True, disabled=(_pk2 == "—")):
+                            _tid2 = int(str(_pk2).split("·")[0].strip())
                             _nz2 = next((p["naziv"] for p in _pumpe if p["idk"] == _tid2), "")
                             for _s2 in _stavke:
                                 if _s2.get("fajl") == _x["ime"] and not _s2.get("idk"):
@@ -2411,91 +2502,171 @@ def knez_admin_ui():
                             _x["idk"] = _tid2; _x["pumpa"] = _nz2
                             st.session_state["_knez_pdf_rez"] = {"stavke": _stavke, "izv": _izv}
                             st.rerun()
-            # --- Ru\u010dne ispravke artikala (pamte se dok se radi) ---
+
+            # ---------- 6) Artikli: ručne ispravke i nepoznati ----------
             _rucno_art = st.session_state.get("_knez_art_rucno") or {}
             for _s4 in _stavke:
                 _kj4 = _knez_norm_art(_s4.get("naziv", ""))
                 if _kj4 in _rucno_art:
                     _s4["ida"] = _rucno_art[_kj4]["ida"]
                     _s4["nas_naziv"] = _rucno_art[_kj4]["naziv"]
-                    _s4["poklapanje"] = "ru\u010dno"
+                    _s4["poklapanje"] = "ručno"
             _kat_p = knez_nas_sifarnik(mesec_key)
             _nepoz = {}
             for _s4 in _stavke:
                 if not _s4.get("ida"):
                     _nepoz.setdefault(_knez_norm_art(_s4.get("naziv", "")), _s4.get("naziv", ""))
             _slicno = sorted({(_s4.get("naziv", ""), _s4.get("nas_naziv", ""), _s4.get("ida"))
-                              for _s4 in _stavke if _s4.get("poklapanje") == "sli\u010dno"})
+                              for _s4 in _stavke if _s4.get("poklapanje") == "slično"})
             if not _kat_p:
-                st.warning("\u26a0\ufe0f Nemam na\u0161 \u0161ifarnik artikala (nijedan sistem jo\u0161 nije objavljen), "
-                           "pa ID artikla ne mogu da upi\u0161em. Excel \u0107e imati njihov naziv i \u0161ifru.")
+                st.warning("⚠️ Nemam naš šifarnik artikala (nijedan sistem još nije objavljen), "
+                           "pa ID artikla ne mogu da upišem. Excel će imati njihov naziv i šifru.")
             if _slicno:
-                with st.expander("\ud83d\udd0e Artikli pogo\u0111eni \u201esli\u010dno\u201c (" + str(len(_slicno))
-                                 + ") \u2014 proveri", expanded=False):
-                    st.dataframe(pd.DataFrame([{"Njihov naziv": _a, "Na\u0161 artikal": _b, "ID": _c}
+                with st.expander("🔎 Artikli pogođeni „slično“ (" + str(len(_slicno))
+                                 + ") — proveri", expanded=False):
+                    st.dataframe(pd.DataFrame([{"Njihov naziv": _a, "Naš artikal": _b, "ID": _c}
                                                for _a, _b, _c in _slicno]),
                                  hide_index=True, use_container_width=True)
             if _nepoz and _kat_p:
-                st.warning("\u26a0\ufe0f " + str(len(_nepoz)) + " artikala nije prepoznato u na\u0161em \u0161ifarniku. "
-                           "Dodeli ih ovde \u2014 pamti se za sve pumpe odjednom:")
-                _opts3 = ["\u2014"] + [str(_i) + " \u00b7 " + _n for _i, _n in sorted(_kat_p.items())]
-                for _ai, (_kj5, _nz5) in enumerate(sorted(_nepoz.items())):
-                    _ca, _cb = st.columns([3, 1])
-                    with _ca:
-                        _pk3 = st.selectbox(_nz5[:70], _opts3, key="knez_artmap_" + str(_ai))
-                    with _cb:
-                        st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-                        if st.button("\u2713 Dodeli", key="knez_artmapb_" + str(_ai),
-                                     use_container_width=True, disabled=(_pk3 == "\u2014")):
-                            _aid = int(str(_pk3).split("\u00b7")[0].strip())
-                            _rucno_art[_kj5] = {"ida": _aid, "naziv": _kat_p.get(_aid, "")}
-                            st.session_state["_knez_art_rucno"] = _rucno_art
-                            st.rerun()
-            # --- Ista pumpa poslala VIŠE fajlova: uzmi jedan (najpotpuniji) ---
-            # (npr. „LAGER.pdf" i „vape lager.pdf" za istu BS — inače bi se stanje udvostručilo)
-            _po_pumpi = {}
-            for _s5 in _stavke:
-                if _s5.get("idk"):
-                    _po_pumpi.setdefault(int(_s5["idk"]), {}).setdefault(_s5.get("fajl", ""), 0)
-                    _po_pumpi[int(_s5["idk"])][_s5.get("fajl", "")] += 1
-            _dupli = {_ik: _fj for _ik, _fj in _po_pumpi.items() if len(_fj) > 1}
-            _uzmi = {}
-            for _ik, _fj in _dupli.items():
-                _uzmi[_ik] = sorted(_fj.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
-            if _dupli:
-                st.warning("⚠️ " + str(len(_dupli)) + " pumpi je poslalo VIŠE fajlova. Uzet je "
-                           "samo najpotpuniji (sa najviše redova) da se stanje ne bi udvostručilo:")
-                st.dataframe(pd.DataFrame([{
-                    "ID komitenta": _ik,
-                    "Pumpa": next((s.get("pumpa", "") for s in _stavke
-                                   if s.get("idk") == _ik), ""),
-                    "Uzet fajl": _uzmi[_ik] + " (" + str(_dupli[_ik][_uzmi[_ik]]) + " redova)",
-                    "Preskočeno": ", ".join(_f + " (" + str(_n) + ")"
-                                            for _f, _n in sorted(_dupli[_ik].items())
-                                            if _f != _uzmi[_ik]),
-                } for _ik in sorted(_dupli)]), hide_index=True, use_container_width=True)
+                with st.expander("⚠️ Artikli koje ne prepoznajem (" + str(len(_nepoz))
+                                 + ") — dodeli ili ostavi prazno", expanded=False):
+                    st.caption("Ovo je često tuđa roba (GOAT, KILLA…) koja nije naša — nju "
+                               "ostavi praznu. Ako je ipak naš artikal, dodeli ga: pamti se za "
+                               "sve pumpe odjednom.")
+                    _opts3 = ["—"] + [str(_i) + " · " + _n for _i, _n in sorted(_kat_p.items())]
+                    for _ai, (_kj5, _nz5) in enumerate(sorted(_nepoz.items())):
+                        _ca, _cb = st.columns([3, 1])
+                        with _ca:
+                            _pk3 = st.selectbox(_nz5[:70], _opts3, key="knez_artmap_" + str(_ai))
+                        with _cb:
+                            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+                            if st.button("✓ Dodeli", key="knez_artmapb_" + str(_ai),
+                                         use_container_width=True, disabled=(_pk3 == "—")):
+                                _aid = int(str(_pk3).split("·")[0].strip())
+                                _rucno_art[_kj5] = {"ida": _aid, "naziv": _kat_p.get(_aid, "")}
+                                st.session_state["_knez_art_rucno"] = _rucno_art
+                                st.rerun()
+
+            # ---------- 7) Šta ulazi u Excel ----------
+            _lose_idk = {int(_x["idk"]) for _x in _izv
+                         if _x.get("idk") and not _x.get("per_ok") and _x.get("redova")}
             _spremno = [s for s in _stavke
-                        if s.get("idk") and (int(s["idk"]) not in _uzmi
-                                             or s.get("fajl", "") == _uzmi[int(s["idk"])])]
+                        if s.get("idk") and int(s["idk"]) not in _lose_idk
+                        and (int(s["idk"]) not in _uzmi or s.get("fajl", "") == _uzmi[int(s["idk"])])]
+            # ručno upisane pumpe (iz baze) — dodaju se na isti spisak
+            _rucne_st = []
+            for r in _pumpe:
+                _rl = ((_obr.get(int(r["idk"])) or {}).get("dnevnik") or {}).get("rucni_lager") or {}
+                for _x in (_rl.get("redovi") or []):
+                    _rucne_st.append({"idk": int(r["idk"]), "pumpa": r["naziv"], "bs": "",
+                                      "sifra": "", "naziv": _x.get("naziv", ""),
+                                      "ida": _x.get("ida"), "nas_naziv": _x.get("naziv", ""),
+                                      "poklapanje": "ručno upisano",
+                                      "izlaz": _x.get("izlaz"), "stanje": _x.get("stanje"),
+                                      "stanje_do": None, "ulaz": None, "vrednost": None,
+                                      "od": "", "do": "",
+                                      "fajl": "RUČNO (" + str(_rl.get("ko", "")) + ")"})
+            _ima_fajl = {int(s["idk"]) for s in _spremno}
+            _spremno = _spremno + [s for s in _rucne_st if int(s["idk"]) not in _ima_fajl]
+
+            # ---------- 8) Pumpe bez izveštaja / sa problemom -> ručni unos ----------
+            _pumpe_ok = {int(s["idk"]) for s in _spremno}
+            _fajl_po_pumpi = {int(_x["idk"]): _x for _x in _izv if _x.get("idk")}
+            _za_rucno = []
+            for r in _pumpe:
+                _ik = int(r["idk"])
+                if _ik in _pumpe_ok:
+                    continue
+                _f = _fajl_po_pumpi.get(_ik)
+                if _f is None:
+                    _raz = "nije poslala izveštaj"
+                elif not _f.get("redova"):
+                    _raz = "fajl se ne čita (" + (str(_f.get("greska", ""))[:50] or "nepoznat obrazac") + ")"
+                elif not _f.get("per_ok"):
+                    _raz = "parametri nisu kako treba — " + str(_f.get("per_txt", ""))
+                else:
+                    _raz = "nije ušla u tabelu"
+                _za_rucno.append({"idk": _ik, "naziv": r["naziv"], "razlog": _raz})
+            st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+            st.markdown('<div style="font-size:14px;font-weight:800;color:#7c2d12;">'
+                        '🛠 Pumpe bez izveštaja ili sa problemom (' + str(len(_za_rucno))
+                        + ')</div><div style="font-size:12px;color:#9a3412;margin:2px 0 8px;">'
+                        'Klikni na pumpu pa upiši prodaju (izlaz) i lager (stanje) — čim sačuvaš, '
+                        'automatski ulazi u Excel.</div>', unsafe_allow_html=True)
+            if not _za_rucno:
+                st.success("✅ Sve pumpe iz šifarnika imaju podatke.")
+            elif not _kat_p:
+                st.info("Ručni unos nije moguć dok nemam naš šifarnik artikala (objavi jedan sistem).")
+            else:
+                _lbl_r = [str(_z["idk"]) + " · " + _z["naziv"].replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,")
+                          + "  —  " + _z["razlog"] for _z in _za_rucno]
+                _izb = st.selectbox("Pumpa", _lbl_r, key="knez_rucna_pumpa",
+                                    label_visibility="collapsed")
+                _zi = _lbl_r.index(_izb)
+                _tid = _za_rucno[_zi]["idk"]
+                _stara = (((_obr.get(_tid) or {}).get("dnevnik") or {}).get("rucni_lager") or {})
+                _stara_map = {int(_x["ida"]): _x for _x in (_stara.get("redovi") or []) if _x.get("ida")}
+                if _stara:
+                    st.caption("✍️ Već je upisano " + str(len(_stara_map)) + " artikala  ·  "
+                               + str(_stara.get("ko", "")) + "  ·  " + _dt_kratko(_stara.get("at", "")))
+                _df_r = pd.DataFrame([{"ID artikla": _i, "Naziv artikla": _n,
+                                       "Izlaz (prodaja)": float(_stara_map.get(_i, {}).get("izlaz", 0) or 0),
+                                       "Stanje (lager)": float(_stara_map.get(_i, {}).get("stanje", 0) or 0)}
+                                      for _i, _n in sorted(_kat_p.items())])
+                _ed_r = st.data_editor(
+                    _df_r, hide_index=True, use_container_width=True,
+                    key="knez_rucni_ed_" + str(mesec_key) + "_" + str(_tid),
+                    height=min(56 + 35 * len(_df_r), 430),
+                    column_config={
+                        "ID artikla": st.column_config.NumberColumn(disabled=True, width="small"),
+                        "Naziv artikla": st.column_config.TextColumn(disabled=True, width="large"),
+                        "Izlaz (prodaja)": st.column_config.NumberColumn(min_value=0, step=1,
+                                                                         format="%d"),
+                        "Stanje (lager)": st.column_config.NumberColumn(min_value=0, step=1,
+                                                                        format="%d")})
+                _rc1, _rc2 = st.columns([1, 1])
+                with _rc1:
+                    if st.button("💾 Sačuvaj za ovu pumpu", key="knez_rucni_save",
+                                 type="primary", use_container_width=True):
+                        _red_nov = [{"ida": int(_rr["ID artikla"]), "naziv": str(_rr["Naziv artikla"]),
+                                     "izlaz": float(_rr["Izlaz (prodaja)"] or 0),
+                                     "stanje": float(_rr["Stanje (lager)"] or 0)}
+                                    for _, _rr in _ed_r.iterrows()
+                                    if (float(_rr["Izlaz (prodaja)"] or 0) > 0
+                                        or float(_rr["Stanje (lager)"] or 0) > 0)]
+                        if not _red_nov:
+                            st.warning("Nisi upisala nijednu količinu.")
+                        elif sb_knez_rucni_set(mesec_key, _tid, _red_nov,
+                                               ko=st.session_state.get("admin_user", "")):
+                            st.session_state["_knez_scan_flash"] = (
+                                "💾 Upisano ručno: " + str(len(_red_nov)) + " artikala za "
+                                + str(_za_rucno[_zi]["naziv"])[:40] + " — ušlo je u Excel.")
+                            st.rerun()
+                        else:
+                            st.error("Nije sačuvano — Supabase nije dostupan.")
+                with _rc2:
+                    if _stara and st.button("🗑 Obriši ručni unos za ovu pumpu",
+                                            key="knez_rucni_del", use_container_width=True):
+                        sb_knez_rucni_set(mesec_key, _tid, [], ko=st.session_state.get("admin_user", ""))
+                        st.rerun()
+
+            # ---------- 9) Excel ----------
             _sa_art = [s for s in _spremno if s.get("ida")]
-            st.caption("Pro\u010ditano ukupno " + str(len(_stavke)) + " redova iz "
-                       + str(len(_izv)) + " fajlova \u00b7 sa ID komitenta: " + str(len(_spremno))
-                       + " \u00b7 sa na\u0161im ID artikla: " + str(len(_sa_art)) + ".")
+            _n_rucnih = len([s for s in _spremno if s.get("poklapanje") == "ručno upisano"])
+            st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+            st.caption("U Excel ide " + str(len(_spremno)) + " redova  ·  pumpi: "
+                       + str(len({s["idk"] for s in _spremno})) + "  ·  sa našim ID artikla: "
+                       + str(len(_sa_art))
+                       + ("  ·  ručno upisano: " + str(_n_rucnih) if _n_rucnih else ""))
             if _spremno:
-                _pv = pd.DataFrame([{"ID KOMITENTA": s["idk"], "ID ARTIKLA": s.get("ida") or "\u2014",
-                                     "Naziv artikla": s.get("nas_naziv") or s["naziv"],
-                                     "Izlaz": s["izlaz"], "Stanje": s["stanje"],
-                                     "Poklapanje": s.get("poklapanje", "") or "\u2014"}
-                                    for s in _spremno])
-                st.dataframe(_pv, hide_index=True, use_container_width=True,
-                             height=min(60 + 34 * len(_pv), 460))
                 try:
                     _xb = knez_lager_xlsx(_spremno, _sel_lbl_k)
-                    st.download_button("\u2b07\ufe0f Preuzmi Excel (" + str(len(_spremno)) + " redova)",
+                    st.download_button("⬇️ Izvezi u Excel (" + str(len(_spremno)) + " redova)",
                                        _xb, file_name=("Knez_lager_" + str(mesec_key) + ".xlsx"),
                                        mime=("application/vnd.openxmlformats-officedocument"
                                              ".spreadsheetml.sheet"),
-                                       key="knez_lager_dl", type="primary")
+                                       key="knez_lager_dl", type="primary",
+                                       use_container_width=True)
                 except Exception as _xe:
                     st.error("Excel nije napravljen: " + str(_xe))
 
@@ -4815,6 +4986,82 @@ def knez_citaj_lager_pdf(data):
     if not _out["redovi"]:
         _out["greska"] = "PDF je pročitan, ali nijedan red tabele nije prepoznat."
     return _out
+
+
+def _knez_dat(s):
+    """'1.8.2026' / '01.08.2026.' -> datetime.date (ili None)."""
+    import re as _r
+    _m = _r.match(r"\s*(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{2,4})", str(s or ""))
+    if not _m:
+        return None
+    try:
+        _g = int(_m.group(3))
+        if _g < 100:
+            _g += 2000
+        return datetime.date(_g, int(_m.group(2)), int(_m.group(1)))
+    except Exception:
+        return None
+
+
+def _knez_period_status(od, do, mesec_key):
+    """Da li je lager lista napravljena za TAJ mesec (od 01. do poslednjeg u mesecu).
+    Vraća (ok, kratak tekst za kolonu Status)."""
+    import calendar as _cal
+    try:
+        _g = int(str(mesec_key).split("-")[0]); _m = int(str(mesec_key).split("-")[1])
+    except Exception:
+        return (True, "")
+    _tr_od = datetime.date(_g, _m, 1)
+    _tr_do = datetime.date(_g, _m, _cal.monthrange(_g, _m)[1])
+    _d1, _d2 = _knez_dat(od), _knez_dat(do)
+    if not _d1 or not _d2:
+        return (False, "nema perioda u fajlu")
+    if _d1 == _tr_od and _d2 == _tr_do:
+        return (True, "")
+    return (False, "period " + _d1.strftime("%d.%m.%Y") + "–" + _d2.strftime("%d.%m.%Y")
+            + ", a treba " + _tr_od.strftime("%d.%m.") + "–" + _tr_do.strftime("%d.%m.%Y"))
+
+
+def _knez_otisak(redovi):
+    """Kratak potpis sadržaja lager liste — po njemu se vidi da li su dva fajla
+    iste pumpe zaista ista lista ili se razlikuju."""
+    return tuple(sorted((str(_x.get("sifra", "")), _x.get("izlaz"), _x.get("stanje"))
+                        for _x in (redovi or [])))
+
+
+def sb_knez_rucni_set(mesec_key, idk, redovi, ko=""):
+    """Ručno upisano stanje/prodaja za pumpu koja nije poslala (ili se fajl ne čita).
+    Pamti se u bazi, uz ostatak dnevnika te pumpe."""
+    cli = _sb()
+    if cli is None:
+        return False
+    try:
+        res = (cli.table("obrada")
+               .select("reakcije,trebovali_tip,njihova,napomena,reakcije_ko,dnevnik")
+               .eq("mesec", mesec_key).eq("sistem", KNEZ_SIS).eq("idk", int(idk)).limit(1).execute())
+        _r = res.data[0] if res.data else {}
+        _dn = dict(_r.get("dnevnik") or {})
+        if redovi:
+            _dn["rucni_lager"] = {"redovi": [{"ida": int(_x["ida"]),
+                                              "naziv": str(_x.get("naziv", ""))[:120],
+                                              "izlaz": float(_x.get("izlaz") or 0),
+                                              "stanje": float(_x.get("stanje") or 0)}
+                                             for _x in redovi if _x.get("ida")],
+                                  "ko": str(ko or ""), "at": _now().isoformat()}
+        else:
+            _dn.pop("rucni_lager", None)
+        cli.table("obrada").upsert(
+            {"mesec": mesec_key, "sistem": KNEZ_SIS, "idk": int(idk),
+             "reakcije": list(_r.get("reakcije") or []),
+             "trebovali": bool(_r.get("trebovali_tip")),
+             "trebovali_tip": _r.get("trebovali_tip") or "",
+             "njihova": _r.get("njihova") or {}, "napomena": _r.get("napomena") or "",
+             "reakcije_ko": dict(_r.get("reakcije_ko") or {}),
+             "dnevnik": _dn, "azurirano": _now().isoformat()},
+            on_conflict="mesec,sistem,idk").execute()
+        return True
+    except Exception:
+        return False
 
 
 def _knez_bs_mapa(pumpe):
