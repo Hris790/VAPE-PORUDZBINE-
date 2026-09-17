@@ -2288,15 +2288,15 @@ def knez_admin_ui():
             st.success("\U0001F4E5 Iz odgovora je dostupno " + str(len(_pdf_izvori))
                        + " PDF priloga. (Ako ne vidi\u0161 sve, klikni \u201e\U0001F4E5 Proveri odgovore\u201c gore.)")
         elif _zna_pdf:
-            st.info("\ud83d\udce5 Zapam\u0107eno je " + str(_zna_pdf) + " PDF priloga od pumpi, ali sami fajlovi "
+            st.info("\U0001F4E5 Zapam\u0107eno je " + str(_zna_pdf) + " PDF priloga od pumpi, ali sami fajlovi "
                     "se ne \u010duvaju u bazi \u2014 treba ih jednom povu\u0107i iz sandu\u010deta da bi se napravio "
                     "Excel. \u201eProveri odgovore\u201c gore \u010dita samo NOVE poruke, pa za fajlove klikni ovo:")
-            if st.button("\ud83d\udcce Povuci sve priloge iz sandu\u010deta (" + str(_zna_pdf) + ")",
+            if st.button("\U0001F4CE Povuci sve priloge iz sandu\u010deta (" + str(_zna_pdf) + ")",
                          key="knez_pull_prilozi", use_container_width=True):
                 _adr_p = set((r["email"] or "").lower() for r in _pumpe if r["_email_ok"])
                 import time as _tmp0
                 _tp0 = _tmp0.time()
-                with st.spinner("\ud83d\udcce \u010citam sandu\u010de od " + _od_pun.strftime("%d.%m.%Y")
+                with st.spinner("\U0001F4CE \u010citam sandu\u010de od " + _od_pun.strftime("%d.%m.%Y")
                                 + " \u2014 preuzimam priloge\u2026"):
                     _po_p, _nep_p, _err_p = knez_odgovori(_adr_p, od_datum=_od_pun)
                 if _err_p and not _po_p:
@@ -2306,7 +2306,7 @@ def knez_admin_ui():
                         "po": _po_p, "nep": (_odg_ses.get("nep") or []) + list(_nep_p or []),
                         "kada": _now().strftime("%d.%m.%Y. %H:%M"), "od": _od_pun.isoformat()}
                     st.session_state["_knez_scan_flash"] = (
-                        "\ud83d\udcce Preuzeti prilozi za "
+                        "\U0001F4CE Preuzeti prilozi za "
                         + str(sum(len(_v) for _v in (_po_p or {}).values())) + " odgovora  \u00b7  "
                         + str(round(_tmp0.time() - _tp0, 1)) + " s")
                     st.rerun()
@@ -2326,7 +2326,7 @@ def knez_admin_ui():
         except Exception:
             _ima_pp = False
         if not _ima_pp:
-            st.error("\ud83e\udde9 **Fali biblioteka `pdfplumber` na serveru** \u2014 zato nijedan PDF ne mo\u017ee "
+            st.error("\U0001F9E9 **Fali biblioteka `pdfplumber` na serveru** \u2014 zato nijedan PDF ne mo\u017ee "
                      "da se pro\u010dita (fajlovi su ispravni, pumpe su prepoznate).\n\n"
                      "Kako se popravlja, jednom:\n"
                      "1. Otvori svoj GitHub repo (VAPE-PORUDZBINE-) \u2192 fajl `requirements.txt`\n"
