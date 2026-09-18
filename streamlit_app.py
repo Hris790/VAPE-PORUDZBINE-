@@ -3151,7 +3151,22 @@ def sb_prikup_odgovor_set(mesec_key, sistem, zapis):
                 + "|" + str(_z.get("naslov", ""))[:60])
     try:
         _lst = list(_dn.get("odgovori") or [])
-        if any(_kl(_p) == _kl(zapis) for _p in _lst):
+        for _i_p, _p in enumerate(_lst):
+            if _kl(_p) != _kl(zapis):
+                continue
+            # Zapis već postoji. Ako novi donosi linkove kojih ranije nije bilo
+            # (fajl je tek sada otpremljen u bazu) — dopuni ih i sačuvaj.
+            _novi = {str(_x.get("ime") or ""): str(_x.get("url") or "")
+                     for _x in (zapis.get("prilozi") or []) if _x.get("url")}
+            _dopuna = False
+            for _x in (_p.get("prilozi") or []):
+                if not _x.get("url") and _novi.get(str(_x.get("ime") or "")):
+                    _x["url"] = _novi[str(_x.get("ime") or "")]
+                    _dopuna = True
+            if _dopuna:
+                _lst[_i_p] = _p
+                _dn["odgovori"] = _lst
+                _prikup_upisi(cli, mesec_key, sistem, _dn)
             return False
         _lst.append({"od": zapis.get("od", ""), "ime": zapis.get("ime", ""),
                      "at": zapis.get("at", ""), "naslov": zapis.get("naslov", ""),
@@ -3208,6 +3223,12 @@ def sb_prikup_fajl_upload(data, ime, mesec_key, sistem):
     _put = ("izvestaji/" + str(mesec_key).replace(":", "_") + "/" + _sis + "/"
             + _now().strftime("%H%M%S") + "_" + _bez)
 
+    def _zapamti_gresku(_e):
+        try:
+            st.session_state["_prikup_up_err"] = str(_e)[:300]
+        except Exception:
+            pass
+
     def _posalji():
         return cli.storage.from_(RUTA_BUCKET).upload(
             _put, data, {"content-type": "application/octet-stream", "upsert": "true"})
@@ -3218,19 +3239,24 @@ def sb_prikup_fajl_upload(data, ime, mesec_key, sistem):
             if _sb_napravi_bucket():
                 try:
                     _posalji()
-                except Exception:
+                except Exception as _e2:
+                    _zapamti_gresku(_e2)
                     return ""
             else:
+                _zapamti_gresku("Bucket „" + str(RUTA_BUCKET) + "“ ne postoji i ne može "
+                                "da se napravi.")
                 return ""
         else:
             try:
                 cli.storage.from_(RUTA_BUCKET).update(
                     _put, data, {"content-type": "application/octet-stream"})
             except Exception:
+                _zapamti_gresku(_e)
                 return ""
     try:
         return cli.storage.from_(RUTA_BUCKET).get_public_url(_put)
-    except Exception:
+    except Exception as _e3:
+        _zapamti_gresku(_e3)
         return ""
 
 
@@ -3529,6 +3555,29 @@ def prikup_admin_ui():
                 _od_def = _dd
     except Exception:
         pass
+    # najraniji datum od kog ima smisla čitati — koristi se za popravku fajlova
+    _poc_dat = _now().date().replace(day=1)
+    try:
+        _poc_dat = datetime.date(int(_mesec_baza[:4]), int(_mesec_baza[5:7]), 1)
+    except Exception:
+        pass
+    try:
+        if _prvi:
+            _poc_dat = min(_poc_dat, datetime.date.fromisoformat(_prvi))
+    except Exception:
+        pass
+
+    # koliko priloga je zapamćeno bez fajla u bazi (analitičar ih ne bi video)
+    _fali_url = 0
+    try:
+        for _s0 in (_stanje or {}):
+            for _z0 in ((_stanje.get(_s0) or {}).get("odgovori") or []):
+                for _x0 in (_z0.get("prilozi") or []):
+                    if not _x0.get("url"):
+                        _fali_url += 1
+    except Exception:
+        _fali_url = 0
+
     _nx = st.session_state.pop("_prikup_od_next", None)
     if _nx:
         st.session_state["prikup_od_dat"] = _nx
@@ -3565,7 +3614,25 @@ def prikup_admin_ui():
                    "Poruke bez priloga se preskaču. Ako se neki izveštaj ovde ne pojavi "
                    "a znaš da je stigao — otvori taj sistem i ubaci fajl ručno.")
 
-    if _chk:
+    # ----- Popravka: prilozi zapamćeni bez fajla (stigli pre nego što se čuvalo u bazu) -----
+    _popravi = False
+    if _fali_url:
+        _pf1, _pf2 = st.columns([1.8, 4])
+        with _pf1:
+            _popravi = st.button("🔄 Povuci fajlove koji nedostaju (" + str(_fali_url) + ")",
+                                 key="prikup_fix", use_container_width=True,
+                                 help="Ponovo čita sanduče od početka perioda i sprema "
+                                      "same fajlove u bazu.")
+        with _pf2:
+            st.markdown('<div style="font-size:11.5px;color:#b45309;line-height:1.45;'
+                        'padding-top:6px;">Kod ' + str(_fali_url) + ' priloga zapamćeno je '
+                        'samo ime, bez samog fajla — analitičar ih ne može otvoriti. '
+                        'Klikni dugme levo: aplikacija sama ponovo pročita sanduče od '
+                        'početka perioda i sačuva fajlove. Ništa ne moraš ručno da '
+                        'otpremaš.</div>', unsafe_allow_html=True)
+
+    if _chk or _popravi:
+        _od_upit = _od_dat if _chk else _poc_dat
         _mapa = {}                       # adresa -> sistem
         for s in _sistemi:
             for _a in ((_pod.get(s) or {}).get("adrese") or []):
@@ -3576,11 +3643,13 @@ def prikup_admin_ui():
         else:
             import time as _tm0
             _t0 = _tm0.time()
-            with st.spinner("📥 Čitam sanduče od " + _od_dat.strftime("%d.%m.%Y") + "…"):
-                _po, _nep, _err = knez_odgovori(set(_mapa.keys()), od_datum=_od_dat)
+            with st.spinner("📥 Čitam sanduče od " + _od_upit.strftime("%d.%m.%Y") + "…"):
+                _po, _nep, _err = knez_odgovori(set(_mapa.keys()), od_datum=_od_upit)
             if _err and not _po:
                 st.error("Čitanje sandučeta nije uspelo: " + str(_err))
             _n_up = 0
+            _f_ok, _f_los = 0, 0
+            st.session_state.pop("_prikup_up_err", None)
             for _a, _lst in (_po or {}).items():
                 _s = _mapa.get(str(_a).lower())
                 if not _s:
@@ -3593,13 +3662,20 @@ def prikup_admin_ui():
                             try:
                                 _x["url"] = sb_prikup_fajl_upload(
                                     _x["data"], _x.get("ime"), mesec_key, _s)
-                            except Exception:
+                            except Exception as _eu:
+                                st.session_state["_prikup_up_err"] = str(_eu)[:300]
                                 _x["url"] = ""
+                        if _x.get("data"):
+                            if _x.get("url"):
+                                _f_ok += 1
+                            else:
+                                _f_los += 1
                     try:
                         if sb_prikup_odgovor_set(mesec_key, _s, _z):
                             _n_up += 1
                     except Exception:
                         pass
+            st.session_state["_prikup_fajl_br"] = (_f_ok, _f_los)
 
             def _kl(_z):
                 return (str(_z.get("od", "")), str(_z.get("at", "")),
@@ -3627,8 +3703,23 @@ def prikup_admin_ui():
                 st.session_state["_prikup_od_next"] = _now().date()
             except Exception:
                 pass
-            st.success("Pročitano za " + str(round(_tm0.time() - _t0, 1))
-                       + " s  ·  novih izveštaja (poruka sa fajlom): " + str(_n_up))
+            if _popravi:
+                st.success("Pročitano za " + str(round(_tm0.time() - _t0, 1))
+                           + " s  ·  fajlova sačuvano u bazu: " + str(_f_ok)
+                           + ((" ·  novih izveštaja: " + str(_n_up)) if _n_up else ""))
+            else:
+                st.success("Pročitano za " + str(round(_tm0.time() - _t0, 1))
+                           + " s  ·  novih izveštaja (poruka sa fajlom): " + str(_n_up)
+                           + (("  ·  fajlova sačuvano u bazu: " + str(_f_ok))
+                              if _f_ok else ""))
+            if _f_los:
+                st.error("⚠️ " + str(_f_los) + " fajl(ova) nije moglo da se sačuva u bazu, "
+                         "pa ih analitičar neće videti. Probaj ponovo „📥 Proveri "
+                         "odgovore“; ako se ponovi, javi Hristini.")
+                _gr = st.session_state.get("_prikup_up_err")
+                if _gr:
+                    with st.expander("Detalji greške (za Hristinu)"):
+                        st.code(str(_gr))
             _stanje = sb_prikup_stanje(mesec_key)
             _odg_ses = st.session_state.get(_odg_k) or {}
 
