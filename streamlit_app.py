@@ -2939,6 +2939,45 @@ PRIKUP_TELO_DEFAULT = (
     "Srdačan pozdrav,")
 
 
+# Raniji podrazumevani tekstovi. Ako je u bazi tačno neki od njih (znači niko ga
+# nije menjao), sam se zamenjuje novim — da izmena podrazumevanog teksta stigne
+# i kod onih koji su ga jednom sačuvali.
+PRIKUP_TELO_STARI = [
+    ("Poštovani,\n\n"
+     "molimo Vas da nam za {sistem} pošaljete:\n\n"
+     "•  prodaju u periodu od {od} do {do}\n"
+     "•  stanje zaliha na dan {do}\n\n"
+     "Podatke možete poslati kao odgovor na ovaj mejl (Excel ili tabela u poruci).\n\n"
+     "Hvala unapred.\n\n"
+     "Srdačan pozdrav,"),
+    ("Poštovani,\n\n"
+     "molimo Vas da nam pošaljete:\n\n"
+     "•  prodaju u periodu od {od} do {do}\n"
+     "•  stanje zaliha na dan {do}\n\n"
+     "Podatke možete poslati kao odgovor na ovaj mejl.\n\n"
+     "Hvala unapred.\n\n"
+     "Srdačan pozdrav,"),
+]
+
+
+def _prikup_sazmi(t):
+    """Tekst bez viška razmaka i praznih redova — za poređenje šablona."""
+    import re as _r
+    return _r.sub(r"\s+", " ", str(t or "")).strip()
+
+
+def _prikup_telo(sacuvano):
+    """Telo mejla koje treba prikazati: sačuvano, osim ako je to neki od ranijih
+    podrazumevanih tekstova — tada važi novi podrazumevani."""
+    _s = str(sacuvano or "")
+    if not _s.strip():
+        return PRIKUP_TELO_DEFAULT
+    _sz = _prikup_sazmi(_s)
+    if any(_sz == _prikup_sazmi(_x) for _x in PRIKUP_TELO_STARI):
+        return PRIKUP_TELO_DEFAULT
+    return _s
+
+
 def _prikup_period(kljuc):
     """(od, do) za izabrani period. Ključ je „YYYY-MM" za ceo mesec,
     „YYYY-MM:P1" za prvu polovinu (01–15) i „YYYY-MM:P2" za drugu (16–kraj)."""
@@ -3434,7 +3473,16 @@ def prikup_admin_ui():
 
     # ---------- Zajednički naslov i tekst mejla ----------
     _zaj = _pod.get("*") or {}
-    _telo_zaj = str(_zaj.get("telo") or PRIKUP_TELO_DEFAULT)
+    _telo_zaj = _prikup_telo(_zaj.get("telo"))
+    if _prikup_sazmi(_zaj.get("telo")) and _prikup_sazmi(_zaj.get("telo")) \
+            != _prikup_sazmi(_telo_zaj):
+        # u bazi je stajao stari podrazumevani tekst — tiho se podiže na novi
+        st.session_state.pop("prikup_telo", None)
+        try:
+            sb_prikup_podesi("*", _zaj.get("naslov") or PRIKUP_NASLOV_DEFAULT, [],
+                             _telo_zaj, st.session_state.get("admin_user", ""))
+        except Exception:
+            pass
     _naslov_zaj = str(_zaj.get("naslov") or PRIKUP_NASLOV_DEFAULT)
     _sa_mejla = str((_smtp_cfg() or {}).get("from_email", "") or "")
     with st.expander("✉️ Naslov i tekst mejla (isti za sve sisteme)"
@@ -3464,6 +3512,10 @@ def prikup_admin_ui():
             if _vrati_telo:
                 if sb_prikup_podesi("*", PRIKUP_NASLOV_DEFAULT, [], PRIKUP_TELO_DEFAULT,
                                     st.session_state.get("admin_user", "")):
+                    # polja pamte ono što je u njima bilo — moraju da se očiste,
+                    # inače bi i dalje pisao stari tekst iako je u bazi novi
+                    st.session_state.pop("prikup_telo", None)
+                    st.session_state.pop("prikup_naslov", None)
                     st.success("Vraćen je podrazumevani naslov i tekst.")
                     st.rerun()
         st.caption("Ovako izgleda za izabrani mesec:")
@@ -10761,6 +10813,9 @@ div[data-stale="true"] { opacity: 1 !important; }
             if _vrati_sab:
                 if sb_mejl_sablon_set(MEJL_NASLOV_DEFAULT, MEJL_TEKST_DEFAULT,
                                       st.session_state.get("admin_user", "")):
+                    # polja pamte staro — očisti ih da se prikaže podrazumevani tekst
+                    st.session_state.pop("sab_naslov_" + str(sistem), None)
+                    st.session_state.pop("sab_telo_" + str(sistem), None)
                     st.success("Vraćen je podrazumevani naslov i tekst.")
                     st.rerun()
             _prim_naz = ""
