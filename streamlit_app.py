@@ -3091,6 +3091,8 @@ def sb_prikup_stanje(mesec_key):
                                             "sadrzaj": dict(_dn.get("sadrzaj") or {}),
                                             "odbaceno": [str(x) for x in
                                                          (_dn.get("odbaceno") or [])],
+                                            "predat": dict(_dn.get("predat") or {}),
+                                            "odluka": dict(_dn.get("odluka") or {}),
                                             "scan": dict(_dn.get("scan") or {})}
         return _out
     except Exception:
@@ -3191,6 +3193,107 @@ def sb_prikup_odbaci_set(mesec_key, sistem, kljuc, odbaci=True, ko=""):
 
 
 PRIKUP_PRODAJA = ["nije provereno", "po objektima", "samo ukupna prodaja", "nema prodaje"]
+
+
+def sb_prikup_fajl_upload(data, ime, mesec_key, sistem):
+    """Otpremi izveštaj u Supabase Storage i vrati javni URL (da ga analitičar otvori)."""
+    import re as _r
+    cli = _sb()
+    if cli is None or not data:
+        return ""
+    _bez = _r.sub(r"[^A-Za-z0-9._-]+", "_", str(ime or "izvestaj"))[:80]
+    _sis = _r.sub(r"[^A-Za-z0-9]+", "_", str(sistem or ""))[:30]
+    _put = ("izvestaji/" + str(mesec_key).replace(":", "_") + "/" + _sis + "/"
+            + _now().strftime("%H%M%S") + "_" + _bez)
+
+    def _posalji():
+        return cli.storage.from_(RUTA_BUCKET).upload(
+            _put, data, {"content-type": "application/octet-stream", "upsert": "true"})
+    try:
+        _posalji()
+    except Exception as _e:
+        if "bucket not found" in str(_e).lower() or "404" in str(_e):
+            if _sb_napravi_bucket():
+                try:
+                    _posalji()
+                except Exception:
+                    return ""
+            else:
+                return ""
+        else:
+            try:
+                cli.storage.from_(RUTA_BUCKET).update(
+                    _put, data, {"content-type": "application/octet-stream"})
+            except Exception:
+                return ""
+    try:
+        return cli.storage.from_(RUTA_BUCKET).get_public_url(_put)
+    except Exception:
+        return ""
+
+
+def sb_prikup_predaj(mesec_key, sistem, fajlovi, ko=""):
+    """Prosledi izveštaj analitičaru. fajlovi = [{"ime","url","vel"}].
+    Briše raniju odluku — izveštaj ponovo čeka pregled."""
+    cli, _dn = _prikup_dnevnik(mesec_key, sistem)
+    if cli is None:
+        return False
+    try:
+        _dn["predat"] = {"at": _now().isoformat(), "ko": str(ko or ""),
+                         "fajlovi": [{"ime": str(_f.get("ime", ""))[:120],
+                                      "url": str(_f.get("url", ""))[:400],
+                                      "vel": int(_f.get("vel", 0) or 0)}
+                                     for _f in (fajlovi or [])][:10],
+                         "broj": len(fajlovi or [])}
+        _dn.pop("odluka", None)
+        _prikup_upisi(cli, mesec_key, sistem, _dn)
+        return True
+    except Exception:
+        return False
+
+
+def sb_prikup_odluka(mesec_key, sistem, status, napomena="", ko=""):
+    """Analitičar prihvata ili vraća izveštaj (uz napomenu)."""
+    cli, _dn = _prikup_dnevnik(mesec_key, sistem)
+    if cli is None:
+        return False
+    try:
+        if not status:
+            _dn.pop("odluka", None)          # poništena odluka — opet čeka pregled
+        else:
+            _dn["odluka"] = {"status": ("prihvacen" if status == "prihvacen"
+                                        else "odbijen"),
+                             "napomena": str(napomena or "")[:1000],
+                             "ko": str(ko or ""), "at": _now().isoformat()}
+        _prikup_upisi(cli, mesec_key, sistem, _dn)
+        return True
+    except Exception:
+        return False
+
+
+def sb_prikup_predati(limit=400):
+    """Svi prosleđeni izveštaji, kroz sve periode — za karticu analitičara.
+    Vraća listu {mesec, sistem, predat, odluka, sadrzaj}."""
+    cli = _sb()
+    if cli is None:
+        return []
+    try:
+        res = (cli.table("obrada").select("mesec,sistem,dnevnik")
+               .eq("idk", 0).like("sistem", "PRIKUP::%").limit(int(limit)).execute())
+        _out = []
+        for _r in (res.data or []):
+            _dn = _r.get("dnevnik") or {}
+            if not (_dn.get("predat") or {}).get("at"):
+                continue
+            _out.append({"mesec": str(_r.get("mesec") or ""),
+                         "sistem": str(_r.get("sistem") or "")[len("PRIKUP::"):],
+                         "predat": dict(_dn.get("predat") or {}),
+                         "odluka": dict(_dn.get("odluka") or {}),
+                         "sadrzaj": dict(_dn.get("sadrzaj") or {})})
+        _out.sort(key=lambda x: (x["mesec"], x["sistem"]), reverse=True)
+        return _out
+    except Exception:
+        return []
 
 
 def sb_prikup_sadrzaj_set(mesec_key, sistem, prodaja, lager_obj, lager_uk, ko=""):
@@ -3321,8 +3424,13 @@ def prikup_admin_ui():
     _n_prov = sum(1 for s in _sistemi
                   if ((_stanje.get(s) or {}).get("sadrzaj") or {}).get("at"))
     _n_ceka = max(_n_odg - _n_prov, 0)
+    _vraceni = [s for s in _sistemi
+                if ((_stanje.get(s) or {}).get("odluka") or {}).get("status") == "odbijen"]
+    _n_predat = sum(1 for s in _sistemi
+                    if ((_stanje.get(s) or {}).get("predat") or {}).get("at")
+                    and s not in _vraceni)
     st.markdown(
-        '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:6px 0 12px;">'
+        '<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin:6px 0 12px;">'
         '<div style="background:#faf7ff;border:1px solid #e9d5ff;border-radius:12px;padding:15px 18px;">'
         '<div style="font-size:22px;font-weight:800;color:#7c3aed;">' + str(_n_uk) + '</div>'
         '<div style="font-size:12px;color:#8b7fa8;margin-top:3px;">Sistema</div></div>'
@@ -3344,8 +3452,25 @@ def prikup_admin_ui():
         + ("#b45309" if _n_ceka else "#9ca3af") + ';">' + str(_n_ceka) + '</div>'
         '<div style="font-size:12px;color:'
         + ("#9a7b3a" if _n_ceka else "#9ca3af")
-        + ';margin-top:3px;">Čeka proveru sadržaja</div></div></div>',
+        + ';margin-top:3px;">Čeka proveru sadržaja</div></div>'
+        '<div style="background:' + ("#fff1f2" if _vraceni else "#f5f3ff")
+        + ';border:1px solid ' + ("#fecdd3" if _vraceni else "#ddd6fe")
+        + ';border-radius:12px;padding:15px 18px;">'
+        '<div style="font-size:22px;font-weight:800;color:'
+        + ("#be123c" if _vraceni else "#6d28d9") + ';">'
+        + (str(len(_vraceni)) if _vraceni else str(_n_predat)) + '</div>'
+        '<div style="font-size:12px;color:'
+        + ("#9f5b68;font-weight:700" if _vraceni else "#8b7fa8")
+        + ';margin-top:3px;">'
+        + ("⛔ Vraćeno na doradu" if _vraceni else "📤 Predato analitičaru")
+        + '</div></div></div>',
         unsafe_allow_html=True)
+
+    if _vraceni:
+        st.error("⛔ **Analitičar je vratio " + str(len(_vraceni)) + " izveštaj(a) — "
+                 "hitno treba nabaviti nov:** " + ", ".join(_vraceni)
+                 + ".  Otvori taj sistem dole, pročitaj napomenu, traži ispravljen "
+                 "izveštaj i ubaci ga ručno pa ponovo prosledi.")
 
     # ---------- Provera odgovora u sandučetu (pamti dokle je pročitano) ----------
     _scan_db = sb_prikup_scan_get(mesec_key)
@@ -3558,7 +3683,19 @@ def prikup_admin_ui():
         _ima_fajl = _n_dobri > 0
         _sadr = dict(_st_s.get("sadrzaj") or {})
         _sadr_txt = _prikup_sadrzaj_kratko(_sadr)
-        if _ima_fajl:
+        # predaja analitičaru i njegova odluka
+        _pred = dict(_st_s.get("predat") or {})
+        _odl = dict(_st_s.get("odluka") or {})
+        _vracen = (_odl.get("status") == "odbijen")
+        _zavrsen = (_odl.get("status") == "prihvacen")
+        _zakljucan_s = bool(_pred.get("at")) and not _vracen      # predato, ne dira se
+        if _zavrsen:
+            _zn = "✅ prihvaćeno — završeno"
+        elif _vracen:
+            _zn = "⛔ VRAĆENO — hitno nabaviti nov izveštaj"
+        elif _pred.get("at"):
+            _zn = "🕓 predato analitičaru — čeka pregled"
+        elif _ima_fajl:
             _zn = ("📎 stigao izveštaj — " + _sadr_txt) if _sadr_txt else \
                   "📎 stigao izveštaj — treba proveriti šta sadrži"
         elif _odg:
@@ -3567,7 +3704,21 @@ def prikup_admin_ui():
             _zn = "📤 poslato, čeka se odgovor"
         else:
             _zn = ("• nije poslato" if _adr else "⚠️ nema adrese")
-        with st.expander(s + "   —   " + _zn, expanded=False):
+        with st.expander(s + "   —   " + _zn, expanded=bool(_vracen)):
+            if _vracen:
+                st.error("⛔ **Izveštaj je vraćen — hitno treba nabaviti nov.**\n\n"
+                         "Napomena analitičara: " + str(_odl.get("napomena") or "(bez napomene)")
+                         + "\n\nJavi se sistemu, traži ispravljen izveštaj i, kad stigne, "
+                         "ubaci ga ručno u delu „📎 Dodaj fajl ručno“ pa ga ponovo prosledi.")
+            elif _zakljucan_s:
+                st.success("🕓 Predato analitičaru " + _dt_kratko(_pred.get("at"))
+                           + ((" · " + str(_pred.get("ko"))) if _pred.get("ko") else "")
+                           + ". Do njegove odluke ovde se ništa ne menja.")
+            elif _zavrsen:
+                st.success("✅ Analitičar je prihvatio izveštaj "
+                           + _dt_kratko(_odl.get("at"))
+                           + ((" · " + str(_odl.get("ko"))) if _odl.get("ko") else "")
+                           + ". Posao za ovaj sistem je završen.")
             st.markdown(
                 '<div style="font-size:12.5px;color:#4b5563;line-height:1.7;'
                 'background:#faf8ff;border:1px solid #ede9fe;border-radius:10px;'
@@ -3590,7 +3741,8 @@ def prikup_admin_ui():
                         placeholder="ime@firma.rs, drugo@firma.rs  (više adresa razdvoji zarezom)")
                 with _ac2:
                     _cuv_adr = st.form_submit_button("💾 Sačuvaj adresu",
-                                                     use_container_width=True)
+                                                     use_container_width=True,
+                                                     disabled=(_zakljucan_s or _zavrsen))
             if _cuv_adr:
                 import re as _rep
                 _nove = _prikup_adrese(_adr_txt)
@@ -3607,7 +3759,8 @@ def prikup_admin_ui():
             with _r1:
                 _posalji = st.button("✉️ Pošalji zahtev", key="prikup_send_" + s,
                                      use_container_width=True,
-                                     disabled=(not _adr or not smtp_dostupan()))
+                                     disabled=(not _adr or not smtp_dostupan()
+                                               or _zakljucan_s or _zavrsen))
             with _r2:
                 if _mj:
                     _z = _mj[-1]
@@ -3636,31 +3789,32 @@ def prikup_admin_ui():
                     st.rerun()
 
             # ----- Ručno dodavanje fajla (ako povlačenje iz sandučeta ne radi) -----
-            with st.expander("📎 Dodaj fajl ručno", expanded=False):
-                st.caption("Ako ti je izveštaj stigao na mejl, a ovde se ne pojavljuje — "
-                           "sačuvaj prilog na računar i ubaci ga ovde. Može više fajlova "
-                           "odjednom. Isto važi ako ti ga pošalju drugim putem (Viber, "
-                           "WhatsApp, lično).")
-                _up = st.file_uploader("Fajlovi", accept_multiple_files=True,
-                                       key="prikup_up_" + s, label_visibility="collapsed")
-                if _up:
-                    if st.button("💾 Sačuvaj " + str(len(_up)) + " fajl(ova)",
-                                 key="prikup_upsave_" + s, type="primary"):
-                        _zap = {"od": "(ručno dodato)",
-                                "ime": st.session_state.get("admin_user", "Administracija"),
-                                "at": _now().strftime("%d.%m.%Y. %H:%M"),
-                                "naslov": "Ručno dodat fajl",
-                                "tekst": "",
-                                "prilozi": [{"ime": _f.name, "vel": len(_f.getvalue())}
-                                            for _f in _up]}
-                        _keš = st.session_state.setdefault("_prikup_up_" + str(mesec_key), {})
-                        for _f in _up:
-                            _keš[_prikup_kljuc_priloga(_zap, {"ime": _f.name})] = _f.getvalue()
-                        if sb_prikup_odgovor_set(mesec_key, s, _zap):
-                            st.success("Dodato " + str(len(_up)) + " fajl(ova).")
-                            st.rerun()
-                        else:
-                            st.warning("Ti fajlovi su već dodati.")
+            if not (_zakljucan_s or _zavrsen):
+              with st.expander("📎 Dodaj fajl ručno", expanded=bool(_vracen)):
+                  st.caption("Ako ti je izveštaj stigao na mejl, a ovde se ne pojavljuje — "
+                             "sačuvaj prilog na računar i ubaci ga ovde. Može više fajlova "
+                             "odjednom. Isto važi ako ti ga pošalju drugim putem (Viber, "
+                             "WhatsApp, lično).")
+                  _up = st.file_uploader("Fajlovi", accept_multiple_files=True,
+                                         key="prikup_up_" + s, label_visibility="collapsed")
+                  if _up:
+                      if st.button("💾 Sačuvaj " + str(len(_up)) + " fajl(ova)",
+                                   key="prikup_upsave_" + s, type="primary"):
+                          _zap = {"od": "(ručno dodato)",
+                                  "ime": st.session_state.get("admin_user", "Administracija"),
+                                  "at": _now().strftime("%d.%m.%Y. %H:%M"),
+                                  "naslov": "Ručno dodat fajl",
+                                  "tekst": "",
+                                  "prilozi": [{"ime": _f.name, "vel": len(_f.getvalue())}
+                                              for _f in _up]}
+                          _keš = st.session_state.setdefault("_prikup_up_" + str(mesec_key), {})
+                          for _f in _up:
+                              _keš[_prikup_kljuc_priloga(_zap, {"ime": _f.name})] = _f.getvalue()
+                          if sb_prikup_odgovor_set(mesec_key, s, _zap):
+                              st.success("Dodato " + str(len(_up)) + " fajl(ova).")
+                              st.rerun()
+                          else:
+                              st.warning("Ti fajlovi su već dodati.")
 
             if _odg:
                 st.markdown('<div style="margin:12px 0 4px;font-size:12px;font-weight:700;'
@@ -3709,7 +3863,8 @@ def prikup_admin_ui():
                             if _odb:
                                 if st.button("↩️ vrati", key=("prikup_vr_" + s + "_"
                                                               + str(_zi) + "_" + str(_i)),
-                                             use_container_width=True):
+                                             use_container_width=True,
+                                             disabled=(_zakljucan_s or _zavrsen)):
                                     sb_prikup_odbaci_set(mesec_key, s, _kp, False,
                                                          st.session_state.get("admin_user", ""))
                                     st.rerun()
@@ -3717,6 +3872,7 @@ def prikup_admin_ui():
                                 if st.button("✕ ne treba", key=("prikup_od_" + s + "_"
                                                                 + str(_zi) + "_" + str(_i)),
                                              use_container_width=True,
+                                             disabled=(_zakljucan_s or _zavrsen),
                                              help="Otpremnica i slično — ne računa se u izveštaj."):
                                     sb_prikup_odbaci_set(mesec_key, s, _kp, True,
                                                          st.session_state.get("admin_user", ""))
@@ -3739,13 +3895,22 @@ def prikup_admin_ui():
                            + (("  ·  poslednji put: " + _dt_kratko(_sadr.get("at"))
                                + (("  ·  " + str(_sadr.get("ko"))) if _sadr.get("ko") else ""))
                               if _sadr.get("at") else ""))
+                _zamrz = bool(_zakljucan_s or _zavrsen)
+                if _zamrz:
+                    st.markdown('<div style="font-size:13px;color:#374151;'
+                                'background:#f8fafc;border:1px solid #e5e7eb;'
+                                'border-radius:10px;padding:9px 12px;margin:2px 0 8px;">'
+                                '<b>Označeno:</b> '
+                                + _h_escape(_sadr_txt or "(nije označeno)") + '</div>',
+                                unsafe_allow_html=True)
+                    continue
                 with st.form("prikup_sadr_" + s, border=False):
                     _sc_a, _sc_b = st.columns([1.5, 1.6])
                     with _sc_a:
                         _pi = (PRIKUP_PRODAJA.index(_sadr.get("prodaja"))
                                if _sadr.get("prodaja") in PRIKUP_PRODAJA else 0)
                         _prod = st.radio("Prodaja", PRIKUP_PRODAJA, index=_pi,
-                                         key="prikup_prod_" + s)
+                                         key="prikup_prod_" + s, disabled=_zamrz)
                     with _sc_b:
                         st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
                         st.markdown("<div style='font-size:14px;font-weight:600;"
@@ -3753,17 +3918,68 @@ def prikup_admin_ui():
                                     unsafe_allow_html=True)
                         _lo = st.checkbox("Stanje zaliha po objektu",
                                           value=bool(_sadr.get("lager_obj")),
-                                          key="prikup_lo_" + s)
+                                          key="prikup_lo_" + s, disabled=_zamrz)
                         _lu = st.checkbox("Ukupno stanje zaliha",
                                           value=bool(_sadr.get("lager_uk")),
-                                          key="prikup_lu_" + s)
-                    if st.form_submit_button("💾 Sačuvaj", type="primary"):
-                        if sb_prikup_sadrzaj_set(mesec_key, s, _prod, _lo, _lu,
-                                                 st.session_state.get("admin_user", "")):
-                            st.success("Zapamćeno.")
+                                          key="prikup_lu_" + s, disabled=_zamrz)
+                    _pc_a, _pc_b = st.columns([1.1, 1.6])
+                    with _pc_a:
+                        _cuv_sadr = st.form_submit_button("💾 Sačuvaj", type="primary",
+                                                          use_container_width=True,
+                                                          disabled=_zamrz)
+                    with _pc_b:
+                        _predaj = st.form_submit_button("📤 Prosledi analitici",
+                                                        use_container_width=True,
+                                                        disabled=_zamrz)
+                if not _zamrz:
+                    st.caption("„Prosledi analitici“ je poslednji korak — posle toga se ovaj "
+                               "sistem zaključava i čeka se odluka analitičara.")
+                if _cuv_sadr:
+                    if sb_prikup_sadrzaj_set(mesec_key, s, _prod, _lo, _lu,
+                                             st.session_state.get("admin_user", "")):
+                        st.success("Zapamćeno.")
+                        st.rerun()
+                    else:
+                        st.error("Čuvanje nije uspelo.")
+                if _predaj:
+                    if _prod == PRIKUP_PRODAJA[0]:
+                        st.warning("Prvo pogledaj izveštaj i štikliraj šta sadrži, pa onda "
+                                   "prosledi.")
+                    else:
+                        sb_prikup_sadrzaj_set(mesec_key, s, _prod, _lo, _lu,
+                                              st.session_state.get("admin_user", ""))
+                        _salji = []
+                        with st.spinner("Prosleđujem izveštaj analitičaru…"):
+                            for _z in _odg:
+                                for _x in (_z.get("prilozi") or []):
+                                    _kp2 = _prikup_kljuc_priloga(_z, _x)
+                                    if _kp2 in _odbaceni:
+                                        continue
+                                    _dat = _x.get("data") or (st.session_state.get(
+                                        "_prikup_up_" + str(mesec_key)) or {}).get(_kp2)
+                                    _url = ""
+                                    if _dat:
+                                        try:
+                                            _url = sb_prikup_fajl_upload(
+                                                _dat, _x.get("ime"), mesec_key, s)
+                                        except Exception:
+                                            _url = ""
+                                    _salji.append({"ime": _x.get("ime", ""), "url": _url,
+                                                   "vel": int(_x.get("vel", 0) or 0)})
+                            _ok_p = sb_prikup_predaj(mesec_key, s, _salji,
+                                                     st.session_state.get("admin_user", ""))
+                        if _ok_p:
+                            _bez_url = [f for f in _salji if not f.get("url")]
+                            if _bez_url:
+                                st.warning("Prosleđeno, ali " + str(len(_bez_url))
+                                           + " fajl(ova) nije moglo da se otpremi — "
+                                           "analitičar ih neće videti. Otvori taj sistem i "
+                                           "ubaci fajl ručno, pa prosledi ponovo.")
+                            else:
+                                st.success("Prosleđeno analitičaru.")
                             st.rerun()
                         else:
-                            st.error("Čuvanje nije uspelo.")
+                            st.error("Prosleđivanje nije uspelo.")
 
 
 def potraz_admin_ui():
@@ -8447,7 +8663,9 @@ def prikazi_administraciju():
     [class*="st-key-prikup_send_"] button{background:#16a34a !important;border-color:#16a34a !important;
         color:#fff !important;font-weight:600 !important;font-size:13px !important;
         padding:7px 12px !important;border-radius:8px !important;box-shadow:none !important;}
-    [class*="st-key-prikup_send_"] button:hover{background:#128a3e !important;border-color:#128a3e !important;}
+    [class*="st-key-prikup_send_"] button:hover:enabled{background:#128a3e !important;border-color:#128a3e !important;}
+    [class*="st-key-prikup_send_"] button:disabled{background:#eef0f4 !important;
+        border-color:#e5e7eb !important;color:#b0b4bd !important;}
     [class*="st-key-prikup_a_"] input{font-size:13px !important;}
 /* ===== Dok aplikacija radi ===== */
 /* Streamlit inače zatamni ceo ekran (izgleda kao da se zaledilo). Umesto toga:
@@ -14427,7 +14645,128 @@ div[data-testid="stVerticalBlockBorderWrapper"] {
     border-radius:99px; padding:5px 13px; font-size:12.5px; font-weight:600; margin:4px 5px 0 0; }
 </style>""", unsafe_allow_html=True)
 
-tab_obj, tab_ana = st.tabs(["📤 Objava izveštaja", "📊 Analitika"])
+def prikazi_primljene():
+    """Izveštaji koje je administracija prosledila — pregled, prihvatanje i vraćanje."""
+    st.markdown("<div style='font-size:15px;font-weight:700;color:#4c1d95;"
+                "margin:2px 0 8px;'>📥 Izveštaji prosleđeni na pregled</div>",
+                unsafe_allow_html=True)
+    if not sb_dostupan():
+        st.info("Supabase nije podešen.")
+        return
+    _sve = sb_prikup_predati()
+    if not _sve:
+        st.caption("Administracija još nije prosledila nijedan izveštaj.")
+        return
+
+    _ceka = [r for r in _sve if not (r.get("odluka") or {}).get("status")]
+    _prih = [r for r in _sve if (r.get("odluka") or {}).get("status") == "prihvacen"]
+    _odbi = [r for r in _sve if (r.get("odluka") or {}).get("status") == "odbijen"]
+    _k1, _k2, _k3 = st.columns(3)
+    _k1.metric("Čeka moj pregled", len(_ceka))
+    _k2.metric("Prihvaćeno", len(_prih))
+    _k3.metric("Vraćeno na doradu", len(_odbi))
+
+    _per = sorted({r["mesec"] for r in _sve}, reverse=True)
+    _lbl = [_prikup_period_lbl(p) for p in _per]
+    _c1, _c2 = st.columns([1.6, 2.4])
+    with _c1:
+        _sel_p = st.selectbox("Period", ["Svi periodi"] + _lbl, index=0, key="prim_per")
+    with _c2:
+        _samo_ceka = st.checkbox("Prikaži samo ono što čeka pregled", value=True,
+                                 key="prim_ceka")
+    _red = [r for r in _sve
+            if (_sel_p == "Svi periodi" or _prikup_period_lbl(r["mesec"]) == _sel_p)
+            and (not _samo_ceka or not (r.get("odluka") or {}).get("status"))]
+    if not _red:
+        st.success("Nema ničega za pregled — sve je rešeno.")
+        return
+
+    for _r in _red:
+        _o = _r.get("odluka") or {}
+        _p = _r.get("predat") or {}
+        _st_ozn = ("✅ prihvaćeno" if _o.get("status") == "prihvacen"
+                   else ("⛔ vraćeno" if _o.get("status") == "odbijen" else "🕓 čeka pregled"))
+        with st.expander(_r["sistem"] + "   ·   " + _prikup_period_lbl(_r["mesec"])
+                         + "   —   " + _st_ozn,
+                         expanded=(not _o.get("status") and len(_red) <= 3)):
+            st.caption("Prosledila: " + str(_p.get("ko") or "—") + "  ·  "
+                       + _dt_kratko(_p.get("at"))
+                       + "  ·  traženi period: " + " – ".join(_prikup_period(_r["mesec"])))
+            _sd = _prikup_sadrzaj_kratko(_r.get("sadrzaj") or {})
+            st.markdown('<div style="font-size:13px;color:#374151;margin:2px 0 8px;">'
+                        '<b>Administracija je označila:</b> '
+                        + _h_escape(_sd or "(nije označeno)") + '</div>',
+                        unsafe_allow_html=True)
+            _fl = _p.get("fajlovi") or []
+            if _fl:
+                st.markdown('<div style="font-size:12px;font-weight:700;color:#166534;'
+                            'margin:6px 0 2px;">📎 Fajlovi</div>', unsafe_allow_html=True)
+                for _f in _fl:
+                    if _f.get("url"):
+                        st.markdown('<a href="' + _h_escape(str(_f["url"]))
+                                    + '" target="_blank" style="font-size:13px;">⬇️ '
+                                    + _h_escape(str(_f.get("ime") or "fajl")) + '</a>',
+                                    unsafe_allow_html=True)
+                    else:
+                        st.markdown('<div style="font-size:13px;color:#b45309;">⚠️ '
+                                    + _h_escape(str(_f.get("ime") or "fajl"))
+                                    + ' — fajl nije otpremljen, traži ga od administracije'
+                                    '</div>', unsafe_allow_html=True)
+            else:
+                st.warning("Uz ovaj izveštaj nema nijednog fajla.")
+
+            if _o.get("status"):
+                st.info(("Prihvaćeno " if _o.get("status") == "prihvacen" else "Vraćeno ")
+                        + _dt_kratko(_o.get("at"))
+                        + ((" · " + str(_o.get("ko"))) if _o.get("ko") else "")
+                        + ((" · napomena: " + str(_o.get("napomena")))
+                           if _o.get("napomena") else ""))
+                if st.button("↩️ Poništi odluku",
+                             key="prim_pon_" + _r["mesec"] + _r["sistem"],
+                             help="Izveštaj se vraća u stanje „čeka pregled“."):
+                    sb_prikup_odluka(_r["mesec"], _r["sistem"], "", "", "")
+                    st.rerun()
+                continue
+
+            with st.form("prim_f_" + _r["mesec"] + _r["sistem"], border=False):
+                _nap = st.text_area("Napomena (obavezna ako vraćaš izveštaj)", value="",
+                                    height=90,
+                                    key="prim_nap_" + _r["mesec"] + _r["sistem"],
+                                    placeholder="npr. nedostaje prodaja po objektima — "
+                                                "poslata je samo ukupna")
+                _b1, _b2 = st.columns(2)
+                with _b1:
+                    _pri = st.form_submit_button("✅ Prihvati izveštaj", type="primary",
+                                                 use_container_width=True)
+                with _b2:
+                    _odb = st.form_submit_button("⛔ Vrati uz napomenu",
+                                                 use_container_width=True)
+            _ko_ja = st.session_state.get("admin_user", "Analitika")
+            if _pri:
+                if sb_prikup_odluka(_r["mesec"], _r["sistem"], "prihvacen", _nap, _ko_ja):
+                    st.success("Prihvaćeno.")
+                    st.rerun()
+            if _odb:
+                if not str(_nap or "").strip():
+                    st.warning("Upiši napomenu — administracija mora da zna šta fali.")
+                elif sb_prikup_odluka(_r["mesec"], _r["sistem"], "odbijen", _nap, _ko_ja):
+                    st.success("Vraćeno administraciji uz napomenu.")
+                    st.rerun()
+
+
+_prim_n = 0
+try:
+    _prim_n = sum(1 for _r in sb_prikup_predati()
+                  if not (_r.get("odluka") or {}).get("status"))
+except Exception:
+    _prim_n = 0
+tab_obj, tab_prim, tab_ana = st.tabs(
+    ["📤 Objava izveštaja",
+     "📥 Primljeni izveštaji" + ((" (" + str(_prim_n) + ")") if _prim_n else ""),
+     "📊 Analitika"])
+
+with tab_prim:
+    prikazi_primljene()
 
 with tab_obj:
     with st.container(border=True):
