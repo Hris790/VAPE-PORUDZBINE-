@@ -2847,6 +2847,46 @@ def _prikup_adrese(tekst):
     return _out
 
 
+# Adrese na koje se traži mesečni izveštaj — ugrađene, da se ne upisuju ručno.
+# Ako se za sistem nešto sačuva u bazi, to je jače od ovoga.
+PRIKUP_ADRESE_UGRADJENE = {
+    "BB TRADE": ["bb.aleksandraj@gmail.com"],
+    "BEOKOLP": ["sladjana.mandic@beokolp.rs"],
+    "CORNER KIOSK": ["tatjana.cvetinovic@cornerkiosk.rs"],
+    "SREM PRESS": ["bane.press@gmail.com", "srempress@gmail.com"],
+    "MIKROMARKET": ["milica.tanovic@mikromarket.rs"],
+    "UNIVEREXPORT": ["srdjan.poljanski@univerexport.rs"],
+    "3M": ["lazar.j.cuturic@gmail.com"],
+    "MEDIUS": ["slobodan.vukas@medius.rs"],
+    "AROMA": ["jovana.otasevic@domacatrgovina.rs"],
+    "BOBAR": ["bobarpetrolnovisad@gmail.com"],
+}
+
+
+def _prikup_norm_sis(s):
+    """Naziv sistema sveden na poređenje: velika slova, bez „D.O.O."/„DOO",
+    bez tačaka, zareza i viška razmaka."""
+    import re as _r
+    _t = str(s or "").upper()
+    _t = _r.sub(r"\bD\s*\.?\s*O\s*\.?\s*O\s*\.?", " ", _t)
+    _t = _r.sub(r"[^A-Z0-9ČĆŽŠĐ ]+", " ", _t)
+    return _r.sub(r"\s+", " ", _t).strip()
+
+
+def _prikup_ugradjene(sistem):
+    """Ugrađene adrese za taj sistem (prazno ako ga nema na spisku)."""
+    _n = _prikup_norm_sis(sistem)
+    if not _n:
+        return []
+    _mapa = {_prikup_norm_sis(_k): _v for _k, _v in PRIKUP_ADRESE_UGRADJENE.items()}
+    if _n in _mapa:
+        return list(_mapa[_n])
+    for _k, _v in _mapa.items():          # npr. „AMAN D.O.O." -> „AMAN"
+        if _n.startswith(_k + " ") or _k.startswith(_n + " "):
+            return list(_v)
+    return []
+
+
 PRIKUP_NASLOV_DEFAULT = "Izveštaj o prodaji i stanju zaliha — {mesec}"
 PRIKUP_TELO_DEFAULT = (
     "Poštovani,\n\n"
@@ -3055,10 +3095,20 @@ def prikup_admin_ui():
     # --- spisak sistema ---
     _pod = sb_prikup_podesavanja()
     _sistemi = sorted(set(sb_svi_sistemi()) | set(_pod.keys()) | set(sb_sisteme(mesec_key)))
-    _sistemi = [s for s in _sistemi if s and not str(s).startswith("PRIKUP::")]
+    _sistemi = [s for s in _sistemi if s and not str(s).startswith("PRIKUP::")
+                and s != "*"]
     if not _sistemi:
         st.info("Još nema nijednog sistema. Analitičar treba prvo da objavi bar jedan izveštaj.")
         return
+    # Ugrađene adrese važe dok se za taj sistem nešto ne sačuva u bazi.
+    for s in _sistemi:
+        if not (_pod.get(s) or {}).get("adrese"):
+            _ug = _prikup_ugradjene(s)
+            if _ug:
+                _p0 = dict(_pod.get(s) or {})
+                _p0["adrese"] = _ug
+                _p0["ugradjeno"] = True
+                _pod[s] = _p0
     _stanje = sb_prikup_stanje(mesec_key)
 
     _n_uk = len(_sistemi)
@@ -4554,9 +4604,6 @@ def _zadaci_xlsx(rows, sistem, mesec_lbl):
     _buf = _io.BytesIO(); _wb.save(_buf); return _buf.getvalue()
 
 
-BARKOD_MES = "BARKODOVI"                 # „mesec" pod kojim stoji šifarnik barkodova
-BARKOD_SIS = "ARTIKLI"
-
 # Ugrađeni šifarnik barkodova iz tabele ARTIKLI (kolona „Kataloški broj").
 # Koristi se kad za artikal nema barkoda upisanog u bazi — tako Excel ima
 # barkodove i pre nego što iko išta učita.
@@ -4749,128 +4796,13 @@ BARKOD_UGRADJEN = {
 }
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def sb_barkod_get():
-    """Šifarnik barkodova: {id_artikla: barkod}. Prazno ako još nije učitan."""
-    cli = _sb()
-    if cli is None:
-        return {}
-    try:
-        res = (cli.table("obrada").select("dnevnik")
-               .eq("mesec", BARKOD_MES).eq("sistem", BARKOD_SIS).eq("idk", 0)
-               .limit(1).execute())
-        if not res.data:
-            return {}
-        _m = ((res.data[0].get("dnevnik") or {}).get("barkod") or {})
-        _out = {}
-        for _k, _v in _m.items():
-            try:
-                _out[int(_k)] = str(_v or "").strip()
-            except Exception:
-                pass
-        return _out
-    except Exception:
-        return {}
-
-
-def sb_barkod_set(mapa, ko=""):
-    """Zapamti šifarnik barkodova ({id_artikla: barkod})."""
-    cli = _sb()
-    if cli is None:
-        return False
-    try:
-        _m = {}
-        for _k, _v in (mapa or {}).items():
-            try:
-                _b = str(_v or "").strip()
-                if _b:
-                    _m[str(int(_k))] = _b[:40]
-            except Exception:
-                pass
-        cli.table("obrada").upsert(
-            {"mesec": BARKOD_MES, "sistem": BARKOD_SIS, "idk": 0,
-             "reakcije": [], "trebovali": False, "trebovali_tip": "", "njihova": {},
-             "napomena": "", "reakcije_ko": {},
-             "dnevnik": {"barkod": _m, "ko": str(ko or ""), "at": _now().isoformat()},
-             "azurirano": _now().isoformat()},
-            on_conflict="mesec,sistem,idk").execute()
-        try:
-            sb_barkod_get.clear()
-        except Exception:
-            pass
-        return True
-    except Exception:
-        return False
-
-
-def _barkod(ida, mapa=None):
+def _barkod(ida):
     """Barkod artikla kao TEKST (da Excel ne pojede vodeću nulu).
-    Prvo se gleda ono što je upisano u bazi, pa ugrađeni šifarnik. Prazno ako ga nema."""
+    Prazno ako artikal nije u šifarniku."""
     try:
-        _i = int(ida)
+        return str(BARKOD_UGRADJEN.get(int(ida), "") or "")
     except Exception:
         return ""
-    try:
-        _m = sb_barkod_get() if mapa is None else mapa
-        _b = str((_m or {}).get(_i, "") or "")
-    except Exception:
-        _b = ""
-    return _b or str(BARKOD_UGRADJEN.get(_i, "") or "")
-
-
-def barkod_iz_excela(data):
-    """Iz Excel tabele izvuci {id_artikla: barkod}. Kolone se traže po nazivu
-    („ID artikla"/„šifra" i „barkod"/„EAN"); ako naslova nema, uzimaju se
-    prve dve kolone. Vraća (mapa, poruka)."""
-    import io as _io
-    from openpyxl import load_workbook as _lw
-    try:
-        _wb = _lw(_io.BytesIO(data), data_only=True, read_only=True)
-    except Exception as _e:
-        return ({}, "Fajl se ne čita: " + str(_e)[:120])
-    _naj, _poruka = {}, ""
-    for _ws in _wb.worksheets:
-        _rows = list(_ws.iter_rows(values_only=True))[:5000]
-        if not _rows:
-            continue
-        _ci, _cb = None, None
-        _start = 0
-        for _ri, _r in enumerate(_rows[:10]):
-            for _i, _v in enumerate(_r or []):
-                _t = str(_v or "").strip().lower()
-                if _ci is None and (_t.startswith("id artikla") or _t.startswith("ida")
-                                    or _t in ("id", "šifra", "sifra", "šifra artikla",
-                                              "sifra artikla")):
-                    _ci = _i
-                if _cb is None and ("barkod" in _t or "barcode" in _t or _t.startswith("ean")
-                                    or "katalo" in _t):        # „Kataloški broj" iz ARTIKLI.xlsx
-                    _cb = _i
-            if _ci is not None and _cb is not None:
-                _start = _ri + 1
-                break
-            _ci, _cb = None, None
-        if _ci is None or _cb is None:
-            _ci, _cb, _start = 0, 1, 0          # bez naslova: prve dve kolone
-        _m = {}
-        for _r in _rows[_start:]:
-            if not _r or len(_r) <= max(_ci, _cb):
-                continue
-            try:
-                _id = int(str(_r[_ci]).strip().split(".")[0])
-            except Exception:
-                continue
-            _b = _r[_cb]
-            if _b is None:
-                continue
-            _b = str(_b).strip()
-            if _b.endswith(".0"):
-                _b = _b[:-2]
-            if _b and _b.lower() != "none":
-                _m[_id] = _b
-        if len(_m) > len(_naj):
-            _naj = _m
-            _poruka = "List „" + str(_ws.title) + "“ — pronađeno " + str(len(_m)) + " barkodova."
-    return (_naj, _poruka or "U fajlu nije pronađena nijedna kolona sa barkodom.")
 
 
 def _objekat_order_xlsx(naziv, idk, mesec_lbl, rows, meseci=None):
@@ -4887,7 +4819,6 @@ def _objekat_order_xlsx(naziv, idk, mesec_lbl, rows, meseci=None):
     _thin = _SD(style="thin", color="E5E0F0")
     _bord = _BD(left=_thin, right=_thin, top=_thin, bottom=_thin)
     _pred_lbl = "Predikcija"
-    _bk = sb_barkod_get()
     _ncols = 6
     _last = "F"
     # Naslov (koji objekat / mesec)
@@ -4912,7 +4843,7 @@ def _objekat_order_xlsx(naziv, idk, mesec_lbl, rows, meseci=None):
         _c.border = _bord
     for _r in rows:
         _ws.append([str(_r.get("kruzic", "")), str(_r.get("naziv", "")),
-                    (str(_r.get("barkod", "")) or _barkod(_r.get("ida"), _bk)),
+                    (str(_r.get("barkod", "")) or _barkod(_r.get("ida"))),
                     int(_r.get("lager", 0) or 0), int(_r.get("predikcija", 0) or 0),
                     int(_r.get("dodatna", 0) or 0)])
         _rr = _ws.max_row
@@ -5329,7 +5260,6 @@ def _nedeljni_predlog_xlsx(sistem, dani, datum, grupe, payload=None):
         _w2.title = "Predlog po objektima"
 
     # ============================================================ LIST 2: po objektima
-    _bk = sb_barkod_get()
     _w2.sheet_view.showGridLines = False
     _sir(_w2, {"A": 46, "B": 17, "C": 12, "D": 12, "E": 13})
     _w2.merge_cells("A1:E1")
@@ -5353,7 +5283,7 @@ def _nedeljni_predlog_xlsx(sistem, dani, datum, grupe, payload=None):
         _r += 1
         for _a in (_g.get("arts") or []):
             _c(_w2, "A" + str(_r), "    " + str(_a.get("naziv", "")))
-            _c(_w2, "B" + str(_r), (str(_a.get("barkod", "")) or _barkod(_a.get("ida"), _bk)),
+            _c(_w2, "B" + str(_r), (str(_a.get("barkod", "")) or _barkod(_a.get("ida"))),
                ha="center")
             _w2["B" + str(_r)].number_format = "@"
             _c(_w2, "C" + str(_r), int(_a.get("lager", 0) or 0), ha="center")
@@ -5389,7 +5319,7 @@ def _nedeljni_predlog_xlsx(sistem, dani, datum, grupe, payload=None):
         for _a in (_g.get("arts") or []):
             _c(_w3, "A" + str(_r), str(_g.get("objekat", "")))
             _c(_w3, "B" + str(_r), str(_a.get("naziv", "")))
-            _c(_w3, "C" + str(_r), (str(_a.get("barkod", "")) or _barkod(_a.get("ida"), _bk)),
+            _c(_w3, "C" + str(_r), (str(_a.get("barkod", "")) or _barkod(_a.get("ida"))),
                ha="center")
             _w3["C" + str(_r)].number_format = "@"
             _c(_w3, "D" + str(_r), int(_a.get("lager", 0) or 0), ha="center")
@@ -10489,68 +10419,6 @@ def prikazi_administraciju():
             st.code("Naslov:  " + _mejl_zameni(_sab_naslov, _prim_naz, sistem) + "\n\n"
                     + _mejl_zameni(_sab_telo, _prim_naz, sistem) + "\n"
                     + _potpis_tekst(), language=None)
-
-        # --- Barkodovi artikala (idu u Excel predlog) ---
-        _bk_mapa = sb_barkod_get()
-        _bk_nazivi = {}
-        for _o9 in objekti:
-            for _a9 in _o9["lst"]:
-                _bk_nazivi.setdefault(int(_a9["ida"]), str(_a9.get("naziv", "")))
-        _bk_fali = sorted(i for i in _bk_nazivi if not _barkod(i, _bk_mapa))
-        with st.expander("🏷️ Barkodovi artikala — " + (
-                ("fali za " + str(len(_bk_fali)) + " artikala ovog sistema") if _bk_fali
-                else "svi artikli ovog sistema imaju barkod"), expanded=False):
-            st.caption("Barkod se upisuje u kolonu „Barkod“ u Excelu koji ide objektu. "
-                       "Barkodovi iz tabele ARTIKLI su već ugrađeni ("
-                       + str(len(BARKOD_UGRADJEN)) + " artikala), pa ovde ništa ne moraš da "
-                       "radiš dok se ne pojavi nov artikal. Ako treba nešto da se ispravi ili "
-                       "dopuni — učitaj Excel (ID artikla + barkod / kataloški broj) ili upiši "
-                       "ručno u tabeli ispod. Upisano ovde je jače od ugrađenog.")
-            _bf = st.file_uploader("Tabela sa barkodovima (.xlsx)", type=["xlsx", "xlsm"],
-                                   key="bk_upload_" + str(sistem),
-                                   label_visibility="collapsed")
-            if _bf is not None:
-                _nova, _por = barkod_iz_excela(_bf.getvalue())
-                st.caption(_por)
-                if _nova:
-                    _pregled = pd.DataFrame(
-                        [{"ID artikla": _i, "Artikal": _bk_nazivi.get(_i, "(nije u ovom sistemu)"),
-                          "Barkod": _b} for _i, _b in sorted(_nova.items())])
-                    st.dataframe(_pregled, hide_index=True, use_container_width=True, height=240)
-                    if st.button("💾 Sačuvaj barkodove", key="bk_save_" + str(sistem),
-                                 type="primary"):
-                        _spoj = dict(_bk_mapa)
-                        _spoj.update(_nova)
-                        if sb_barkod_set(_spoj, st.session_state.get("admin_user", "")):
-                            st.success("Sačuvano — ukupno " + str(len(_spoj)) + " barkodova.")
-                            st.rerun()
-                        else:
-                            st.error("Čuvanje nije uspelo.")
-            if _bk_nazivi:
-                _bk_df = pd.DataFrame([{"ID artikla": _i, "Artikal": _bk_nazivi[_i],
-                                        "Barkod": _barkod(_i, _bk_mapa)}
-                                       for _i in sorted(_bk_nazivi)])
-                with st.form("bk_rucno_" + str(sistem), border=False):
-                    _bk_ed = st.data_editor(
-                        _bk_df, hide_index=True, use_container_width=True,
-                        key="bk_ed_" + str(sistem), num_rows="fixed",
-                        column_config={
-                            "ID artikla": st.column_config.NumberColumn(disabled=True, width="small"),
-                            "Artikal": st.column_config.TextColumn(disabled=True, width="large"),
-                            "Barkod": st.column_config.TextColumn(help="npr. 6973023740025")})
-                    if st.form_submit_button("💾 Sačuvaj ručne izmene", type="primary"):
-                        _spoj = dict(_bk_mapa)
-                        for _, _rr9 in _bk_ed.iterrows():
-                            _b9 = str(_rr9.get("Barkod", "") or "").strip()
-                            if _b9:
-                                _spoj[int(_rr9["ID artikla"])] = _b9
-                            else:
-                                _spoj.pop(int(_rr9["ID artikla"]), None)
-                        if sb_barkod_set(_spoj, st.session_state.get("admin_user", "")):
-                            st.success("Sačuvano.")
-                            st.rerun()
-                        else:
-                            st.error("Čuvanje nije uspelo.")
 
         _selk = "bulk_sel_" + str(sistem) + "_" + str(mesec_key)
         _verk = "bulk_ver_" + str(sistem) + "_" + str(mesec_key)
