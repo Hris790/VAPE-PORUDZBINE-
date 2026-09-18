@@ -3156,7 +3156,9 @@ def sb_prikup_odgovor_set(mesec_key, sistem, zapis):
         _lst.append({"od": zapis.get("od", ""), "ime": zapis.get("ime", ""),
                      "at": zapis.get("at", ""), "naslov": zapis.get("naslov", ""),
                      "tekst": str(zapis.get("tekst", ""))[:800],
-                     "prilozi": [{"ime": _p.get("ime", ""), "vel": int(_p.get("vel", 0) or 0)}
+                     "prilozi": [{"ime": _p.get("ime", ""),
+                                  "vel": int(_p.get("vel", 0) or 0),
+                                  "url": str(_p.get("url", "") or "")[:400]}
                                  for _p in (zapis.get("prilozi") or [])],
                      "upisano": _now().isoformat()})
         _dn["odgovori"] = _lst[-30:]
@@ -3558,6 +3560,15 @@ def prikup_admin_ui():
                 if not _s:
                     continue
                 for _z in _lst:
+                    if not (_z.get("prilozi") or []):
+                        continue
+                    for _x in (_z.get("prilozi") or []):
+                        if _x.get("data") and not _x.get("url"):
+                            try:
+                                _x["url"] = sb_prikup_fajl_upload(
+                                    _x["data"], _x.get("ime"), mesec_key, _s)
+                            except Exception:
+                                _x["url"] = ""
                     try:
                         if sb_prikup_odgovor_set(mesec_key, _s, _z):
                             _n_up += 1
@@ -3808,8 +3819,15 @@ def prikup_admin_ui():
                                   "prilozi": [{"ime": _f.name, "vel": len(_f.getvalue())}
                                               for _f in _up]}
                           _keš = st.session_state.setdefault("_prikup_up_" + str(mesec_key), {})
-                          for _f in _up:
-                              _keš[_prikup_kljuc_priloga(_zap, {"ime": _f.name})] = _f.getvalue()
+                          with st.spinner("Čuvam fajlove…"):
+                              for _f, _pz in zip(_up, _zap["prilozi"]):
+                                  _keš[_prikup_kljuc_priloga(
+                                      _zap, {"ime": _f.name})] = _f.getvalue()
+                                  try:
+                                      _pz["url"] = sb_prikup_fajl_upload(
+                                          _f.getvalue(), _f.name, mesec_key, s)
+                                  except Exception:
+                                      _pz["url"] = ""
                           if sb_prikup_odgovor_set(mesec_key, s, _zap):
                               st.success("Dodato " + str(len(_up)) + " fajl(ova).")
                               st.rerun()
@@ -3843,7 +3861,13 @@ def prikup_admin_ui():
                                           or {}).get(_kp)
                         _fc1, _fc2, _fc3 = st.columns([2.2, 0.9, 2.4])
                         with _fc1:
-                            if _x.get("data") and not _odb:
+                            if _odb:
+                                st.markdown(
+                                    '<div style="font-size:12.5px;padding:7px 0;'
+                                    'color:#c4c7cf;text-decoration:line-through;">📎 '
+                                    + _h_escape(str(_x.get("ime") or "prilog"))
+                                    + '</div>', unsafe_allow_html=True)
+                            elif _x.get("data"):
                                 try:
                                     st.download_button(
                                         "⬇️ " + str(_x.get("ime") or "prilog"), _x["data"],
@@ -3852,13 +3876,21 @@ def prikup_admin_ui():
                                         use_container_width=True)
                                 except Exception:
                                     pass
+                            elif _x.get("url"):
+                                # fajl je sačuvan u bazi — otvara se u novom prozoru
+                                st.markdown(
+                                    '<a href="' + _h_escape(str(_x["url"])) + '" '
+                                    'target="_blank" class="prikup-fajl">⬇️ '
+                                    + _h_escape(str(_x.get("ime") or "prilog"))
+                                    + '</a>', unsafe_allow_html=True)
                             else:
                                 st.markdown(
-                                    '<div style="font-size:12.5px;padding:7px 0;color:'
-                                    + ("#c4c7cf;text-decoration:line-through;" if _odb
-                                       else "#6b7280;")
-                                    + '">📎 ' + _h_escape(str(_x.get("ime") or "prilog"))
-                                    + '</div>', unsafe_allow_html=True)
+                                    '<div style="font-size:12.5px;padding:7px 0;'
+                                    'color:#b45309;">📎 '
+                                    + _h_escape(str(_x.get("ime") or "prilog"))
+                                    + ' <span style="color:#9ca3af;">— nije sačuvan; '
+                                    'klikni „📥 Proveri odgovore“ ili ubaci fajl ručno'
+                                    '</span></div>', unsafe_allow_html=True)
                         with _fc2:
                             if _odb:
                                 if st.button("↩️ vrati", key=("prikup_vr_" + s + "_"
@@ -3955,15 +3987,16 @@ def prikup_admin_ui():
                                     _kp2 = _prikup_kljuc_priloga(_z, _x)
                                     if _kp2 in _odbaceni:
                                         continue
-                                    _dat = _x.get("data") or (st.session_state.get(
-                                        "_prikup_up_" + str(mesec_key)) or {}).get(_kp2)
-                                    _url = ""
-                                    if _dat:
-                                        try:
-                                            _url = sb_prikup_fajl_upload(
-                                                _dat, _x.get("ime"), mesec_key, s)
-                                        except Exception:
-                                            _url = ""
+                                    _url = str(_x.get("url") or "")
+                                    if not _url:
+                                        _dat = _x.get("data") or (st.session_state.get(
+                                            "_prikup_up_" + str(mesec_key)) or {}).get(_kp2)
+                                        if _dat:
+                                            try:
+                                                _url = sb_prikup_fajl_upload(
+                                                    _dat, _x.get("ime"), mesec_key, s)
+                                            except Exception:
+                                                _url = ""
                                     _salji.append({"ime": _x.get("ime", ""), "url": _url,
                                                    "vel": int(_x.get("vel", 0) or 0)})
                             _ok_p = sb_prikup_predaj(mesec_key, s, _salji,
@@ -8667,6 +8700,10 @@ def prikazi_administraciju():
     [class*="st-key-prikup_send_"] button:disabled{background:#eef0f4 !important;
         border-color:#e5e7eb !important;color:#b0b4bd !important;}
     [class*="st-key-prikup_a_"] input{font-size:13px !important;}
+    a.prikup-fajl{display:block;text-align:center;font-size:13.5px;font-weight:600;
+        color:#1f2430 !important;text-decoration:none !important;background:#fff;
+        border:1px solid #d5d9e0;border-radius:8px;padding:7px 12px;margin:1px 0;}
+    a.prikup-fajl:hover{border-color:#a78bfa;background:#faf8ff;color:#4c1d95 !important;}
 /* ===== Dok aplikacija radi ===== */
 /* Streamlit inače zatamni ceo ekran (izgleda kao da se zaledilo). Umesto toga:
    ekran ostaje čitljiv, a gore se pojavi kartica „Radim…" + tanka traka.
