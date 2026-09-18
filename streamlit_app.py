@@ -3410,50 +3410,6 @@ def prikup_admin_ui():
                 + _prikup_tekst(_telo_zaj, mesec_key, "NAZIV SISTEMA") + "\n"
                 + _potpis_tekst(), language=None)
 
-    # ---------- Sistemi, jedan ispod drugog ----------
-    st.markdown('<div style="margin:16px 0 6px;font-size:12px;text-transform:uppercase;'
-                'letter-spacing:.6px;color:#9aa0ad;font-weight:700;">Sistemi i adrese</div>',
-                unsafe_allow_html=True)
-    st.caption("Adrese se razdvajaju zarezom; upisano važi i za naredne mesece, dok se ne "
-               "promeni. Naslov i tekst mejla su isti za sve i menjaju se gore.")
-
-    with st.form("prikup_forma", border=False):
-        st.markdown('<div class="prikup-hdr"><div>Sistem</div>'
-                    '<div>Adrese (razdvoji zarezom)</div></div>', unsafe_allow_html=True)
-        _uneto = {}
-        for s in _sistemi:
-            _p = _pod.get(s) or {}
-            _c1, _c3 = st.columns([1.5, 4.2])
-            with _c1:
-                _st_s = _stanje.get(s) or {}
-                _zn = ("✅" if _st_s.get("odgovori") else ("📤" if _st_s.get("mejlovi") else "•"))
-                st.markdown('<div class="prikup-ime">' + _zn + " " + _h_escape(s)
-                            + '</div>', unsafe_allow_html=True)
-            with _c3:
-                _uneto[s] = {"naslov": _p.get("naslov") or "",
-                             "adrese": st.text_input(
-                                 "Adrese — " + s, value=", ".join(_p.get("adrese") or []),
-                                 key="prikup_a_" + s, label_visibility="collapsed",
-                                 placeholder="ime@firma.rs, drugo@firma.rs")}
-        _sacuvaj = st.form_submit_button("💾 Sačuvaj adrese", type="primary")
-
-    if _sacuvaj:
-        import re as _rep
-        _n_ok, _lose = 0, []
-        for s in _sistemi:
-            _u = _uneto.get(s) or {}
-            _adr = _prikup_adrese(_u.get("adrese"))
-            _sirovo = [x for x in _rep.split(r"[,;\s]+", str(_u.get("adrese") or "")) if x]
-            if len(_sirovo) != len(_adr):
-                _lose.append(s)
-            if sb_prikup_podesi(s, _u.get("naslov"), _adr, "",
-                                st.session_state.get("admin_user", "")):
-                _n_ok += 1
-        if _lose:
-            st.warning("Neke adrese nisu ispravne i nisu sačuvane kod: " + ", ".join(_lose))
-        st.success("Sačuvano za " + str(_n_ok) + " sistema.")
-        st.rerun()
-
     # ---------- Slanje i odgovori, po sistemu ----------
     st.markdown('<div style="margin:18px 0 6px;font-size:12px;text-transform:uppercase;'
                 'letter-spacing:.6px;color:#9aa0ad;font-weight:700;">Slanje i odgovori</div>',
@@ -3498,20 +3454,41 @@ def prikup_admin_ui():
         else:
             _zn = ("• nije poslato" if _adr else "⚠️ nema adrese")
         with st.expander(s + "   —   " + _zn, expanded=False):
-            if not _adr:
-                st.warning("Za ovaj sistem nije upisana nijedna adresa.")
-            else:
-                st.markdown(
-                    '<div style="font-size:12.5px;color:#4b5563;line-height:1.7;'
-                    'background:#faf8ff;border:1px solid #ede9fe;border-radius:10px;'
-                    'padding:9px 12px;margin:2px 0 10px;">'
-                    '<b>Šalje se sa:</b> ' + _h_escape(_sa_mejla or "(nije podešeno)")
-                    + '<br><b>Šalje se na:</b> ' + _h_escape(", ".join(_adr))
-                    + '<br><b>Naslov:</b> '
-                    + _h_escape(_prikup_tekst(_naslov_zaj, mesec_key, s))
-                    + '<div style="color:#9ca3af;font-size:11.5px;margin-top:5px;">'
-                    'Adresu menjaš gore u spisku sistema, a naslov i tekst u delu '
-                    '„Naslov i tekst mejla“.</div></div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div style="font-size:12.5px;color:#4b5563;line-height:1.7;'
+                'background:#faf8ff;border:1px solid #ede9fe;border-radius:10px;'
+                'padding:9px 12px;margin:2px 0 8px;">'
+                '<b>Šalje se sa:</b> ' + _h_escape(_sa_mejla or "(nije podešeno)")
+                + '<br><b>Šalje se na:</b> '
+                + (_h_escape(", ".join(_adr)) if _adr
+                   else '<span style="color:#b45309;">nije upisana nijedna adresa</span>')
+                + '<br><b>Naslov:</b> '
+                + _h_escape(_prikup_tekst(_naslov_zaj, mesec_key, s))
+                + '<div style="color:#9ca3af;font-size:11.5px;margin-top:5px;">'
+                'Naslov i tekst menjaš gore, u delu „Naslov i tekst mejla“.'
+                '</div></div>', unsafe_allow_html=True)
+            with st.form("prikup_adr_" + s, border=False):
+                _ac1, _ac2 = st.columns([3.6, 1])
+                with _ac1:
+                    _adr_txt = st.text_input(
+                        "Adrese — " + s, value=", ".join(_adr),
+                        key="prikup_a_" + s, label_visibility="collapsed",
+                        placeholder="ime@firma.rs, drugo@firma.rs  (više adresa razdvoji zarezom)")
+                with _ac2:
+                    _cuv_adr = st.form_submit_button("💾 Sačuvaj adresu",
+                                                     use_container_width=True)
+            if _cuv_adr:
+                import re as _rep
+                _nove = _prikup_adrese(_adr_txt)
+                _sirovo = [x for x in _rep.split(r"[,;\s]+", str(_adr_txt or "")) if x]
+                if len(_sirovo) != len(_nove):
+                    st.warning("Neka adresa nije ispravna i nije sačuvana — proveri je.")
+                if sb_prikup_podesi(s, _p.get("naslov") or "", _nove, "",
+                                    st.session_state.get("admin_user", "")):
+                    st.success("Sačuvano.")
+                    st.rerun()
+                else:
+                    st.error("Čuvanje nije uspelo.")
             _r1, _r2 = st.columns([1.2, 3])
             with _r1:
                 _posalji = st.button("✉️ Pošalji zahtev", key="prikup_send_" + s,
@@ -8320,12 +8297,7 @@ def prikazi_administraciju():
     [class*="st-key-predaj_izvestaj"] button:hover{background:#0284c7 !important;border-color:#0284c7 !important;}
     .stMultiSelect [data-baseweb="tag"]{background:#f2effc !important;color:#5b21b6 !important;border:none !important;}
     .stMultiSelect [data-baseweb="tag"] span{color:#5b21b6 !important;}
-    /* Prikupljanje izveštaja — spisak sistema */
-    .prikup-hdr{display:grid;grid-template-columns:1.5fr 4.2fr;gap:12px;
-        font-size:11px;color:#b0b4bd;font-weight:700;text-transform:uppercase;
-        letter-spacing:.5px;padding:0 0 6px;border-bottom:1px solid #eef0f4;margin-bottom:6px;}
-    .prikup-ime{font-size:13.5px;font-weight:600;color:#2a2f3a;padding:8px 0 0;
-        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    /* Prikupljanje izveštaja */
     [class*="st-key-prikup_send_"] button{background:#16a34a !important;border-color:#16a34a !important;
         color:#fff !important;font-weight:600 !important;font-size:13px !important;
         padding:7px 12px !important;border-radius:8px !important;box-shadow:none !important;}
