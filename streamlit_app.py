@@ -2969,6 +2969,7 @@ def sb_prikup_stanje(mesec_key):
             _dn = _r.get("dnevnik") or {}
             _out[_naz[len("PRIKUP::"):]] = {"mejlovi": list(_dn.get("mejlovi") or []),
                                             "odgovori": list(_dn.get("odgovori") or []),
+                                            "sadrzaj": dict(_dn.get("sadrzaj") or {}),
                                             "scan": dict(_dn.get("scan") or {})}
         return _out
     except Exception:
@@ -3037,6 +3038,45 @@ def sb_prikup_odgovor_set(mesec_key, sistem, zapis):
         return True
     except Exception:
         return False
+
+
+PRIKUP_PRODAJA = ["nije provereno", "po objektima", "samo ukupna prodaja", "nema prodaje"]
+
+
+def sb_prikup_sadrzaj_set(mesec_key, sistem, prodaja, lager_obj, lager_uk, ko=""):
+    """Šta izveštaj tog sistema sadrži — upisuje se posle pregleda priloga.
+    prodaja: jedna od PRIKUP_PRODAJA; lager_obj/lager_uk: True/False."""
+    cli, _dn = _prikup_dnevnik(mesec_key, sistem)
+    if cli is None:
+        return False
+    try:
+        _dn["sadrzaj"] = {"prodaja": str(prodaja or PRIKUP_PRODAJA[0]),
+                          "lager_obj": bool(lager_obj), "lager_uk": bool(lager_uk),
+                          "ko": str(ko or ""), "at": _now().isoformat()}
+        _prikup_upisi(cli, mesec_key, sistem, _dn)
+        return True
+    except Exception:
+        return False
+
+
+def _prikup_sadrzaj_kratko(sadrzaj):
+    """Kratak opis šta izveštaj sadrži — za naslov kartice sistema."""
+    _s = sadrzaj or {}
+    _p = str(_s.get("prodaja") or "")
+    if not _s.get("at"):
+        return ""
+    _d = []
+    if _p == "po objektima":
+        _d.append("prodaja po objektima")
+    elif _p == "samo ukupna prodaja":
+        _d.append("samo ukupna prodaja")
+    elif _p == "nema prodaje":
+        _d.append("bez prodaje")
+    if _s.get("lager_obj"):
+        _d.append("lager po objektu")
+    if _s.get("lager_uk"):
+        _d.append("ukupan lager")
+    return ", ".join(_d) if _d else "ništa od traženog"
 
 
 def sb_prikup_scan_get(mesec_key):
@@ -3114,9 +3154,14 @@ def prikup_admin_ui():
     _n_uk = len(_sistemi)
     _n_adr = sum(1 for s in _sistemi if (_pod.get(s) or {}).get("adrese"))
     _n_pos = sum(1 for s in _sistemi if (_stanje.get(s) or {}).get("mejlovi"))
-    _n_odg = sum(1 for s in _sistemi if (_stanje.get(s) or {}).get("odgovori"))
+    _n_odg = sum(1 for s in _sistemi
+                 if any((_z.get("prilozi") or [])
+                        for _z in ((_stanje.get(s) or {}).get("odgovori") or [])))
+    _n_prov = sum(1 for s in _sistemi
+                  if ((_stanje.get(s) or {}).get("sadrzaj") or {}).get("at"))
+    _n_ceka = max(_n_odg - _n_prov, 0)
     st.markdown(
-        '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:6px 0 12px;">'
+        '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:6px 0 12px;">'
         '<div style="background:#faf7ff;border:1px solid #e9d5ff;border-radius:12px;padding:15px 18px;">'
         '<div style="font-size:22px;font-weight:800;color:#7c3aed;">' + str(_n_uk) + '</div>'
         '<div style="font-size:12px;color:#8b7fa8;margin-top:3px;">Sistema</div></div>'
@@ -3129,8 +3174,17 @@ def prikup_admin_ui():
         + _h_escape(_sel_lbl) + ')</div></div>'
         '<div style="background:#dcfce7;border:1px solid #86efac;border-radius:12px;padding:15px 18px;">'
         '<div style="font-size:22px;font-weight:800;color:#14532d;">' + str(_n_odg) + '</div>'
-        '<div style="font-size:12px;color:#166534;margin-top:3px;font-weight:700;">📥 Odgovorili</div>'
-        '</div></div>', unsafe_allow_html=True)
+        '<div style="font-size:12px;color:#166534;margin-top:3px;font-weight:700;">'
+        '📎 Stigao izveštaj</div></div>'
+        '<div style="background:' + ("#fffbeb" if _n_ceka else "#f8fafc")
+        + ';border:1px solid ' + ("#fde68a" if _n_ceka else "#e5e7eb")
+        + ';border-radius:12px;padding:15px 18px;">'
+        '<div style="font-size:22px;font-weight:800;color:'
+        + ("#b45309" if _n_ceka else "#9ca3af") + ';">' + str(_n_ceka) + '</div>'
+        '<div style="font-size:12px;color:'
+        + ("#9a7b3a" if _n_ceka else "#9ca3af")
+        + ';margin-top:3px;">Čeka proveru sadržaja</div></div></div>',
+        unsafe_allow_html=True)
 
     # ---------- Provera odgovora u sandučetu (pamti dokle je pročitano) ----------
     _scan_db = sb_prikup_scan_get(mesec_key)
@@ -3335,8 +3389,19 @@ def prikup_admin_ui():
                 if not any((str(_x.get("od", "")), str(_x.get("at", ""))) ==
                            (str(_z.get("od", "")), str(_z.get("at", ""))) for _x in _odg):
                     _odg.append(_z)
-        _zn = ("✅ odgovorili" if _odg else ("📤 poslato, čeka se odgovor" if _mj
-                                            else ("• nije poslato" if _adr else "⚠️ nema adrese")))
+        # Fajl u odgovoru = izveštaj je stvarno stigao (tekst bez priloga nije izveštaj)
+        _ima_fajl = any((_z.get("prilozi") or []) for _z in _odg)
+        _sadr = dict(_st_s.get("sadrzaj") or {})
+        _sadr_txt = _prikup_sadrzaj_kratko(_sadr)
+        if _ima_fajl:
+            _zn = ("📎 stigao izveštaj — " + _sadr_txt) if _sadr_txt else \
+                  "📎 stigao izveštaj — treba proveriti šta sadrži"
+        elif _odg:
+            _zn = "✉️ odgovorili, ali bez fajla"
+        elif _mj:
+            _zn = "📤 poslato, čeka se odgovor"
+        else:
+            _zn = ("• nije poslato" if _adr else "⚠️ nema adrese")
         with st.expander(s + "   —   " + _zn, expanded=False):
             if not _adr:
                 st.warning("Za ovaj sistem nije upisana nijedna adresa.")
@@ -3406,6 +3471,42 @@ def prikup_admin_ui():
                                          + "_" + str(_i)))
                             except Exception:
                                 pass
+
+            # ----- Šta izveštaj sadrži (samo kad je stigao fajl) -----
+            if _ima_fajl:
+                st.markdown('<div style="margin:14px 0 2px;font-size:12px;font-weight:700;'
+                            'color:#5b21b6;">🔎 Šta izveštaj sadrži</div>',
+                            unsafe_allow_html=True)
+                st.caption("Otvori prilog, pogledaj šta je poslato i štikliraj. Ostaje "
+                           "zapamćeno za „" + _h_escape(_sel_lbl) + "“."
+                           + (("  ·  poslednji put: " + _dt_kratko(_sadr.get("at"))
+                               + (("  ·  " + str(_sadr.get("ko"))) if _sadr.get("ko") else ""))
+                              if _sadr.get("at") else ""))
+                with st.form("prikup_sadr_" + s, border=False):
+                    _sc_a, _sc_b = st.columns([1.5, 1.6])
+                    with _sc_a:
+                        _pi = (PRIKUP_PRODAJA.index(_sadr.get("prodaja"))
+                               if _sadr.get("prodaja") in PRIKUP_PRODAJA else 0)
+                        _prod = st.radio("Prodaja", PRIKUP_PRODAJA, index=_pi,
+                                         key="prikup_prod_" + s)
+                    with _sc_b:
+                        st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+                        st.markdown("<div style='font-size:14px;font-weight:600;"
+                                    "color:#31333f;margin-bottom:6px;'>Stanje zaliha</div>",
+                                    unsafe_allow_html=True)
+                        _lo = st.checkbox("Stanje zaliha po objektu",
+                                          value=bool(_sadr.get("lager_obj")),
+                                          key="prikup_lo_" + s)
+                        _lu = st.checkbox("Ukupno stanje zaliha",
+                                          value=bool(_sadr.get("lager_uk")),
+                                          key="prikup_lu_" + s)
+                    if st.form_submit_button("💾 Sačuvaj", type="primary"):
+                        if sb_prikup_sadrzaj_set(mesec_key, s, _prod, _lo, _lu,
+                                                 st.session_state.get("admin_user", "")):
+                            st.success("Zapamćeno.")
+                            st.rerun()
+                        else:
+                            st.error("Čuvanje nije uspelo.")
 
     # ---------- Poruke sa nepoznatih adresa ----------
     _nep = _odg_ses.get("nep") or []
