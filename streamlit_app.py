@@ -2931,10 +2931,12 @@ def _prikup_ugradjene(sistem):
 PRIKUP_NASLOV_DEFAULT = "Izveštaj o prodaji i stanju zaliha — {mesec}"
 PRIKUP_TELO_DEFAULT = (
     "Poštovani,\n\n"
-    "molimo Vas da nam za {sistem} pošaljete:\n\n"
-    "•  prodaju u periodu od {od} do {do}\n"
-    "•  stanje zaliha na dan {do}\n\n"
-    "Podatke možete poslati kao odgovor na ovaj mejl (Excel ili tabela u poruci).\n\n"
+    "molimo Vas da nam pošaljete:\n\n"
+    "•  prodaju PO OBJEKTIMA u periodu od {od} do {do}\n"
+    "•  stanje zaliha PO OBJEKTIMA na dan {do}\n\n"
+    "Molimo da podaci budu razvrstani po objektima, a ne samo ukupno — bez toga ne "
+    "možemo da vidimo gde roba nedostaje ni da predložimo dopunu.\n\n"
+    "Podatke možete poslati kao odgovor na ovaj mejl.\n\n"
     "Hvala unapred.\n\n"
     "Srdačan pozdrav,")
 
@@ -2971,10 +2973,10 @@ def _prikup_period_lbl(kljuc):
 
 
 def _prikup_periodi(n=18):
-    """Ponuđeni periodi: za svaki mesec ceo mesec, pa prva i druga polovina."""
+    """Ponuđeni periodi: za svaki mesec ceo mesec i prva polovina (01–15)."""
     _out = []
     for _m in _knez_meseci(n):
-        _out += [_m, _m + ":P1", _m + ":P2"]
+        _out += [_m, _m + ":P1"]
     return _out
 
 
@@ -3235,7 +3237,7 @@ def prikup_admin_ui():
     _pc1, _pc2 = st.columns([1.7, 3.5])
     with _pc1:
         _sel_lbl = st.selectbox("Period izveštaja", _mk_lbls,
-                                index=(3 if len(_mk_lbls) > 3 else 0), key="prikup_mes",
+                                index=(2 if len(_mk_lbls) > 2 else 0), key="prikup_mes",
                                 help="Osim celog meseca, može da se traži i polumesečni "
                                      "izveštaj — prodaja od 01. do 15. i lager na 15.")
     mesec_key = _mk_opts[_mk_lbls.index(_sel_lbl)]
@@ -3447,13 +3449,25 @@ def prikup_admin_ui():
                                       key="prikup_telo",
                                       help="Može da sadrži {sistem}, {mesec}, {od} i {do} — "
                                            "to se pri slanju zameni pravim vrednostima.")
-            if st.form_submit_button("💾 Sačuvaj", type="primary"):
+            _tc1, _tc2 = st.columns([1.1, 1.4])
+            with _tc1:
+                _cuv_telo = st.form_submit_button("💾 Sačuvaj", type="primary",
+                                                  use_container_width=True)
+            with _tc2:
+                _vrati_telo = st.form_submit_button("↩️ Vrati podrazumevani tekst",
+                                                    use_container_width=True)
+            if _cuv_telo:
                 if sb_prikup_podesi("*", _naslov_novi, [], _telo_novi,
                                     st.session_state.get("admin_user", "")):
                     st.success("Naslov i tekst su sačuvani.")
                     st.rerun()
                 else:
                     st.error("Čuvanje nije uspelo.")
+            if _vrati_telo:
+                if sb_prikup_podesi("*", PRIKUP_NASLOV_DEFAULT, [], PRIKUP_TELO_DEFAULT,
+                                    st.session_state.get("admin_user", "")):
+                    st.success("Vraćen je podrazumevani naslov i tekst.")
+                    st.rerun()
         st.caption("Ovako izgleda za izabrani mesec:")
         st.code("Naslov:  " + _prikup_tekst(_naslov_zaj, mesec_key, "NAZIV SISTEMA") + "\n\n"
                 + _prikup_tekst(_telo_zaj, mesec_key, "NAZIV SISTEMA") + "\n"
