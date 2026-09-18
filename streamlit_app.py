@@ -2939,10 +2939,49 @@ PRIKUP_TELO_DEFAULT = (
     "Srdačan pozdrav,")
 
 
+def _prikup_period(kljuc):
+    """(od, do) za izabrani period. Ključ je „YYYY-MM" za ceo mesec,
+    „YYYY-MM:P1" za prvu polovinu (01–15) i „YYYY-MM:P2" za drugu (16–kraj)."""
+    _k = str(kljuc or "")
+    _mes, _deo = (_k.split(":") + [""])[:2]
+    _prvi, _posl = _knez_period(_mes)
+    if _deo == "P1":
+        return (_prvi, "15." + _prvi[3:])
+    if _deo == "P2":
+        return ("16." + _prvi[3:], _posl)
+    return (_prvi, _posl)
+
+
+def _prikup_mes(kljuc):
+    """Osnovni mesec („YYYY-MM") iz ključa perioda."""
+    return str(kljuc or "").split(":")[0]
+
+
+def _prikup_period_lbl(kljuc):
+    """Naziv perioda za padajući meni i za tekst mejla."""
+    _mes = _prikup_mes(kljuc)
+    _deo = (str(kljuc or "").split(":") + [""])[1]
+    _lbl = mesec_label(_mes)
+    if _deo == "P1":
+        return _lbl + "  ·  prva polovina (01–15)"
+    if _deo == "P2":
+        _od, _do = _prikup_period(kljuc)
+        return _lbl + "  ·  druga polovina (16–" + _do[:2] + ")"
+    return _lbl
+
+
+def _prikup_periodi(n=18):
+    """Ponuđeni periodi: za svaki mesec ceo mesec, pa prva i druga polovina."""
+    _out = []
+    for _m in _knez_meseci(n):
+        _out += [_m, _m + ":P1", _m + ":P2"]
+    return _out
+
+
 def _prikup_tekst(sablon, mesec_key, sistem=""):
-    _od, _do = _knez_period(mesec_key)
+    _od, _do = _prikup_period(mesec_key)
     return (str(sablon or "").replace("{od}", _od).replace("{do}", _do)
-            .replace("{mesec}", mesec_label(mesec_key))
+            .replace("{mesec}", _prikup_period_lbl(mesec_key).replace("  ·  ", " "))
             .replace("{sistem}", str(sistem or "")))
 
 
@@ -3191,14 +3230,17 @@ def prikup_admin_ui():
         st.error("Veza sa bazom trenutno nije podešena. Javi se analitičaru.")
         return
 
-    _mk_opts = _knez_meseci(18)
-    _mk_lbls = [mesec_label(k) for k in _mk_opts]
-    _pc1, _pc2 = st.columns([1.2, 4])
+    _mk_opts = _prikup_periodi(18)
+    _mk_lbls = [_prikup_period_lbl(k) for k in _mk_opts]
+    _pc1, _pc2 = st.columns([1.7, 3.5])
     with _pc1:
-        _sel_lbl = st.selectbox("Mesec izveštaja", _mk_lbls,
-                                index=(1 if len(_mk_lbls) > 1 else 0), key="prikup_mes")
+        _sel_lbl = st.selectbox("Period izveštaja", _mk_lbls,
+                                index=(3 if len(_mk_lbls) > 3 else 0), key="prikup_mes",
+                                help="Osim celog meseca, može da se traži i polumesečni "
+                                     "izveštaj — prodaja od 01. do 15. i lager na 15.")
     mesec_key = _mk_opts[_mk_lbls.index(_sel_lbl)]
-    _od, _do = _knez_period(mesec_key)
+    _mesec_baza = _prikup_mes(mesec_key)
+    _od, _do = _prikup_period(mesec_key)
     with _pc2:
         st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
         st.caption("Traži se prodaja **" + _od.rstrip(".") + " – " + _do
@@ -3206,7 +3248,8 @@ def prikup_admin_ui():
 
     # --- spisak sistema ---
     _pod = sb_prikup_podesavanja()
-    _sistemi = sorted(set(sb_svi_sistemi()) | set(_pod.keys()) | set(sb_sisteme(mesec_key))
+    _sistemi = sorted(set(sb_svi_sistemi()) | set(_pod.keys())
+                      | set(sb_sisteme(_mesec_baza))
                       | set(PRIKUP_ADRESE_UGRADJENE.keys()))
     _bez = {_prikup_norm_sis(x) for x in PRIKUP_BEZ}
     _sistemi = [s for s in _sistemi if s and not str(s).startswith("PRIKUP::")
@@ -3268,6 +3311,12 @@ def prikup_admin_ui():
     # ---------- Provera odgovora u sandučetu (pamti dokle je pročitano) ----------
     _scan_db = sb_prikup_scan_get(mesec_key)
     _od_def = _now().date().replace(day=1)
+    try:            # za polumesečni izveštaj odgovori stižu odmah posle 15.
+        _dpp = datetime.date(int(_mesec_baza[:4]), int(_mesec_baza[5:7]),
+                             16 if mesec_key.endswith(":P1") else 1)
+        _od_def = min(_od_def, _dpp) if _dpp <= _now().date() else _od_def
+    except Exception:
+        pass
     try:
         _prvi = None
         for s in _sistemi:
