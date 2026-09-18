@@ -1656,6 +1656,15 @@ def knez_admin_ui():
         r["odg_sac"] = _sac
         r["odg_live"] = _liv
         r["odg_n"] = max(len(_sac), len(_liv))
+    # Sačuvani PDF-ovi (ime fajla -> link u bazi) — prilozi se otvaraju i posle
+    # više meseci, bez ponovnog čitanja sandučeta.
+    _pdf_url = {}
+    try:
+        for _f9 in (sb_knez_pdf_get(mesec_key).get("fajlovi") or []):
+            if _f9.get("url"):
+                _pdf_url[str(_f9.get("ime") or "").strip().lower()] = _f9["url"]
+    except Exception:
+        _pdf_url = {}
     _n_uk = len(_pumpe)
     _n_mail = sum(1 for r in _pumpe if r["_email_ok"])
     _n_pos = sum(1 for r in _pumpe if r["mail_n"] > 0)
@@ -1742,7 +1751,8 @@ def knez_admin_ui():
             st.caption("📥 Odgovori su zapamćeni u bazi — ne čita se ponovo ceo mesec, nego samo "
                        "poruke od " + _od_dat.strftime("%d.%m.%Y") + ". Ko je odgovorio, kada i šta "
                        "je poslao — ostaje zapamćeno i posle osvežavanja stranice. "
-                       "(Sami fajlovi se ne čuvaju u bazi — za Excel se povlače iz sandučeta.) "
+                       "PDF lager liste se čuvaju u bazi čim se jednom pročitaju, pa se "
+                       "posle otvaraju odavde — i posle više meseci. "
                        "Ako ti ikad treba sve ispočetka, vrati datum na 1. u mesecu.")
         else:
             st.caption("Klikni „Proveri odgovore“ da se iz sandučeta povuku odgovori pumpi "
@@ -2031,13 +2041,22 @@ def knez_admin_ui():
                                     _pz["data"], file_name=str(_pz.get("ime", "prilog")),
                                     key=("knez_dl_" + str(mesec_key) + "_" + str(_idk) + "_"
                                          + str(_oi) + "_" + str(_pi)))
+                            elif _pdf_url.get(str(_pz.get("ime", "")).strip().lower()):
+                                # fajl je jednom pročitan i sačuvan u bazi
+                                st.markdown(
+                                    '<a href="' + _h_escape(
+                                        _pdf_url[str(_pz.get("ime", "")).strip().lower()])
+                                    + '" target="_blank" class="prikup-fajl">⬇️ '
+                                    + _h_escape(str(_pz.get("ime", "prilog")))
+                                    + '  (' + _vt + ')</a>', unsafe_allow_html=True)
                             else:
                                 st.caption("📎 " + str(_pz.get("ime", "prilog")) + " (" + _vt
                                            + ") — klikni „📥 Proveri odgovore“ gore da se prilog "
                                              "povuče iz sandučeta.")
                     if not r["odg_live"] and r["odg_sac"]:
-                        st.caption("ℹ️ Prikazano iz zabeleženog. Za preuzimanje priloga klikni "
-                                   "„📥 Proveri odgovore“ gore.")
+                        st.caption("ℹ️ Prikazano iz zabeleženog. Prilozi koji su već pročitani "
+                                   "otvaraju se odavde; za ostale klikni „📥 Proveri odgovore“ "
+                                   "gore.")
                 elif _mejlovi:
                     st.caption("📥 Još nema odgovora od ove pumpe.")
 
@@ -2298,6 +2317,42 @@ def knez_admin_ui():
         _pdf_db = sb_knez_pdf_get(mesec_key)
         _fajlovi_db = list(_pdf_db.get("fajlovi") or [])
         _imam_f = {_knez_kljuc_fajla(_f.get("ime"), _f.get("idk")) for _f in _fajlovi_db}
+
+        # --- Sam PDF se čuva u bazi. Ranije pročitane liste nemaju sačuvan fajl,
+        #     pa se on snimi čim se PDF nađe u odgovorima — tiho, bez ijednog klika. ---
+        _kljuc_sn = "_knez_pdf_snim_" + str(mesec_key)
+        if _fajlovi_db and _pdf_izvori and not st.session_state.get(_kljuc_sn):
+            _po_imenu = {}
+            for _p0 in _pdf_izvori:
+                _po_imenu[_knez_kljuc_fajla(_p0.get("ime"), _p0.get("idk"))] = _p0
+                _po_imenu.setdefault(str(_p0.get("ime") or "").strip().lower(), _p0)
+            _snim = 0
+            for _f0 in _fajlovi_db:
+                if _f0.get("url"):
+                    continue
+                _izv0 = (_po_imenu.get(_knez_kljuc_fajla(_f0.get("ime"), _f0.get("idk")))
+                         or _po_imenu.get(str(_f0.get("ime") or "").strip().lower()))
+                if not (_izv0 or {}).get("data"):
+                    continue
+                try:
+                    _u0 = sb_prikup_fajl_upload(_izv0["data"], _f0.get("ime"), mesec_key,
+                                                "KNEZ_" + str(_f0.get("idk") or ""))
+                except Exception:
+                    _u0 = ""
+                if _u0:
+                    _f0["url"] = _u0
+                    _snim += 1
+            if _snim:
+                try:
+                    sb_knez_pdf_set(mesec_key, _fajlovi_db,
+                                    st.session_state.get("admin_user", ""))
+                except Exception:
+                    pass
+                st.session_state.pop("_knez_pdf_rez", None)
+                st.caption("💾 Sačuvano " + str(_snim) + " PDF-ova u bazu — ubuduće se "
+                           "otvaraju odavde, bez čitanja sandučeta.")
+            st.session_state[_kljuc_sn] = True
+
         if _fajlovi_db and not (st.session_state.get("_knez_pdf_rez") or {}).get("izv"):
             with st.spinner("Otvaram već pročitane lager liste…"):
                 _izv0, _stavke0 = _knez_iz_fajlova(_fajlovi_db, mesec_key)
@@ -2314,15 +2369,19 @@ def knez_admin_ui():
             st.success("\U0001F4E5 Iz odgovora je dostupno " + str(len(_pdf_izvori))
                        + " PDF priloga. (Ako ne vidi\u0161 sve, klikni \u201e\U0001F4E5 Proveri odgovore\u201c gore.)")
         elif _fajlovi_db and not _fali_pdf:
+            _sa_url = sum(1 for _f in _fajlovi_db if _f.get("url"))
             st.success("✅ Sve lager liste su već pročitane (" + str(len(_fajlovi_db))
-                       + ") i izveštaj je ispod. Ako u međuvremenu stigne nova, klikni "
+                       + ") i izveštaj je ispod"
+                       + ((", a " + str(_sa_url) + " PDF-a je sačuvano u bazi — otvaraju "
+                          "se klikom na ime fajla u tabeli") if _sa_url else "")
+                       + ". Ako u međuvremenu stigne nova, klikni "
                        "„📥 Proveri odgovore“ gore pa ovde „Pročitaj nove PDF-ove“.")
         elif _zna_pdf:
             st.info("\U0001F4E5 Od pumpi je stiglo " + str(_zna_pdf) + " PDF priloga"
                     + ((", a pročitano ih je " + str(len(_fajlovi_db)) + " — fali još "
                         + str(_fali_pdf) + ". ") if _fajlovi_db else
-                       ". Sami fajlovi se ne čuvaju u bazi — treba ih jednom povući iz "
-                       "sandučeta da bi se napravio Excel. ")
+                       ". Fajlove treba jednom povući iz sandučeta — posle se čuvaju u "
+                       "bazi i više se ne povlače. ")
                     + "„Proveri odgovore“ gore čita samo NOVE poruke, pa za fajlove klikni ovo:")
             if st.button("\U0001F4CE Povuci priloge iz sandu\u010deta (" + str(_fali_pdf or _zna_pdf) + ")",
                          key="knez_pull_prilozi"):
@@ -2407,8 +2466,15 @@ def knez_admin_ui():
                     if _naj:
                         _idk = _naj["idk"]; _pumpa = _naj["naziv"]
                 _p_ok, _p_txt = _knez_period_status(_r.get("od", ""), _r.get("do", ""), mesec_key)
+                # sam PDF se čuva u bazi, da može da se otvori i posle više meseci
+                try:
+                    _url_pdf = sb_prikup_fajl_upload(
+                        _p["data"], _p["ime"], mesec_key,
+                        "KNEZ_" + str(_idk or _r.get("bs") or ""))
+                except Exception:
+                    _url_pdf = ""
                 _novi_fajlovi.append(
-                    {"ime": _p["ime"], "bs": _r.get("bs", ""),
+                    {"ime": _p["ime"], "url": _url_pdf, "bs": _r.get("bs", ""),
                      "bs_naziv": _r.get("bs_naziv", ""), "idk": _idk,
                      "pumpa": _pumpa, "redova": len(_r.get("redovi") or []),
                      "greska": _r.get("greska", ""), "izvor": _p["izvor"],
@@ -2452,7 +2518,7 @@ def knez_admin_ui():
             for _ik, _fs in _po_pumpi.items():
                 if len(_fs) < 2:
                     continue
-                if len({_f.get("otisak") for _f in _fs}) == 1:
+                if len({_knez_otisak_kljuc(_f.get("otisak")) for _f in _fs}) == 1:
                     _dupli_isti[_ik] = _fs
                 else:
                     _dupli_razl[_ik] = _fs
@@ -2538,7 +2604,12 @@ def knez_admin_ui():
                         + ';color:' + _fg + ';">' + _x["st_ikona"] + '</span></td>'
                         '<td class="nz">' + _h_escape(_nzp) + '</td>'
                         '<td class="id">' + _h_escape(str(_x.get("idk") or "—")) + '</td>'
-                        '<td class="fj">' + _h_escape(str(_x["ime"])[:46]) + '</td>'
+                        + ('<td class="fj"><a href="' + _h_escape(str(_x.get("url")))
+                           + '" target="_blank" class="knez-fajl" title="Otvori PDF">📄 '
+                           + _h_escape(str(_x["ime"])[:46]) + '</a></td>'
+                           if _x.get("url") else
+                           '<td class="fj">' + _h_escape(str(_x["ime"])[:46]) + '</td>')
+                        +
                         '<td class="br">' + str(_x["redova"]) + '</td>'
                         '<td class="st" style="color:' + _fg + ';">'
                         + _h_escape(str(_x["st_txt"])) + '</td></tr>')
@@ -6798,9 +6869,23 @@ def _knez_period_status(od, do, mesec_key):
 
 def _knez_otisak(redovi):
     """Kratak potpis sadržaja lager liste — po njemu se vidi da li su dva fajla
-    iste pumpe zaista ista lista ili se razlikuju."""
-    return tuple(sorted((str(_x.get("sifra", "")), _x.get("izlaz"), _x.get("stanje"))
-                        for _x in (redovi or [])))
+    iste pumpe zaista ista lista ili se razlikuju. Vraća TEKST, da bi mogao da se
+    zapamti u bazi i da posle čitanja iz baze ostane isti."""
+    return "|".join(str(_x.get("sifra", "")) + "~" + str(_x.get("izlaz"))
+                    + "~" + str(_x.get("stanje"))
+                    for _x in sorted((redovi or []),
+                                     key=lambda r: (str(r.get("sifra", "")),
+                                                    str(r.get("izlaz")),
+                                                    str(r.get("stanje")))))
+
+
+def _knez_otisak_kljuc(v):
+    """Otisak iz baze može da bude tekst (novo) ili lista lista (stari zapisi) —
+    ovo ga uvek svede na uporediv tekst."""
+    if isinstance(v, (list, tuple)):
+        return "|".join(("~".join(str(_y) for _y in _x))
+                        if isinstance(_x, (list, tuple)) else str(_x) for _x in v)
+    return str(v or "")
 
 
 KNEZ_ART_KLJUC = "KNEZ-ARTIKLI"      # „mesec" pod kojim se čuva spisak tuđih artikala
@@ -7093,8 +7178,8 @@ def knez_lager_xlsx(stavke, mesec_lbl=""):
 
 def sb_knez_pdf_get(mesec_key):
     """Već pročitane lager liste za taj mesec (pamte se u bazi, red idk=0).
-    Vraća {"fajlovi": [...], "at": ..., "ko": ...} — sami PDF-ovi se NE čuvaju,
-    nego ono što je iz njih pročitano."""
+    Vraća {"fajlovi": [...], "at": ..., "ko": ...}. Uz pročitane podatke pamti se i
+    link na sam PDF („url"), pa se posle mesecima otvara bez čitanja sandučeta."""
     cli = _sb()
     if cli is None:
         return {}
@@ -7142,7 +7227,7 @@ def _knez_iz_fajlova(fajlovi, mesec_key):
     for _f in (fajlovi or []):
         _izv.append({k: _f.get(k) for k in
                      ("ime", "bs", "bs_naziv", "idk", "redova", "greska", "izvor",
-                      "od", "do", "per_ok", "per_txt", "otisak", "pumpa")})
+                      "od", "do", "per_ok", "per_txt", "otisak", "pumpa", "url")})
         for _x in (_f.get("redovi") or []):
             _stavke.append({"idk": _f.get("idk"), "pumpa": _f.get("pumpa", ""),
                             "bs": _f.get("bs", ""), "sifra": _x.get("sifra", ""),
@@ -8821,6 +8906,8 @@ def prikazi_administraciju():
         color:#1f2430 !important;text-decoration:none !important;background:#fff;
         border:1px solid #d5d9e0;border-radius:8px;padding:7px 12px;margin:1px 0;}
     a.prikup-fajl:hover{border-color:#a78bfa;background:#faf8ff;color:#4c1d95 !important;}
+    a.knez-fajl{color:#4c1d95 !important;text-decoration:none !important;font-weight:600;}
+    a.knez-fajl:hover{text-decoration:underline !important;}
 /* ===== Dok aplikacija radi ===== */
 /* Streamlit inače zatamni ceo ekran (izgleda kao da se zaledilo). Umesto toga:
    ekran ostaje čitljiv, a gore se pojavi kartica „Radim…" + tanka traka.
