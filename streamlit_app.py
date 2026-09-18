@@ -1608,6 +1608,34 @@ def knez_admin_ui():
         st.caption("Traži se stanje zaliha na **" + _do + "** i prodaja **"
                    + _od.rstrip(".") + " – " + _do + "**")
 
+    # --- rok koji je postavio analitičar ---
+    _rok_k = sb_rokovi_get()
+    _rok_kd = _rok_datum(mesec_key, _rok_k.get("knez"))
+    if _rok_kd:
+        _dana_k = (_rok_kd - _now().date()).days
+        if _dana_k < 0:
+            _bgk, _brk, _fgk, _oznk = ("#fef2f2", "#fecaca", "#991b1b",
+                                       "⛔ ROK JE PROŠAO — ")
+            _dodk = "kasnimo " + str(abs(_dana_k)) + " dan(a)."
+        elif _dana_k <= 2:
+            _bgk, _brk, _fgk, _oznk = ("#fff7ed", "#fed7aa", "#9a3412",
+                                       "⏳ ROK JE BLIZU — ")
+            _dodk = ("poslednji je dan." if _dana_k == 0
+                     else "ostalo je još " + str(_dana_k) + " dan(a).")
+        else:
+            _bgk, _brk, _fgk, _oznk = "#f0fdf4", "#bbf7d0", "#166534", "⏳ ROK — "
+            _dodk = "ostalo je još " + str(_dana_k) + " dan(a)."
+        st.markdown(
+            '<div style="background:' + _bgk + ';border:1px solid ' + _brk + ';'
+            'border-radius:10px;padding:9px 14px;margin:6px 0 4px;color:' + _fgk + ';">'
+            '<b style="font-size:13.5px;">' + _oznk + 'izveštaj Knez Petrol za '
+            + _h_escape(str(_sel_lbl_k)) + ' mora biti popunjen do '
+            + _rok_kd.strftime("%d.%m.%Y.") + '</b>'
+            '<span style="font-size:12.5px;"> &nbsp;·&nbsp; ' + _h_escape(_dodk)
+            + '</span><div style="font-size:12px;margin-top:2px;">'
+            + _h_escape(str(_rok_k.get("napomena") or ROK_NAPOMENA_DEF))
+            + '</div></div>', unsafe_allow_html=True)
+
     # --- Pumpe iz šifarnika ---
     if st.session_state.get("_komfull") is None:
         st.session_state["_komfull"] = sb_komitenti_full()
@@ -1722,7 +1750,7 @@ def knez_admin_ui():
     _od_next = st.session_state.pop("_knez_od_next", None)
     if _od_next:
         st.session_state["knez_od_dat"] = _od_next
-    _oc1, _ocd, _oc2 = st.columns([1.5, 1.3, 3])
+    _oc1, _ocd, _ocd2, _oc2 = st.columns([1.5, 1.1, 1.1, 2.6])
     with _oc1:
         st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
         _chk_odg = st.button("📥 Proveri odgovore", key="knez_scan", use_container_width=True,
@@ -1741,11 +1769,18 @@ def knez_admin_ui():
                         'margin:-6px 0 2px;">Još nije ažurirano za ovaj mesec</div>',
                         unsafe_allow_html=True)
     with _ocd:
-        _od_dat = st.date_input("Čitaj poruke od", value=_od_def, key="knez_od_dat",
+        _od_dat = st.date_input("Čitaj poruke OD", value=_od_def, key="knez_od_dat",
                                 format="DD.MM.YYYY",
                                 help="Posle svake provere se sam pomeri na taj dan, pa se sledeći "
                                      "put čita samo ono što je stiglo u međuvremenu. Ako hoćeš sve "
                                      "ispočetka, vrati datum na 1. u mesecu.")
+    with _ocd2:
+        _do_dat = st.date_input("DO", value=_now().date(), key="knez_do_dat",
+                                format="DD.MM.YYYY",
+                                help="Zaključno sa ovim danom. Ostavi današnji datum ako "
+                                     "hoćeš sve do sada.")
+    if _do_dat and _od_dat and _do_dat < _od_dat:
+        st.warning("Datum „DO“ je pre datuma „OD“ — ispravi ga, inače nema šta da se pročita.")
     with _oc2:
         if _odg_ses.get("kada") or _scan_db.get("kada"):
             st.caption("📥 Odgovori su zapamćeni u bazi — ne čita se ponovo ceo mesec, nego samo "
@@ -1757,12 +1792,21 @@ def knez_admin_ui():
         else:
             st.caption("Klikni „Proveri odgovore“ da se iz sandučeta povuku odgovori pumpi "
                        "(tekst i prilozi) i prikažu ispod svake pumpe.")
+        st.markdown('<div style="font-size:11.5px;color:#b45309;line-height:1.45;'
+                    'margin:2px 0 0;"><b>Ako kod nekog priloga vidiš samo ime, a ne može '
+                    'da se otvori</b> — klikni ponovo „📥 Proveri odgovore“, ali PRVO '
+                    'proveri datume: „OD“ mora da bude pre dana kada je taj mejl stigao '
+                    '(najsigurnije 1. u mesecu), a „DO“ danas.</div>',
+                    unsafe_allow_html=True)
     if _chk_odg:
         _adr = set((r["email"] or "").lower() for r in _pumpe if r["_email_ok"])
         import time as _tm0
         _t0 = _tm0.time()
-        with st.spinner("📥 Čitam sanduče od " + _od_dat.strftime("%d.%m.%Y") + "…"):
-            _po, _nep, _err = knez_odgovori(_adr, od_datum=_od_dat)
+        _do_upit = _do_dat if (_do_dat and _do_dat >= _od_dat) else None
+        with st.spinner("📥 Čitam sanduče od " + _od_dat.strftime("%d.%m.%Y")
+                        + ((" do " + _do_upit.strftime("%d.%m.%Y")) if _do_upit else "")
+                        + "…"):
+            _po, _nep, _err = knez_odgovori(_adr, od_datum=_od_dat, do_datum=_do_upit)
         _trajalo = round(_tm0.time() - _t0, 1)
         if _err and not _po:
             st.error("Čitanje sandučeta nije uspelo: " + str(_err))
@@ -1801,14 +1845,15 @@ def knez_admin_ui():
                                     "od": _od_dat.isoformat()}
         # sledeći put čitaj samo od danas (dan provere se ponovo čita ceo, pa se
         # ništa ne propušta — duplikati se ionako prepoznaju)
+        _dokle_k = min(_do_upit, _now().date()) if _do_upit else _now().date()
         try:
-            st.session_state["_knez_od_next"] = _now().date()
+            st.session_state["_knez_od_next"] = _dokle_k
         except Exception:
             pass
         # trajno (u bazi): kada je ažurirano i dokle je pročitano — važi i posle
         # osvežavanja stranice, i za koleginice
         try:
-            sb_knez_scan_set(mesec_key, _now().isoformat(), _now().date().isoformat(),
+            sb_knez_scan_set(mesec_key, _now().isoformat(), _dokle_k.isoformat(),
                              nadjeno=sum(len(_v) for _v in _spoj.values()),
                              ko=st.session_state.get("admin_user", ""))
         except Exception:
@@ -3067,6 +3112,91 @@ def _prikup_mes(kljuc):
     return str(kljuc or "").split(":")[0]
 
 
+# ---------------- Rokovi za izveštaje (postavlja analitičar) ----------------
+ROKOVI_KLJUC = "ROKOVI"                  # red u bazi u kome stoje rokovi
+ROK_KNEZ_DAN = 5                         # podrazumevano: Knez do 5. u narednom mesecu
+ROK_PRIKUP_DAN = 7                       # podrazumevano: ostali izveštaji do 7.
+ROK_NAPOMENA_DEF = "Molimo da svi rokovi budu ispoštovani."
+
+
+def sb_rokovi_get():
+    """Rokovi koje je postavio analitičar: {"knez": dan, "prikup": dan, "napomena"}."""
+    _d = {"knez": ROK_KNEZ_DAN, "prikup": ROK_PRIKUP_DAN,
+          "napomena": ROK_NAPOMENA_DEF, "ko": "", "at": ""}
+    cli = _sb()
+    if cli is None:
+        return _d
+    try:
+        res = (cli.table("obrada").select("dnevnik")
+               .eq("mesec", ROKOVI_KLJUC).eq("sistem", ROKOVI_KLJUC)
+               .eq("idk", 0).limit(1).execute())
+        if not res.data:
+            return _d
+        _r = (res.data[0].get("dnevnik") or {}).get("rokovi") or {}
+        for _k in ("knez", "prikup"):
+            try:
+                _v = int(_r.get(_k) or 0)
+                if 1 <= _v <= 28:
+                    _d[_k] = _v
+            except Exception:
+                pass
+        if str(_r.get("napomena") or "").strip():
+            _d["napomena"] = str(_r["napomena"])[:300]
+        _d["ko"] = str(_r.get("ko") or "")
+        _d["at"] = str(_r.get("at") or "")
+        return _d
+    except Exception:
+        return _d
+
+
+def sb_rokovi_set(knez_dan, prikup_dan, napomena="", ko=""):
+    """Analitičar upisuje do kada izveštaji treba da budu gotovi."""
+    cli = _sb()
+    if cli is None:
+        return False
+    try:
+        cli.table("obrada").upsert(
+            {"mesec": ROKOVI_KLJUC, "sistem": ROKOVI_KLJUC, "idk": 0,
+             "reakcije": [], "trebovali": False, "trebovali_tip": "", "njihova": {},
+             "napomena": "", "reakcije_ko": {},
+             "dnevnik": {"rokovi": {"knez": int(knez_dan), "prikup": int(prikup_dan),
+                                    "napomena": str(napomena or "")[:300],
+                                    "ko": str(ko or ""), "at": _now().isoformat()}},
+             "azurirano": _now().isoformat()},
+            on_conflict="mesec,sistem,idk").execute()
+        return True
+    except Exception:
+        return False
+
+
+def _rok_datum(mesec_key, dan):
+    """Datum roka za izabrani period. Za ceo mesec: „dan" u NAREDNOM mesecu.
+    Za prvu polovinu (01–15): isto toliko dana posle 15. (npr. rok 7 -> 22.)."""
+    _mes = _prikup_mes(mesec_key)
+    _deo = (str(mesec_key or "").split(":") + [""])[1]
+    try:
+        _g, _m = int(_mes[:4]), int(_mes[5:7])
+        _d = max(1, min(int(dan or 1), 28))
+    except Exception:
+        return None
+    try:
+        if _deo == "P1":
+            return datetime.date(_g, _m, min(15 + _d, 28))
+        if _deo == "P2":
+            _g2, _m2 = (_g + 1, 1) if _m == 12 else (_g, _m + 1)
+            return datetime.date(_g2, _m2, _d)
+        _g2, _m2 = (_g + 1, 1) if _m == 12 else (_g, _m + 1)
+        return datetime.date(_g2, _m2, _d)
+    except Exception:
+        return None
+
+
+def _rok_tekst(mesec_key, dan):
+    """Rok kao „07.09.2026." — prazno ako se ne može izračunati."""
+    _d = _rok_datum(mesec_key, dan)
+    return _d.strftime("%d.%m.%Y.") if _d else ""
+
+
 def _prikup_period_lbl(kljuc):
     """Naziv perioda za padajući meni i za tekst mejla."""
     _mes = _prikup_mes(kljuc)
@@ -3513,6 +3643,32 @@ def prikup_admin_ui():
         st.caption("Traži se prodaja **" + _od.rstrip(".") + " – " + _do
                    + "** i stanje zaliha na **" + _do + "**")
 
+    # --- rok koji je postavio analitičar ---
+    _rok = sb_rokovi_get()
+    _rok_d = _rok_datum(mesec_key, _rok.get("prikup"))
+    if _rok_d:
+        _dana = (_rok_d - _now().date()).days
+        if _dana < 0:
+            _bg, _br, _fg, _ozn = "#fef2f2", "#fecaca", "#991b1b", "⛔ ROK JE PROŠAO — "
+            _dod = "kasnimo " + str(abs(_dana)) + " dan(a)."
+        elif _dana <= 2:
+            _bg, _br, _fg, _ozn = "#fff7ed", "#fed7aa", "#9a3412", "⏳ ROK JE BLIZU — "
+            _dod = ("poslednji je dan." if _dana == 0
+                    else "ostalo je još " + str(_dana) + " dan(a).")
+        else:
+            _bg, _br, _fg, _ozn = "#f0fdf4", "#bbf7d0", "#166534", "⏳ ROK — "
+            _dod = "ostalo je još " + str(_dana) + " dan(a)."
+        st.markdown(
+            '<div style="background:' + _bg + ';border:1px solid ' + _br + ';'
+            'border-radius:10px;padding:9px 14px;margin:6px 0 4px;color:' + _fg + ';">'
+            '<b style="font-size:13.5px;">' + _ozn + 'izveštaji za '
+            + _h_escape(_prikup_period_lbl(mesec_key)) + ' moraju biti prikupljeni '
+            'do ' + _rok_d.strftime("%d.%m.%Y.") + '</b>'
+            '<span style="font-size:12.5px;"> &nbsp;·&nbsp; ' + _h_escape(_dod)
+            + '</span><div style="font-size:12px;margin-top:2px;">'
+            + _h_escape(str(_rok.get("napomena") or ROK_NAPOMENA_DEF)) + '</div></div>',
+            unsafe_allow_html=True)
+
     # --- spisak sistema ---
     _pod = sb_prikup_podesavanja()
     _sistemi = sorted(set(sb_svi_sistemi()) | set(_pod.keys())
@@ -3656,7 +3812,7 @@ def prikup_admin_ui():
     _odg_k = "_prikup_odg_" + str(mesec_key)
     _odg_ses = st.session_state.get(_odg_k) or {}
 
-    _sc1, _sc2, _sc3 = st.columns([1.5, 1.3, 3])
+    _sc1, _sc2, _sc2b, _sc3 = st.columns([1.5, 1.1, 1.1, 2.6])
     with _sc1:
         st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
         _chk = st.button("📥 Proveri odgovore", key="prikup_scan", use_container_width=True,
@@ -3674,36 +3830,34 @@ def prikup_admin_ui():
                         'margin:-6px 0 2px;">Još nije ažurirano za ovaj mesec</div>',
                         unsafe_allow_html=True)
     with _sc2:
-        _od_dat = st.date_input("Čitaj poruke od", value=_od_def, key="prikup_od_dat",
+        _od_dat = st.date_input("Čitaj poruke OD", value=_od_def, key="prikup_od_dat",
                                 format="DD.MM.YYYY",
                                 help="Posle svake provere se sam pomeri na taj dan. Ako hoćeš "
                                      "sve ispočetka, vrati datum na 1. u mesecu.")
+    with _sc2b:
+        _do_dat = st.date_input("DO", value=_now().date(), key="prikup_do_dat",
+                                format="DD.MM.YYYY",
+                                help="Zaključno sa ovim danom. Ostavi današnji datum ako "
+                                     "hoćeš sve do sada.")
+    if _do_dat and _od_dat and _do_dat < _od_dat:
+        st.warning("Datum „DO“ je pre datuma „OD“ — ispravi ga, inače nema šta da se pročita.")
     with _sc3:
         st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
         st.caption("Povlače se SAMO poruke sa upisanih adresa i SAMO one koje imaju "
                    "fajl u prilogu (svejedno da li je Excel, PDF ili nešto treće). "
                    "Poruke bez priloga se preskaču. Ako se neki izveštaj ovde ne pojavi "
                    "a znaš da je stigao — otvori taj sistem i ubaci fajl ručno.")
+        st.markdown('<div style="font-size:11.5px;color:#b45309;line-height:1.45;'
+                    'margin:2px 0 0;"><b>Ako kod nekog fajla vidiš samo ime, a ne može '
+                    'da se skine</b> — klikni ponovo „📥 Proveri odgovore“, ali PRVO '
+                    'proveri datume: „OD“ mora da bude pre dana kada je taj mejl stigao '
+                    '(najsigurnije 1. u mesecu), a „DO“ danas. Fajl se tada povuče iz '
+                    'sandučeta i sačuva.</div>', unsafe_allow_html=True)
 
-    # ----- Popravka: prilozi zapamćeni bez fajla (stigli pre nego što se čuvalo u bazu) -----
-    _popravi = False
-    if _fali_url:
-        _pf1, _pf2 = st.columns([1.8, 4])
-        with _pf1:
-            _popravi = st.button("🔄 Povuci fajlove koji nedostaju (" + str(_fali_url) + ")",
-                                 key="prikup_fix", use_container_width=True,
-                                 help="Ponovo čita sanduče od početka perioda i sprema "
-                                      "same fajlove u bazu.")
-        with _pf2:
-            st.markdown('<div style="font-size:11.5px;color:#b45309;line-height:1.45;'
-                        'padding-top:6px;">Kod ' + str(_fali_url) + ' priloga zapamćeno je '
-                        'samo ime, bez samog fajla — analitičar ih ne može otvoriti. '
-                        'Klikni dugme levo: aplikacija sama ponovo pročita sanduče od '
-                        'početka perioda i sačuva fajlove. Ništa ne moraš ručno da '
-                        'otpremaš.</div>', unsafe_allow_html=True)
-
-    if _chk or _popravi:
-        _od_upit = _od_dat if _chk else _poc_dat
+    if _chk:
+        # Ako je neki prilog zapamćen bez samog fajla (stariji zapisi), čita se od
+        # početka perioda — da se ti fajlovi usput sačuvaju. Bez ijednog dodatnog klika.
+        _od_upit = min(_od_dat, _poc_dat) if _fali_url else _od_dat
         _mapa = {}                       # adresa -> sistem
         for s in _sistemi:
             for _a in ((_pod.get(s) or {}).get("adrese") or []):
@@ -3714,8 +3868,12 @@ def prikup_admin_ui():
         else:
             import time as _tm0
             _t0 = _tm0.time()
-            with st.spinner("📥 Čitam sanduče od " + _od_upit.strftime("%d.%m.%Y") + "…"):
-                _po, _nep, _err = knez_odgovori(set(_mapa.keys()), od_datum=_od_upit)
+            _do_upit = _do_dat if (_do_dat and _do_dat >= _od_upit) else None
+            with st.spinner("📥 Čitam sanduče od " + _od_upit.strftime("%d.%m.%Y")
+                            + ((" do " + _do_upit.strftime("%d.%m.%Y"))
+                               if _do_upit else "") + "…"):
+                _po, _nep, _err = knez_odgovori(set(_mapa.keys()), od_datum=_od_upit,
+                                                do_datum=_do_upit)
             if _err and not _po:
                 st.error("Čitanje sandučeta nije uspelo: " + str(_err))
             _n_up = 0
@@ -3767,22 +3925,19 @@ def prikup_admin_ui():
             st.session_state[_odg_k] = {"po": _spoj,
                                         "kada": _now().strftime("%d.%m.%Y. %H:%M")}
             try:
-                sb_prikup_scan_set(mesec_key, _now().isoformat(), _now().date().isoformat(),
+                # dokle je pročitano = izabrani „DO" (ako je raniji od danas)
+                _dokle = min(_do_upit, _now().date()) if _do_upit else _now().date()
+                sb_prikup_scan_set(mesec_key, _now().isoformat(), _dokle.isoformat(),
                                    nadjeno=sum(1 for _l in (_po or {}).values()
                                                 for _z in _l if (_z.get("prilozi") or [])),
                                    ko=st.session_state.get("admin_user", ""))
-                st.session_state["_prikup_od_next"] = _now().date()
+                st.session_state["_prikup_od_next"] = _dokle
             except Exception:
                 pass
-            if _popravi:
-                st.success("Pročitano za " + str(round(_tm0.time() - _t0, 1))
-                           + " s  ·  fajlova sačuvano u bazu: " + str(_f_ok)
-                           + ((" ·  novih izveštaja: " + str(_n_up)) if _n_up else ""))
-            else:
-                st.success("Pročitano za " + str(round(_tm0.time() - _t0, 1))
-                           + " s  ·  novih izveštaja (poruka sa fajlom): " + str(_n_up)
-                           + (("  ·  fajlova sačuvano u bazu: " + str(_f_ok))
-                              if _f_ok else ""))
+            st.success("Pročitano za " + str(round(_tm0.time() - _t0, 1))
+                       + " s  ·  novih izveštaja (poruka sa fajlom): " + str(_n_up)
+                       + (("  ·  fajlova sačuvano u bazu: " + str(_f_ok))
+                          if _f_ok else ""))
             if _f_los:
                 st.error("⚠️ " + str(_f_los) + " fajl(ova) nije moglo da se sačuva u bazu, "
                          "pa ih analitičar neće videti. Probaj ponovo „📥 Proveri "
@@ -4076,9 +4231,11 @@ def prikup_admin_ui():
                                     '<div style="font-size:12.5px;padding:7px 0;'
                                     'color:#b45309;">📎 '
                                     + _h_escape(str(_x.get("ime") or "prilog"))
-                                    + ' <span style="color:#9ca3af;">— nije sačuvan; '
-                                    'klikni „📥 Proveri odgovore“ ili ubaci fajl ručno'
-                                    '</span></div>', unsafe_allow_html=True)
+                                    + ' <span style="color:#9ca3af;">— vidi se samo ime, '
+                                    'fajl nije sačuvan. Gore vrati „OD“ na 1. u mesecu, '
+                                    '„DO“ na danas i klikni „📥 Proveri odgovore“ — ili '
+                                    'ubaci fajl ručno.</span></div>',
+                                    unsafe_allow_html=True)
                         with _fc2:
                             if _odb:
                                 if st.button("↩️ vrati", key=("prikup_vr_" + s + "_"
@@ -6562,7 +6719,7 @@ def _mail_prilozi(msg, maks_po_fajlu=6_000_000, maks_fajlova=5):
     return _out
 
 
-def knez_odgovori(adrese, nalog=None, od_datum=None, _v=0):
+def knez_odgovori(adrese, nalog=None, od_datum=None, _v=0, do_datum=None):
     """Pro\u010ditaj sandu\u010de i na\u0111i ODGOVORE pumpi. `adrese` = skup mejlova iz \u0161ifarnika.
 
     BRZINA: prvo se povla\u010de SAMO zaglavlja (From/Subject/Date) svih poruka od
@@ -6598,7 +6755,12 @@ def knez_odgovori(adrese, nalog=None, od_datum=None, _v=0):
             _od = od_datum.strftime("%d-%b-%Y")
         else:
             _od = _now().replace(day=1).strftime("%d-%b-%Y")
-        _ok, _dat = _im.search(None, '(SINCE "' + _od + '")')
+        _upit = '(SINCE "' + _od + '")'
+        if isinstance(do_datum, _dt.date):
+            # IMAP BEFORE je „pre tog dana", pa se dodaje jedan dan da „do" bude uključen
+            _do = (do_datum + _dt.timedelta(days=1)).strftime("%d-%b-%Y")
+            _upit = '(SINCE "' + _od + '" BEFORE "' + _do + '")'
+        _ok, _dat = _im.search(None, _upit)
         _ids = (_dat[0].split() if (_ok == "OK" and _dat and _dat[0]) else [])
         if not _ids:
             try:
@@ -14894,6 +15056,44 @@ def prikazi_primljene():
     if not sb_dostupan():
         st.info("Supabase nije podešen.")
         return
+
+    # ---------- Rokovi: ovde ih postavljam ja, a administracija ih vidi na vrhu ----------
+    _rk = sb_rokovi_get()
+    _rk_txt = ("Knez do " + str(_rk["knez"]) + ".  ·  ostali izveštaji do "
+               + str(_rk["prikup"]) + ". u mesecu")
+    with st.expander("📅 Rokovi za izveštaje  —  " + _rk_txt, expanded=False):
+        st.caption("Ovo vide u administraciji, na vrhu kartice „⛽ Izveštaj Knez Petrol“ "
+                   "i „📨 Prikupljanje izveštaja“ — sa tačnim datumom za izabrani mesec "
+                   "i brojem dana koji su ostali. Upisuje se DAN u mesecu koji dolazi "
+                   "posle izveštajnog (npr. 7 znači: izveštaj za avgust — do 7. septembra).")
+        with st.form("rok_forma", border=False):
+            _rc1, _rc2 = st.columns(2)
+            with _rc1:
+                _rk_knez = st.number_input(
+                    "⛽ Knez Petrol — izveštaj popunjen do (dan u mesecu)",
+                    min_value=1, max_value=28, step=1, value=int(_rk["knez"]),
+                    key="rok_knez")
+            with _rc2:
+                _rk_prik = st.number_input(
+                    "📨 Ostali sistemi — izveštaji prikupljeni do (dan u mesecu)",
+                    min_value=1, max_value=28, step=1, value=int(_rk["prikup"]),
+                    key="rok_prikup")
+            _rk_nap = st.text_input("Poruka uz rok", value=str(_rk["napomena"]),
+                                    key="rok_nap", max_chars=200)
+            _rk_save = st.form_submit_button("💾 Sačuvaj rokove", type="primary")
+        st.caption("Uobičajeno je 5.–7. u mesecu. Za polumesečni izveštaj rok se "
+                   "računa isto toliko dana posle 15. (npr. 7 → 22. u istom mesecu).")
+        if _rk_save:
+            if sb_rokovi_set(_rk_knez, _rk_prik, _rk_nap,
+                             st.session_state.get("admin_user", "Analitika")):
+                st.success("Rokovi su sačuvani — administracija ih odmah vidi.")
+                st.rerun()
+            else:
+                st.error("Čuvanje nije uspelo.")
+        if _rk.get("at"):
+            st.caption("Poslednja izmena: " + _dt_kratko(_rk.get("at"))
+                       + ((" · " + str(_rk.get("ko"))) if _rk.get("ko") else ""))
+
     _sve = sb_prikup_predati()
     if not _sve:
         st.caption("Administracija još nije prosledila nijedan izveštaj.")
@@ -14995,7 +15195,9 @@ def prikazi_primljene():
                     else:
                         st.markdown('<div style="font-size:13px;color:#b45309;">⚠️ '
                                     + _h_escape(_ime_f)
-                                    + ' — fajl nije otpremljen, traži ga od administracije'
+                                    + ' — vidi se samo ime, fajl nije otpremljen. Neka '
+                                    'administracija u „📨 Prikupljanje izveštaja“ vrati '
+                                    '„OD“ na 1. u mesecu i klikne „📥 Proveri odgovore“.'
                                     '</div>', unsafe_allow_html=True)
             else:
                 st.warning("Uz ovaj izveštaj nema nijednog fajla.")
