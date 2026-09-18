@@ -3287,12 +3287,25 @@ def sb_prikup_predati(limit=400):
             _dn = _r.get("dnevnik") or {}
             if not (_dn.get("predat") or {}).get("at"):
                 continue
+            # samo-popravka: stariji zapisi su predati bez linka — nađi link po imenu
+            _pred = dict(_dn.get("predat") or {})
+            if any(not _f.get("url") for _f in (_pred.get("fajlovi") or [])):
+                _mapa = {}
+                for _z in (_dn.get("odgovori") or []):
+                    for _pr in (_z.get("prilozi") or []):
+                        if _pr.get("url"):
+                            _mapa[str(_pr.get("ime") or "").strip().lower()] = _pr["url"]
+                _pred["fajlovi"] = [
+                    (_f if _f.get("url") else
+                     dict(_f, url=_mapa.get(str(_f.get("ime") or "").strip().lower(), "")))
+                    for _f in (_pred.get("fajlovi") or [])]
             _out.append({"mesec": str(_r.get("mesec") or ""),
                          "sistem": str(_r.get("sistem") or "")[len("PRIKUP::"):],
-                         "predat": dict(_dn.get("predat") or {}),
+                         "predat": _pred,
                          "odluka": dict(_dn.get("odluka") or {}),
                          "sadrzaj": dict(_dn.get("sadrzaj") or {})})
-        _out.sort(key=lambda x: (x["mesec"], x["sistem"]), reverse=True)
+        _out.sort(key=lambda x: x["sistem"])
+        _out.sort(key=lambda x: x["mesec"], reverse=True)   # noviji period prvi
         return _out
     except Exception:
         return []
@@ -3312,6 +3325,19 @@ def sb_prikup_sadrzaj_set(mesec_key, sistem, prodaja, lager_obj, lager_uk, ko=""
         return True
     except Exception:
         return False
+
+
+def _prikup_url_skini(url, ime=""):
+    """Link koji fajl ODMAH skida (Supabase Storage: ?download=ime)."""
+    _u = str(url or "").strip()
+    if not _u:
+        return ""
+    try:
+        import urllib.parse as _up
+        _n = _up.quote(str(ime or "fajl").replace("/", "_"), safe="")
+    except Exception:
+        _n = "fajl"
+    return _u + ("&" if "?" in _u else "?") + "download=" + _n
 
 
 def _prikup_sadrzaj_kratko(sadrzaj):
@@ -14695,28 +14721,56 @@ def prikazi_primljene():
         st.caption("Administracija još nije prosledila nijedan izveštaj.")
         return
 
-    _ceka = [r for r in _sve if not (r.get("odluka") or {}).get("status")]
-    _prih = [r for r in _sve if (r.get("odluka") or {}).get("status") == "prihvacen"]
-    _odbi = [r for r in _sve if (r.get("odluka") or {}).get("status") == "odbijen"]
+    # --- izbor perioda: podrazumevano POSLEDNJI period, nikad „sve u jednom" ---
+    _per = sorted({r["mesec"] for r in _sve},
+                  key=lambda p: (_prikup_mes(p), 0 if str(p).endswith(":P1") else 1),
+                  reverse=True)
+    _lbl = [_prikup_period_lbl(p) for p in _per]
+    _c1, _c2 = st.columns([1.5, 2.5])
+    with _c1:
+        _sel_p = st.selectbox("📅 Period", _lbl + ["Svi periodi"], index=0, key="prim_per",
+                              help="Izveštaji ostaju ovde zauvek — vrati se na bilo koji "
+                                   "raniji period da ih ponovo otvoriš.")
+    with _c2:
+        _sel_s = st.radio("Prikaži", ["Sve", "🕓 Čeka pregled", "✅ Prihvaćeno",
+                                      "⛔ Vraćeno"], index=0, horizontal=True,
+                          key="prim_stat")
+
+    _u_per = [r for r in _sve
+              if _sel_p == "Svi periodi" or _prikup_period_lbl(r["mesec"]) == _sel_p]
+    _ceka = [r for r in _u_per if not (r.get("odluka") or {}).get("status")]
+    _prih = [r for r in _u_per if (r.get("odluka") or {}).get("status") == "prihvacen"]
+    _odbi = [r for r in _u_per if (r.get("odluka") or {}).get("status") == "odbijen"]
+
+    if _sel_p != "Svi periodi":
+        _mk = _per[_lbl.index(_sel_p)] if _sel_p in _lbl else ""
+        _od, _do = _prikup_period(_mk) if _mk else ("", "")
+        st.markdown('<div style="background:#f5f3ff;border:1px solid #ddd6fe;'
+                    'border-radius:10px;padding:9px 14px;margin:8px 0 4px;">'
+                    '<span style="font-size:15px;font-weight:800;color:#4c1d95;">📅 '
+                    + _h_escape(_sel_p) + '</span>'
+                    '<span style="font-size:12.5px;color:#6d28d9;margin-left:10px;">'
+                    + _h_escape(_od) + ' – ' + _h_escape(_do) + '  ·  '
+                    + str(len(_u_per))
+                    + (' izveštaj' if len(_u_per) == 1 else ' izveštaja')
+                    + ' ukupno</span></div>',
+                    unsafe_allow_html=True)
+
     _k1, _k2, _k3 = st.columns(3)
     _k1.metric("Čeka moj pregled", len(_ceka))
     _k2.metric("Prihvaćeno", len(_prih))
     _k3.metric("Vraćeno na doradu", len(_odbi))
 
-    _per = sorted({r["mesec"] for r in _sve}, reverse=True)
-    _lbl = [_prikup_period_lbl(p) for p in _per]
-    _c1, _c2 = st.columns([1.6, 2.4])
-    with _c1:
-        _sel_p = st.selectbox("Period", ["Svi periodi"] + _lbl, index=0, key="prim_per")
-    with _c2:
-        _samo_ceka = st.checkbox("Prikaži samo ono što čeka pregled", value=True,
-                                 key="prim_ceka")
-    _red = [r for r in _sve
-            if (_sel_p == "Svi periodi" or _prikup_period_lbl(r["mesec"]) == _sel_p)
-            and (not _samo_ceka or not (r.get("odluka") or {}).get("status"))]
+    _red = {"Sve": _u_per, "🕓 Čeka pregled": _ceka, "✅ Prihvaćeno": _prih,
+            "⛔ Vraćeno": _odbi}.get(_sel_s, _u_per)
     if not _red:
-        st.success("Nema ničega za pregled — sve je rešeno.")
+        if _sel_s == "Sve":
+            st.info("Za ovaj period administracija još nije prosledila nijedan izveštaj.")
+        else:
+            st.success("Nema izveštaja u stanju „" + _sel_s + "“ za ovaj period.")
         return
+    if not _ceka and _sel_s == "Sve":
+        st.success("Sve iz ovog perioda je pregledano — izveštaji ostaju dostupni ispod.")
 
     for _r in _red:
         _o = _r.get("odluka") or {}
@@ -14737,16 +14791,32 @@ def prikazi_primljene():
             _fl = _p.get("fajlovi") or []
             if _fl:
                 st.markdown('<div style="font-size:12px;font-weight:700;color:#166534;'
-                            'margin:6px 0 2px;">📎 Fajlovi</div>', unsafe_allow_html=True)
-                for _f in _fl:
+                            'margin:6px 0 2px;">📎 Fajlovi — skini i proveri pre odluke'
+                            '</div>', unsafe_allow_html=True)
+                for _i_f, _f in enumerate(_fl):
+                    _ime_f = str(_f.get("ime") or "fajl")
+                    _vel_f = int(_f.get("vel") or 0)
+                    _kb = ((" · " + str(round(_vel_f / 1024.0, 1)) + " KB")
+                           if _vel_f else "")
                     if _f.get("url"):
-                        st.markdown('<a href="' + _h_escape(str(_f["url"]))
-                                    + '" target="_blank" style="font-size:13px;">⬇️ '
-                                    + _h_escape(str(_f.get("ime") or "fajl")) + '</a>',
-                                    unsafe_allow_html=True)
+                        _fc1, _fc2, _fc3 = st.columns([3.2, 1.25, 1.25])
+                        with _fc1:
+                            st.markdown('<div style="font-size:13px;color:#111827;'
+                                        'padding-top:9px;">📄 <b>'
+                                        + _h_escape(_ime_f) + '</b>'
+                                        '<span style="color:#9ca3af;">' + _h_escape(_kb)
+                                        + '</span></div>', unsafe_allow_html=True)
+                        with _fc2:
+                            st.link_button("⬇️ Skini",
+                                           _prikup_url_skini(_f["url"], _ime_f),
+                                           use_container_width=True)
+                        with _fc3:
+                            st.link_button("🔍 Otvori", str(_f["url"]),
+                                           use_container_width=True,
+                                           help="Otvara fajl u novom tabu.")
                     else:
                         st.markdown('<div style="font-size:13px;color:#b45309;">⚠️ '
-                                    + _h_escape(str(_f.get("ime") or "fajl"))
+                                    + _h_escape(_ime_f)
                                     + ' — fajl nije otpremljen, traži ga od administracije'
                                     '</div>', unsafe_allow_html=True)
             else:
