@@ -2294,6 +2294,14 @@ def knez_admin_ui():
                         _pdf_izvori.append({"ime": _pz["ime"], "data": _pz["data"],
                                             "idk": r["idk"], "pumpa": r["naziv"],
                                             "izvor": "mejl"})
+        # --- Već pročitano (pamti se u bazi) — otvara se odmah, bez ijednog klika ---
+        _pdf_db = sb_knez_pdf_get(mesec_key)
+        _fajlovi_db = list(_pdf_db.get("fajlovi") or [])
+        _imam_f = {_knez_kljuc_fajla(_f.get("ime"), _f.get("idk")) for _f in _fajlovi_db}
+        if _fajlovi_db and not (st.session_state.get("_knez_pdf_rez") or {}).get("izv"):
+            with st.spinner("Otvaram već pročitane lager liste…"):
+                _izv0, _stavke0 = _knez_iz_fajlova(_fajlovi_db, mesec_key)
+            st.session_state["_knez_pdf_rez"] = {"stavke": _stavke0, "izv": _izv0}
         # Koliko PDF-ova ZNAMO da postoji (zapam\u0107eno u bazi), a nemamo sam fajl u ruci
         _zna_pdf = 0
         for r in _pumpe:
@@ -2301,14 +2309,22 @@ def knez_admin_ui():
                 for _pz in (_o.get("prilozi") or []):
                     if str(_pz.get("ime", "")).lower().endswith(".pdf"):
                         _zna_pdf += 1
+        _fali_pdf = max(_zna_pdf - len(_fajlovi_db), 0)   # koliko ih još nije pročitano
         if _pdf_izvori:
             st.success("\U0001F4E5 Iz odgovora je dostupno " + str(len(_pdf_izvori))
                        + " PDF priloga. (Ako ne vidi\u0161 sve, klikni \u201e\U0001F4E5 Proveri odgovore\u201c gore.)")
+        elif _fajlovi_db and not _fali_pdf:
+            st.success("✅ Sve lager liste su već pročitane (" + str(len(_fajlovi_db))
+                       + ") i izveštaj je ispod. Ako u međuvremenu stigne nova, klikni "
+                       "„📥 Proveri odgovore“ gore pa ovde „Pročitaj nove PDF-ove“.")
         elif _zna_pdf:
-            st.info("\U0001F4E5 Zapam\u0107eno je " + str(_zna_pdf) + " PDF priloga od pumpi, ali sami fajlovi "
-                    "se ne \u010duvaju u bazi \u2014 treba ih jednom povu\u0107i iz sandu\u010deta da bi se napravio "
-                    "Excel. \u201eProveri odgovore\u201c gore \u010dita samo NOVE poruke, pa za fajlove klikni ovo:")
-            if st.button("\U0001F4CE Povuci sve priloge iz sandu\u010deta (" + str(_zna_pdf) + ")",
+            st.info("\U0001F4E5 Od pumpi je stiglo " + str(_zna_pdf) + " PDF priloga"
+                    + ((", a pročitano ih je " + str(len(_fajlovi_db)) + " — fali još "
+                        + str(_fali_pdf) + ". ") if _fajlovi_db else
+                       ". Sami fajlovi se ne čuvaju u bazi — treba ih jednom povući iz "
+                       "sandučeta da bi se napravio Excel. ")
+                    + "„Proveri odgovore“ gore čita samo NOVE poruke, pa za fajlove klikni ovo:")
+            if st.button("\U0001F4CE Povuci priloge iz sandu\u010deta (" + str(_fali_pdf or _zna_pdf) + ")",
                          key="knez_pull_prilozi"):
                 _adr_p = set((r["email"] or "").lower() for r in _pumpe if r["_email_ok"])
                 import time as _tmp0
@@ -2335,7 +2351,10 @@ def knez_admin_ui():
         for _f in (_upl or []):
             _pdf_izvori.append({"ime": _f.name, "data": _f.getvalue(), "idk": None,
                                 "pumpa": "", "izvor": "ru\u010dno"})
-        if not _pdf_izvori:
+        _novi_izvori = [_p for _p in _pdf_izvori
+                        if _p.get("izvor") == "ručno"
+                        or _knez_kljuc_fajla(_p.get("ime"), _p.get("idk")) not in _imam_f]
+        if not _pdf_izvori and not _fajlovi_db:
             return
         try:
             import pdfplumber as _pp_test          # noqa: F401
@@ -2350,22 +2369,36 @@ def knez_admin_ui():
                      "2. Dodaj novi red: `pdfplumber`\n"
                      "3. Commit \u2192 pa u Streamlit-u \u201eManage app\u201c \u2192 **Reboot app**\n\n"
                      "Posle toga klikni ponovo \u201ePro\u010ditaj PDF-ove i napravi Excel\u201c.")
-            return
-        _gc1, _gc2 = st.columns([1.15, 3])
+            if not _fajlovi_db:
+                return
+        _gc1, _gc2 = st.columns([1.35, 3])
         with _gc1:
-            _go_pdf = st.button("📊 Pročitaj PDF-ove", key="knez_pdf_go", type="primary",
-                                use_container_width=True)
+            _go_pdf = _ima_pp and st.button(
+                ("📊 Pročitaj nove PDF-ove (" + str(len(_novi_izvori)) + ")")
+                if _fajlovi_db else "📊 Pročitaj PDF-ove",
+                key="knez_pdf_go", type="primary", use_container_width=True,
+                disabled=bool(_fajlovi_db and not _novi_izvori))
         with _gc2:
-            st.markdown('<div style="font-size:12px;color:#9ca3af;padding-top:9px;">'
-                        'Pročita sve PDF-ove iz odgovora i napravi jedan Excel.</div>',
-                        unsafe_allow_html=True)
+            if _fajlovi_db:
+                st.markdown('<div style="font-size:12px;color:#9ca3af;padding-top:9px;">'
+                            'Već pročitano: <b>' + str(len(_fajlovi_db)) + '</b> lager listi'
+                            '  ·  poslednje ažuriranje '
+                            + _h_escape(_dt_kratko(_pdf_db.get("at")))
+                            + (("  ·  " + _h_escape(str(_pdf_db.get("ko"))))
+                               if _pdf_db.get("ko") else "")
+                            + '<br>Čita se samo ono što još nije pročitano — staro ostaje.'
+                            '</div>', unsafe_allow_html=True)
+            else:
+                st.markdown('<div style="font-size:12px;color:#9ca3af;padding-top:9px;">'
+                            'Pročita PDF-ove iz odgovora i napravi jedan Excel. Pročitano se '
+                            'pamti, pa se sledeći put otvara odmah.</div>',
+                            unsafe_allow_html=True)
         if _go_pdf:
-            _stavke = []
-            _izv = []
-            _prog2 = st.progress(0, "\U0001F4C4 \u010citam PDF-ove\u2026")
-            for _i, _p in enumerate(_pdf_izvori):
-                _prog2.progress(int(_i / max(len(_pdf_izvori), 1) * 100),
-                                "\U0001F4C4 " + str(_p["ime"])[:46])
+            _novi_fajlovi = []
+            _prog2 = st.progress(0, "📄 Čitam PDF-ove…")
+            for _i, _p in enumerate(_novi_izvori):
+                _prog2.progress(int(_i / max(len(_novi_izvori), 1) * 100),
+                                "📄 " + str(_p["ime"])[:46])
                 _r = knez_citaj_lager_pdf(_p["data"])
                 _idk = _p.get("idk")
                 _pumpa = _p.get("pumpa", "")
@@ -2374,30 +2407,34 @@ def knez_admin_ui():
                     if _naj:
                         _idk = _naj["idk"]; _pumpa = _naj["naziv"]
                 _p_ok, _p_txt = _knez_period_status(_r.get("od", ""), _r.get("do", ""), mesec_key)
-                _izv.append({"ime": _p["ime"], "bs": _r.get("bs", ""),
-                             "bs_naziv": _r.get("bs_naziv", ""), "idk": _idk,
-                             "pumpa": _pumpa, "redova": len(_r.get("redovi") or []),
-                             "greska": _r.get("greska", ""), "izvor": _p["izvor"],
-                             "od": _r.get("od", ""), "do": _r.get("do", ""),
-                             "per_ok": bool(_p_ok), "per_txt": _p_txt,
-                             "otisak": _knez_otisak(_r.get("redovi") or [])})
-                for _x in (_r.get("redovi") or []):
-                    _stavke.append({"idk": _idk, "pumpa": _pumpa, "bs": _r.get("bs", ""),
-                                    "sifra": _x.get("sifra", ""), "naziv": _x.get("naziv", ""),
-                                    "izlaz": _x.get("izlaz"), "stanje": _x.get("stanje"),
-                                    "stanje_do": _x.get("stanje_do"), "ulaz": _x.get("ulaz"),
-                                    "vrednost": _x.get("vrednost"), "od": _r.get("od", ""),
-                                    "do": _r.get("do", ""), "fajl": _p["ime"]})
-            # --- Njihov naziv artikla -> naš ID artikla ---
-            _kat = knez_nas_sifarnik(mesec_key)
-            _keš = {}
-            for _s3 in _stavke:
-                _kj = _knez_norm_art(_s3.get("naziv", ""))
-                if _kj not in _keš:
-                    _keš[_kj] = knez_mapiraj_artikal(_s3.get("naziv", ""), _kat)
-                _s3["ida"], _s3["nas_naziv"], _s3["poklapanje"] = _keš[_kj]
+                _novi_fajlovi.append(
+                    {"ime": _p["ime"], "bs": _r.get("bs", ""),
+                     "bs_naziv": _r.get("bs_naziv", ""), "idk": _idk,
+                     "pumpa": _pumpa, "redova": len(_r.get("redovi") or []),
+                     "greska": _r.get("greska", ""), "izvor": _p["izvor"],
+                     "od": _r.get("od", ""), "do": _r.get("do", ""),
+                     "per_ok": bool(_p_ok), "per_txt": _p_txt,
+                     "otisak": _knez_otisak(_r.get("redovi") or []),
+                     "redovi": [{"sifra": _x.get("sifra", ""), "naziv": _x.get("naziv", ""),
+                                 "izlaz": _x.get("izlaz"), "stanje": _x.get("stanje"),
+                                 "stanje_do": _x.get("stanje_do"), "ulaz": _x.get("ulaz"),
+                                 "vrednost": _x.get("vrednost")}
+                                for _x in (_r.get("redovi") or [])]})
             _prog2.empty()
+            # staro + novo (ponovo pročitan isti fajl zamenjuje stari zapis)
+            _spoj_f = {_knez_kljuc_fajla(_f.get("ime"), _f.get("idk")): _f for _f in _fajlovi_db}
+            for _f in _novi_fajlovi:
+                _spoj_f[_knez_kljuc_fajla(_f.get("ime"), _f.get("idk"))] = _f
+            _svi_f = list(_spoj_f.values())
+            try:
+                sb_knez_pdf_set(mesec_key, _svi_f, st.session_state.get("admin_user", ""))
+            except Exception:
+                pass
+            _izv, _stavke = _knez_iz_fajlova(_svi_f, mesec_key)
             st.session_state["_knez_pdf_rez"] = {"stavke": _stavke, "izv": _izv}
+            st.session_state["_knez_flash"] = (
+                "ok", "Pročitano novih lager listi: " + str(len(_novi_fajlovi))
+                + "  ·  ukupno u izveštaju: " + str(len(_svi_f)))
             st.rerun()
 
         _rez = st.session_state.get("_knez_pdf_rez") or {}
@@ -2862,6 +2899,10 @@ PRIKUP_ADRESE_UGRADJENE = {
     "BOBAR": ["bobarpetrolnovisad@gmail.com"],
 }
 
+# Sistemi koji izveštaj NE šalju ovim putem — ne prikazuju se u ovoj kartici.
+# (Knez Petrol ima svoju karticu; Aman šalje na drugi način.)
+PRIKUP_BEZ = ["KNEZ PETROL", "AMAN"]
+
 
 def _prikup_norm_sis(s):
     """Naziv sistema sveden na poređenje: velika slova, bez „D.O.O."/„DOO",
@@ -2970,6 +3011,8 @@ def sb_prikup_stanje(mesec_key):
             _out[_naz[len("PRIKUP::"):]] = {"mejlovi": list(_dn.get("mejlovi") or []),
                                             "odgovori": list(_dn.get("odgovori") or []),
                                             "sadrzaj": dict(_dn.get("sadrzaj") or {}),
+                                            "odbaceno": [str(x) for x in
+                                                         (_dn.get("odbaceno") or [])],
                                             "scan": dict(_dn.get("scan") or {})}
         return _out
     except Exception:
@@ -3015,7 +3058,10 @@ def sb_prikup_mejl_log(mesec_key, sistem, adrese, ko=""):
 
 
 def sb_prikup_odgovor_set(mesec_key, sistem, zapis):
-    """Trajno zabeleži odgovor sistema. Vraća True ako je zapis NOV."""
+    """Trajno zabeleži odgovor sistema. Vraća True ako je zapis NOV.
+    Poruke BEZ ijednog priloga se ne pamte — izveštaj je fajl, ne tekst."""
+    if not (zapis or {}).get("prilozi"):
+        return False
     cli, _dn = _prikup_dnevnik(mesec_key, sistem)
     if cli is None:
         return False
@@ -3034,6 +3080,32 @@ def sb_prikup_odgovor_set(mesec_key, sistem, zapis):
                                  for _p in (zapis.get("prilozi") or [])],
                      "upisano": _now().isoformat()})
         _dn["odgovori"] = _lst[-30:]
+        _prikup_upisi(cli, mesec_key, sistem, _dn)
+        return True
+    except Exception:
+        return False
+
+
+def _prikup_kljuc_priloga(zapis, prilog):
+    """Jedinstvena oznaka jednog priloga — da se zna koji je odbačen."""
+    return (str((zapis or {}).get("od", "")) + "|" + str((zapis or {}).get("at", ""))
+            + "|" + str((prilog or {}).get("ime", ""))[:80])
+
+
+def sb_prikup_odbaci_set(mesec_key, sistem, kljuc, odbaci=True, ko=""):
+    """Označi prilog kao „ne treba" (otpremnica i sl.) ili vrati nazad."""
+    cli, _dn = _prikup_dnevnik(mesec_key, sistem)
+    if cli is None:
+        return False
+    try:
+        _lst = [str(x) for x in (_dn.get("odbaceno") or [])]
+        if odbaci:
+            if str(kljuc) not in _lst:
+                _lst.append(str(kljuc))
+        else:
+            _lst = [x for x in _lst if x != str(kljuc)]
+        _dn["odbaceno"] = _lst[-100:]
+        _dn["odbaceno_ko"] = str(ko or "")
         _prikup_upisi(cli, mesec_key, sistem, _dn)
         return True
     except Exception:
@@ -3134,9 +3206,11 @@ def prikup_admin_ui():
 
     # --- spisak sistema ---
     _pod = sb_prikup_podesavanja()
-    _sistemi = sorted(set(sb_svi_sistemi()) | set(_pod.keys()) | set(sb_sisteme(mesec_key)))
+    _sistemi = sorted(set(sb_svi_sistemi()) | set(_pod.keys()) | set(sb_sisteme(mesec_key))
+                      | set(PRIKUP_ADRESE_UGRADJENE.keys()))
+    _bez = {_prikup_norm_sis(x) for x in PRIKUP_BEZ}
     _sistemi = [s for s in _sistemi if s and not str(s).startswith("PRIKUP::")
-                and s != "*"]
+                and s != "*" and _prikup_norm_sis(s) not in _bez]
     if not _sistemi:
         st.info("Još nema nijednog sistema. Analitičar treba prvo da objavi bar jedan izveštaj.")
         return
@@ -3154,9 +3228,14 @@ def prikup_admin_ui():
     _n_uk = len(_sistemi)
     _n_adr = sum(1 for s in _sistemi if (_pod.get(s) or {}).get("adrese"))
     _n_pos = sum(1 for s in _sistemi if (_stanje.get(s) or {}).get("mejlovi"))
-    _n_odg = sum(1 for s in _sistemi
-                 if any((_z.get("prilozi") or [])
-                        for _z in ((_stanje.get(s) or {}).get("odgovori") or [])))
+    _n_odg = 0
+    for s in _sistemi:
+        _ss = _stanje.get(s) or {}
+        _odb0 = set(_ss.get("odbaceno") or [])
+        if any(_prikup_kljuc_priloga(_z, _x) not in _odb0
+               for _z in (_ss.get("odgovori") or [])
+               for _x in (_z.get("prilozi") or [])):
+            _n_odg += 1
     _n_prov = sum(1 for s in _sistemi
                   if ((_stanje.get(s) or {}).get("sadrzaj") or {}).get("at"))
     _n_ceka = max(_n_odg - _n_prov, 0)
@@ -3240,9 +3319,9 @@ def prikup_admin_ui():
                                      "sve ispočetka, vrati datum na 1. u mesecu.")
     with _sc3:
         st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
-        st.caption("Odgovor se vezuje za sistem po adresi sa koje je stigao — zato adrese "
-                   "moraju biti upisane ispod. Poruke sa nepoznatih adresa prikazuju se "
-                   "posebno, na dnu.")
+        st.caption("Povlače se SAMO poruke sa upisanih adresa i SAMO one koje imaju "
+                   "fajl u prilogu (svejedno da li je Excel, PDF ili nešto treće). "
+                   "Poruke bez priloga se preskaču.")
 
     if _chk:
         _mapa = {}                       # adresa -> sistem
@@ -3274,84 +3353,89 @@ def prikup_admin_ui():
             def _kl(_z):
                 return (str(_z.get("od", "")), str(_z.get("at", "")),
                         str(_z.get("naslov", ""))[:60])
+            # U ovoj kartici nas zanimaju SAMO poruke sa fajlom, i to sa upisanih adresa.
             _spoj = {_a: list(_l) for _a, _l in (_odg_ses.get("po") or {}).items()}
             for _a, _lst in (_po or {}).items():
+                if str(_a).lower() not in _mapa:
+                    continue
                 _ex = _spoj.setdefault(_a, [])
                 _imam = {_kl(_z) for _z in _ex}
                 for _z in _lst:
+                    if not (_z.get("prilozi") or []):
+                        continue
                     if _kl(_z) not in _imam:
                         _ex.append(_z)
                         _imam.add(_kl(_z))
-            _nep_spoj = list(_odg_ses.get("nep") or [])
-            _imam_n = {_kl(_z) for _z in _nep_spoj}
-            for _z in (_nep or []):
-                if _kl(_z) not in _imam_n:
-                    _nep_spoj.append(_z)
-                    _imam_n.add(_kl(_z))
-            st.session_state[_odg_k] = {"po": _spoj, "nep": _nep_spoj,
+            st.session_state[_odg_k] = {"po": _spoj,
                                         "kada": _now().strftime("%d.%m.%Y. %H:%M")}
             try:
                 sb_prikup_scan_set(mesec_key, _now().isoformat(), _now().date().isoformat(),
-                                   nadjeno=sum(len(_l) for _l in (_po or {}).values()),
+                                   nadjeno=sum(1 for _l in (_po or {}).values()
+                                                for _z in _l if (_z.get("prilozi") or [])),
                                    ko=st.session_state.get("admin_user", ""))
                 st.session_state["_prikup_od_next"] = _now().date()
             except Exception:
                 pass
-            st.success("Pročitano za " + str(round(_tm0.time() - _t0, 1)) + " s  ·  novih "
-                       "odgovora: " + str(_n_up))
+            st.success("Pročitano za " + str(round(_tm0.time() - _t0, 1))
+                       + " s  ·  novih izveštaja (poruka sa fajlom): " + str(_n_up))
             _stanje = sb_prikup_stanje(mesec_key)
             _odg_ses = st.session_state.get(_odg_k) or {}
 
     _odg_live = (_odg_ses.get("po") or {})
 
-    # ---------- Zajednički tekst mejla ----------
-    _telo_zaj = str((_pod.get("*") or {}).get("telo") or PRIKUP_TELO_DEFAULT)
-    with st.expander("✉️ Tekst mejla (isti za sve sisteme)", expanded=False):
+    # ---------- Zajednički naslov i tekst mejla ----------
+    _zaj = _pod.get("*") or {}
+    _telo_zaj = str(_zaj.get("telo") or PRIKUP_TELO_DEFAULT)
+    _naslov_zaj = str(_zaj.get("naslov") or PRIKUP_NASLOV_DEFAULT)
+    _sa_mejla = str((_smtp_cfg() or {}).get("from_email", "") or "")
+    with st.expander("✉️ Naslov i tekst mejla (isti za sve sisteme)"
+                     + (("  ·  šalje se sa " + _sa_mejla) if _sa_mejla else ""),
+                     expanded=False):
         with st.form("prikup_telo_forma", border=False):
+            _naslov_novi = st.text_input("Naslov mejla", value=_naslov_zaj,
+                                         key="prikup_naslov")
             _telo_novi = st.text_area("Telo poruke", value=_telo_zaj, height=230,
                                       key="prikup_telo",
                                       help="Može da sadrži {sistem}, {mesec}, {od} i {do} — "
                                            "to se pri slanju zameni pravim vrednostima.")
-            if st.form_submit_button("💾 Sačuvaj tekst", type="primary"):
-                if sb_prikup_podesi("*", "", [], _telo_novi,
+            if st.form_submit_button("💾 Sačuvaj", type="primary"):
+                if sb_prikup_podesi("*", _naslov_novi, [], _telo_novi,
                                     st.session_state.get("admin_user", "")):
-                    st.success("Tekst je sačuvan.")
+                    st.success("Naslov i tekst su sačuvani.")
                     st.rerun()
                 else:
                     st.error("Čuvanje nije uspelo.")
         st.caption("Ovako izgleda za izabrani mesec:")
-        st.code(_prikup_tekst(_telo_zaj, mesec_key, "NAZIV SISTEMA"), language=None)
+        st.code("Naslov:  " + _prikup_tekst(_naslov_zaj, mesec_key, "NAZIV SISTEMA") + "\n\n"
+                + _prikup_tekst(_telo_zaj, mesec_key, "NAZIV SISTEMA") + "\n"
+                + _potpis_tekst(), language=None)
 
     # ---------- Sistemi, jedan ispod drugog ----------
     st.markdown('<div style="margin:16px 0 6px;font-size:12px;text-transform:uppercase;'
-                'letter-spacing:.6px;color:#9aa0ad;font-weight:700;">Sistemi</div>',
+                'letter-spacing:.6px;color:#9aa0ad;font-weight:700;">Sistemi i adrese</div>',
                 unsafe_allow_html=True)
-    st.caption("U naslovu može da stoji {mesec} — pri slanju se zameni imenom meseca "
-               "(za izabrani mesec to je „" + mesec_label(mesec_key) + "“). Adrese se "
-               "razdvajaju zarezom; sve upisano važi i za naredne mesece, dok se ne promeni.")
+    st.caption("Adrese se razdvajaju zarezom; upisano važi i za naredne mesece, dok se ne "
+               "promeni. Naslov i tekst mejla su isti za sve i menjaju se gore.")
 
     with st.form("prikup_forma", border=False):
-        st.markdown('<div class="prikup-hdr"><div>Sistem</div><div>Naslov mejla</div>'
+        st.markdown('<div class="prikup-hdr"><div>Sistem</div>'
                     '<div>Adrese (razdvoji zarezom)</div></div>', unsafe_allow_html=True)
         _uneto = {}
         for s in _sistemi:
             _p = _pod.get(s) or {}
-            _c1, _c2, _c3 = st.columns([1.5, 2.3, 2.6])
+            _c1, _c3 = st.columns([1.5, 4.2])
             with _c1:
                 _st_s = _stanje.get(s) or {}
                 _zn = ("✅" if _st_s.get("odgovori") else ("📤" if _st_s.get("mejlovi") else "•"))
                 st.markdown('<div class="prikup-ime">' + _zn + " " + _h_escape(s)
                             + '</div>', unsafe_allow_html=True)
-            with _c2:
-                _uneto[s] = {"naslov": st.text_input(
-                    "Naslov — " + s, value=str(_p.get("naslov") or PRIKUP_NASLOV_DEFAULT),
-                    key="prikup_n_" + s, label_visibility="collapsed")}
             with _c3:
-                _uneto[s]["adrese"] = st.text_input(
-                    "Adrese — " + s, value=", ".join(_p.get("adrese") or []),
-                    key="prikup_a_" + s, label_visibility="collapsed",
-                    placeholder="ime@firma.rs, drugo@firma.rs")
-        _sacuvaj = st.form_submit_button("💾 Sačuvaj naslove i adrese", type="primary")
+                _uneto[s] = {"naslov": _p.get("naslov") or "",
+                             "adrese": st.text_input(
+                                 "Adrese — " + s, value=", ".join(_p.get("adrese") or []),
+                                 key="prikup_a_" + s, label_visibility="collapsed",
+                                 placeholder="ime@firma.rs, drugo@firma.rs")}
+        _sacuvaj = st.form_submit_button("💾 Sačuvaj adrese", type="primary")
 
     if _sacuvaj:
         import re as _rep
@@ -3386,11 +3470,22 @@ def prikup_admin_ui():
         _odg = list(_st_s.get("odgovori") or [])
         for _a in _adr:
             for _z in (_odg_live.get(str(_a).lower()) or []):
+                if not (_z.get("prilozi") or []):
+                    continue          # poruka bez fajla nije izveštaj
                 if not any((str(_x.get("od", "")), str(_x.get("at", ""))) ==
                            (str(_z.get("od", "")), str(_z.get("at", ""))) for _x in _odg):
                     _odg.append(_z)
-        # Fajl u odgovoru = izveštaj je stvarno stigao (tekst bez priloga nije izveštaj)
-        _ima_fajl = any((_z.get("prilozi") or []) for _z in _odg)
+        # Fajl u odgovoru = izveštaj je stvarno stigao (tekst bez priloga nije izveštaj).
+        # Odbačeni prilozi (otpremnice i sl.) se ne računaju.
+        _odbaceni = set(_st_s.get("odbaceno") or [])
+        _n_dobri, _n_odb = 0, 0
+        for _z in _odg:
+            for _x in (_z.get("prilozi") or []):
+                if _prikup_kljuc_priloga(_z, _x) in _odbaceni:
+                    _n_odb += 1
+                else:
+                    _n_dobri += 1
+        _ima_fajl = _n_dobri > 0
         _sadr = dict(_st_s.get("sadrzaj") or {})
         _sadr_txt = _prikup_sadrzaj_kratko(_sadr)
         if _ima_fajl:
@@ -3406,7 +3501,17 @@ def prikup_admin_ui():
             if not _adr:
                 st.warning("Za ovaj sistem nije upisana nijedna adresa.")
             else:
-                st.caption("Šalje se na: " + ", ".join(_adr))
+                st.markdown(
+                    '<div style="font-size:12.5px;color:#4b5563;line-height:1.7;'
+                    'background:#faf8ff;border:1px solid #ede9fe;border-radius:10px;'
+                    'padding:9px 12px;margin:2px 0 10px;">'
+                    '<b>Šalje se sa:</b> ' + _h_escape(_sa_mejla or "(nije podešeno)")
+                    + '<br><b>Šalje se na:</b> ' + _h_escape(", ".join(_adr))
+                    + '<br><b>Naslov:</b> '
+                    + _h_escape(_prikup_tekst(_naslov_zaj, mesec_key, s))
+                    + '<div style="color:#9ca3af;font-size:11.5px;margin-top:5px;">'
+                    'Adresu menjaš gore u spisku sistema, a naslov i tekst u delu '
+                    '„Naslov i tekst mejla“.</div></div>', unsafe_allow_html=True)
             _r1, _r2 = st.columns([1.2, 3])
             with _r1:
                 _posalji = st.button("✉️ Pošalji zahtev", key="prikup_send_" + s,
@@ -3421,7 +3526,7 @@ def prikup_admin_ui():
                 else:
                     st.caption("Za " + _sel_lbl + " još nije poslat zahtev.")
             if _posalji:
-                _naslov = _prikup_tekst(_p.get("naslov") or PRIKUP_NASLOV_DEFAULT, mesec_key, s)
+                _naslov = _prikup_tekst(_naslov_zaj, mesec_key, s)
                 _telo = _prikup_tekst(_telo_zaj, mesec_key, s) + "\n" + _potpis_tekst()
                 _greske = []
                 with st.spinner("Šaljem…"):
@@ -3439,38 +3544,67 @@ def prikup_admin_ui():
                     st.success("Poslato na " + str(len(_uspele)) + " adresa.")
                     st.rerun()
             if _odg:
-                st.markdown('<div style="margin:10px 0 4px;font-size:12px;font-weight:700;'
-                            'color:#166534;">📥 Odgovori (' + str(len(_odg)) + ')</div>',
-                            unsafe_allow_html=True)
-                for _z in _odg[-10:]:
+                st.markdown('<div style="margin:12px 0 4px;font-size:12px;font-weight:700;'
+                            'color:#166534;">📎 Stigli fajlovi (' + str(_n_dobri) + ')'
+                            + ((' <span style="color:#9ca3af;font-weight:600;">· odbačeno: '
+                                + str(_n_odb) + '</span>') if _n_odb else "")
+                            + '</div>', unsafe_allow_html=True)
+                if len(_odg) > 1 or _n_dobri + _n_odb > 1:
+                    st.caption("Ako je neki fajl otpremnica ili nešto što nam ne treba, "
+                               "klikni „✕ ne treba“ pored njega — onda se ne računa u izveštaj.")
+                for _zi, _z in enumerate(_odg[-10:]):
                     _pril = _z.get("prilozi") or []
                     st.markdown(
-                        '<div style="border:1px solid #e5e7eb;border-radius:10px;padding:10px 12px;'
-                        'margin:0 0 8px;background:#fcfcfd;">'
-                        '<div style="font-size:13px;font-weight:700;color:#1f2430;">'
-                        + _h_escape(str(_z.get("ime") or _z.get("od", ""))) + '</div>'
-                        '<div style="font-size:11.5px;color:#9ca3af;margin:2px 0 6px;">'
-                        + _h_escape(str(_z.get("od", ""))) + "  ·  "
-                        + _h_escape(str(_z.get("at", ""))) + '</div>'
-                        '<div style="font-size:12.5px;color:#374151;font-weight:600;">'
-                        + _h_escape(str(_z.get("naslov", ""))) + '</div>'
-                        + ('<div style="font-size:12px;color:#6b7280;margin-top:6px;'
-                           'white-space:pre-wrap;">' + _h_escape(str(_z.get("tekst", ""))[:400])
-                           + '</div>' if _z.get("tekst") else "")
-                        + ('<div style="margin-top:7px;font-size:11.5px;color:#5b21b6;">📎 '
-                           + _h_escape(", ".join(str(_x.get("ime", "")) for _x in _pril))
-                           + '</div>' if _pril else ""),
+                        '<div style="font-size:12.5px;color:#374151;margin:8px 0 2px;">'
+                        '<b>' + _h_escape(str(_z.get("ime") or _z.get("od", ""))) + '</b>'
+                        '<span style="color:#9ca3af;">  ·  '
+                        + _h_escape(str(_z.get("at", ""))) + '  ·  '
+                        + _h_escape(str(_z.get("naslov", ""))[:90]) + '</span></div>',
                         unsafe_allow_html=True)
                     for _i, _x in enumerate(_pril):
-                        if _x.get("data"):
-                            try:
-                                st.download_button(
-                                    "⬇️ " + str(_x.get("ime") or "prilog"), _x["data"],
-                                    file_name=str(_x.get("ime") or "prilog"),
-                                    key=("prikup_dl_" + s + "_" + str(_z.get("at", ""))
-                                         + "_" + str(_i)))
-                            except Exception:
-                                pass
+                        _kp = _prikup_kljuc_priloga(_z, _x)
+                        _odb = _kp in _odbaceni
+                        _fc1, _fc2, _fc3 = st.columns([2.2, 0.9, 2.4])
+                        with _fc1:
+                            if _x.get("data") and not _odb:
+                                try:
+                                    st.download_button(
+                                        "⬇️ " + str(_x.get("ime") or "prilog"), _x["data"],
+                                        file_name=str(_x.get("ime") or "prilog"),
+                                        key=("prikup_dl_" + s + "_" + str(_zi) + "_" + str(_i)),
+                                        use_container_width=True)
+                                except Exception:
+                                    pass
+                            else:
+                                st.markdown(
+                                    '<div style="font-size:12.5px;padding:7px 0;color:'
+                                    + ("#c4c7cf;text-decoration:line-through;" if _odb
+                                       else "#6b7280;")
+                                    + '">📎 ' + _h_escape(str(_x.get("ime") or "prilog"))
+                                    + '</div>', unsafe_allow_html=True)
+                        with _fc2:
+                            if _odb:
+                                if st.button("↩️ vrati", key=("prikup_vr_" + s + "_"
+                                                              + str(_zi) + "_" + str(_i)),
+                                             use_container_width=True):
+                                    sb_prikup_odbaci_set(mesec_key, s, _kp, False,
+                                                         st.session_state.get("admin_user", ""))
+                                    st.rerun()
+                            else:
+                                if st.button("✕ ne treba", key=("prikup_od_" + s + "_"
+                                                                + str(_zi) + "_" + str(_i)),
+                                             use_container_width=True,
+                                             help="Otpremnica i slično — ne računa se u izveštaj."):
+                                    sb_prikup_odbaci_set(mesec_key, s, _kp, True,
+                                                         st.session_state.get("admin_user", ""))
+                                    st.rerun()
+                        with _fc3:
+                            st.markdown('<div style="font-size:11.5px;color:#9ca3af;'
+                                        'padding-top:9px;">'
+                                        + ("odbačeno — ne ulazi u izveštaj" if _odb
+                                           else (str(round((_x.get("vel") or 0) / 1024)) + " KB"
+                                                 if _x.get("vel") else ""))
+                                        + '</div>', unsafe_allow_html=True)
 
             # ----- Šta izveštaj sadrži (samo kad je stigao fajl) -----
             if _ima_fajl:
@@ -3507,21 +3641,6 @@ def prikup_admin_ui():
                             st.rerun()
                         else:
                             st.error("Čuvanje nije uspelo.")
-
-    # ---------- Poruke sa nepoznatih adresa ----------
-    _nep = _odg_ses.get("nep") or []
-    if _nep:
-        with st.expander("❓ Poruke sa adresa koje nisu ni u jednom sistemu ("
-                         + str(len(_nep)) + ")", expanded=False):
-            st.caption("Ako neka od njih pripada nekom sistemu, dodaj tu adresu gore i "
-                       "ponovo klikni „Proveri odgovore“.")
-            for _z in _nep[:40]:
-                st.markdown('<div style="border-top:1px solid #f2f3f7;padding:7px 0;'
-                            'font-size:12.5px;"><b>' + _h_escape(str(_z.get("od", "")))
-                            + '</b>  ·  ' + _h_escape(str(_z.get("at", "")))
-                            + '<br><span style="color:#6b7280;">'
-                            + _h_escape(str(_z.get("naslov", "")))
-                            + '</span></div>', unsafe_allow_html=True)
 
 
 def potraz_admin_ui():
@@ -6483,6 +6602,76 @@ def knez_lager_xlsx(stavke, mesec_lbl=""):
     return _buf.getvalue()
 
 
+def sb_knez_pdf_get(mesec_key):
+    """Već pročitane lager liste za taj mesec (pamte se u bazi, red idk=0).
+    Vraća {"fajlovi": [...], "at": ..., "ko": ...} — sami PDF-ovi se NE čuvaju,
+    nego ono što je iz njih pročitano."""
+    cli = _sb()
+    if cli is None:
+        return {}
+    try:
+        res = (cli.table("obrada").select("dnevnik")
+               .eq("mesec", mesec_key).eq("sistem", KNEZ_SIS).eq("idk", 0).limit(1).execute())
+        if not res.data:
+            return {}
+        return ((res.data[0].get("dnevnik") or {}).get("pdf_rez") or {})
+    except Exception:
+        return {}
+
+
+def sb_knez_pdf_set(mesec_key, fajlovi, ko=""):
+    """Zapamti pročitane lager liste (zajedno sa dosadašnjim stanjem reda idk=0)."""
+    cli = _sb()
+    if cli is None:
+        return False
+    try:
+        res = (cli.table("obrada").select("dnevnik")
+               .eq("mesec", mesec_key).eq("sistem", KNEZ_SIS).eq("idk", 0).limit(1).execute())
+        _dn = dict((res.data[0].get("dnevnik") or {}) if res.data else {})
+        _dn["pdf_rez"] = {"fajlovi": list(fajlovi or []), "at": _now().isoformat(),
+                          "ko": str(ko or "")}
+        cli.table("obrada").upsert(
+            {"mesec": mesec_key, "sistem": KNEZ_SIS, "idk": 0,
+             "reakcije": [], "trebovali": False, "trebovali_tip": "", "njihova": {},
+             "napomena": "", "reakcije_ko": {}, "dnevnik": _dn,
+             "azurirano": _now().isoformat()},
+            on_conflict="mesec,sistem,idk").execute()
+        return True
+    except Exception:
+        return False
+
+
+def _knez_kljuc_fajla(ime, idk):
+    """Isti PDF se ne čita dvaput — prepoznaje se po imenu i pumpi."""
+    return str(ime or "").strip().lower() + "|" + str(idk or "")
+
+
+def _knez_iz_fajlova(fajlovi, mesec_key):
+    """Iz zapamćenih fajlova napravi (izveštaj_po_fajlu, stavke) — isti oblik
+    kao posle čitanja PDF-ova, sa ponovo dodeljenim našim ID-jevima artikala."""
+    _izv, _stavke = [], []
+    for _f in (fajlovi or []):
+        _izv.append({k: _f.get(k) for k in
+                     ("ime", "bs", "bs_naziv", "idk", "redova", "greska", "izvor",
+                      "od", "do", "per_ok", "per_txt", "otisak", "pumpa")})
+        for _x in (_f.get("redovi") or []):
+            _stavke.append({"idk": _f.get("idk"), "pumpa": _f.get("pumpa", ""),
+                            "bs": _f.get("bs", ""), "sifra": _x.get("sifra", ""),
+                            "naziv": _x.get("naziv", ""), "izlaz": _x.get("izlaz"),
+                            "stanje": _x.get("stanje"), "stanje_do": _x.get("stanje_do"),
+                            "ulaz": _x.get("ulaz"), "vrednost": _x.get("vrednost"),
+                            "od": _f.get("od", ""), "do": _f.get("do", ""),
+                            "fajl": _f.get("ime", "")})
+    _kat = knez_nas_sifarnik(mesec_key)
+    _kes = {}
+    for _s3 in _stavke:
+        _kj = _knez_norm_art(_s3.get("naziv", ""))
+        if _kj not in _kes:
+            _kes[_kj] = knez_mapiraj_artikal(_s3.get("naziv", ""), _kat)
+        _s3["ida"], _s3["nas_naziv"], _s3["poklapanje"] = _kes[_kj]
+    return (_izv, _stavke)
+
+
 def sb_knez_scan_get(mesec_key):
     """Kada je poslednji put čitano sanduče za taj mesec i do kog dana je pročitano.
     Pamti se u bazi (red idk=0), da se zna i posle osvežavanja stranice."""
@@ -8132,7 +8321,7 @@ def prikazi_administraciju():
     .stMultiSelect [data-baseweb="tag"]{background:#f2effc !important;color:#5b21b6 !important;border:none !important;}
     .stMultiSelect [data-baseweb="tag"] span{color:#5b21b6 !important;}
     /* Prikupljanje izveštaja — spisak sistema */
-    .prikup-hdr{display:grid;grid-template-columns:1.5fr 2.3fr 2.6fr;gap:12px;
+    .prikup-hdr{display:grid;grid-template-columns:1.5fr 4.2fr;gap:12px;
         font-size:11px;color:#b0b4bd;font-weight:700;text-transform:uppercase;
         letter-spacing:.5px;padding:0 0 6px;border-bottom:1px solid #eef0f4;margin-bottom:6px;}
     .prikup-ime{font-size:13.5px;font-weight:600;color:#2a2f3a;padding:8px 0 0;
@@ -8141,7 +8330,39 @@ def prikazi_administraciju():
         color:#fff !important;font-weight:600 !important;font-size:13px !important;
         padding:7px 12px !important;border-radius:8px !important;box-shadow:none !important;}
     [class*="st-key-prikup_send_"] button:hover{background:#128a3e !important;border-color:#128a3e !important;}
-    [class*="st-key-prikup_n_"] input,[class*="st-key-prikup_a_"] input{font-size:13px !important;}
+    [class*="st-key-prikup_a_"] input{font-size:13px !important;}
+/* ===== Dok aplikacija radi ===== */
+/* Streamlit inače zatamni ceo ekran (izgleda kao da se zaledilo). Umesto toga:
+   ekran ostaje čitljiv, a gore se pojavi kartica „Radim…" + tanka traka.
+   Kartica se pojavljuje tek posle pola sekunde, da kratki klikovi ne trepere. */
+[data-testid="stElementContainer"][data-stale="true"],
+[data-testid="stVerticalBlock"][data-stale="true"],
+div[data-stale="true"] { opacity: 1 !important; }
+
+@keyframes vape-traka { 0% { background-position: 0% 50%; }
+                        100% { background-position: 200% 50%; } }
+@keyframes vape-ulaz   { from { opacity: 0; transform: translate(-50%, -14px); }
+                         to   { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes vape-disi   { 0%,100% { box-shadow: 0 6px 22px rgba(124,58,237,.18); }
+                         50%     { box-shadow: 0 6px 30px rgba(124,58,237,.42); } }
+
+[data-testid="stApp"][data-test-script-state="running"]::before,
+[data-testid="stApp"][data-test-script-state="rerunRequested"]::before {
+    content: ""; position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 999998;
+    background: linear-gradient(90deg,#7c3aed,#c4b5fd,#7c3aed,#c4b5fd);
+    background-size: 200% 100%;
+    animation: vape-traka 1.1s linear infinite;
+}
+[data-testid="stApp"][data-test-script-state="running"]::after,
+[data-testid="stApp"][data-test-script-state="rerunRequested"]::after {
+    content: "⏳  Radim… sačekaj trenutak";
+    position: fixed; top: 14px; left: 50%; transform: translate(-50%, 0); z-index: 999999;
+    background: #ffffff; color: #4c1d95; border: 1px solid #ddd6fe; border-radius: 12px;
+    padding: 11px 22px; font-size: 14.5px; font-weight: 700; letter-spacing: .2px;
+    white-space: nowrap; pointer-events: none;
+    opacity: 0;
+    animation: vape-ulaz .22s ease .5s forwards, vape-disi 1.6s ease-in-out .7s infinite;
+}
     </style>""", unsafe_allow_html=True)
 
     _adm_user = st.session_state.get("admin_user", "Administracija")
@@ -13842,38 +14063,6 @@ def create_excel(engine, ukljuci_model=True):
 DEFAULT_EXCLUDED = "1023, 1027, 1034, 1043, 1057, 1060, 1061, 1076, 1315, 1347, 1349, 1359"
 st.set_page_config(page_title="VAPE Analitika", page_icon="\U0001f4a8", layout="wide", initial_sidebar_state="collapsed")
 st.markdown("""<style>
-/* ===== Dok aplikacija radi ===== */
-/* Streamlit inače zatamni ceo ekran (izgleda kao da se zaledilo). Umesto toga:
-   ekran ostaje čitljiv, a gore se pojavi kartica „Radim…" + tanka traka.
-   Kartica se pojavljuje tek posle pola sekunde, da kratki klikovi ne trepere. */
-[data-testid="stElementContainer"][data-stale="true"],
-[data-testid="stVerticalBlock"][data-stale="true"],
-div[data-stale="true"] { opacity: 1 !important; }
-
-@keyframes vape-traka { 0% { background-position: 0% 50%; }
-                        100% { background-position: 200% 50%; } }
-@keyframes vape-ulaz   { from { opacity: 0; transform: translate(-50%, -14px); }
-                         to   { opacity: 1; transform: translate(-50%, 0); } }
-@keyframes vape-disi   { 0%,100% { box-shadow: 0 6px 22px rgba(124,58,237,.18); }
-                         50%     { box-shadow: 0 6px 30px rgba(124,58,237,.42); } }
-
-[data-testid="stApp"][data-test-script-state="running"]::before,
-[data-testid="stApp"][data-test-script-state="rerunRequested"]::before {
-    content: ""; position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 999998;
-    background: linear-gradient(90deg,#7c3aed,#c4b5fd,#7c3aed,#c4b5fd);
-    background-size: 200% 100%;
-    animation: vape-traka 1.1s linear infinite;
-}
-[data-testid="stApp"][data-test-script-state="running"]::after,
-[data-testid="stApp"][data-test-script-state="rerunRequested"]::after {
-    content: "⏳  Radim… sačekaj trenutak";
-    position: fixed; top: 14px; left: 50%; transform: translate(-50%, 0); z-index: 999999;
-    background: #ffffff; color: #4c1d95; border: 1px solid #ddd6fe; border-radius: 12px;
-    padding: 11px 22px; font-size: 14.5px; font-weight: 700; letter-spacing: .2px;
-    white-space: nowrap; pointer-events: none;
-    opacity: 0;
-    animation: vape-ulaz .22s ease .5s forwards, vape-disi 1.6s ease-in-out .7s infinite;
-}
 /* ===== Dugmad: manja, sa ljubičastim naglaskom (ne ogromna crvena) ===== */
 .stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
     border-radius: 10px !important;
