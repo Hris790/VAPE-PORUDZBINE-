@@ -2934,8 +2934,6 @@ PRIKUP_TELO_DEFAULT = (
     "molimo Vas da nam pošaljete:\n\n"
     "•  prodaju PO OBJEKTIMA u periodu od {od} do {do}\n"
     "•  stanje zaliha PO OBJEKTIMA na dan {do}\n\n"
-    "Molimo da podaci budu razvrstani po objektima, a ne samo ukupno — bez toga ne "
-    "možemo da vidimo gde roba nedostaje ni da predložimo dopunu.\n\n"
     "Podatke možete poslati kao odgovor na ovaj mejl.\n\n"
     "Hvala unapred.\n\n"
     "Srdačan pozdrav,")
