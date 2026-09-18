@@ -3409,7 +3409,8 @@ def prikup_admin_ui():
         st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
         st.caption("Povlače se SAMO poruke sa upisanih adresa i SAMO one koje imaju "
                    "fajl u prilogu (svejedno da li je Excel, PDF ili nešto treće). "
-                   "Poruke bez priloga se preskaču.")
+                   "Poruke bez priloga se preskaču. Ako se neki izveštaj ovde ne pojavi "
+                   "a znaš da je stigao — otvori taj sistem i ubaci fajl ručno.")
 
     if _chk:
         _mapa = {}                       # adresa -> sistem
@@ -3633,6 +3634,34 @@ def prikup_admin_ui():
                                        st.session_state.get("admin_user", ""))
                     st.success("Poslato na " + str(len(_uspele)) + " adresa.")
                     st.rerun()
+
+            # ----- Ručno dodavanje fajla (ako povlačenje iz sandučeta ne radi) -----
+            with st.expander("📎 Dodaj fajl ručno", expanded=False):
+                st.caption("Ako ti je izveštaj stigao na mejl, a ovde se ne pojavljuje — "
+                           "sačuvaj prilog na računar i ubaci ga ovde. Može više fajlova "
+                           "odjednom. Isto važi ako ti ga pošalju drugim putem (Viber, "
+                           "WhatsApp, lično).")
+                _up = st.file_uploader("Fajlovi", accept_multiple_files=True,
+                                       key="prikup_up_" + s, label_visibility="collapsed")
+                if _up:
+                    if st.button("💾 Sačuvaj " + str(len(_up)) + " fajl(ova)",
+                                 key="prikup_upsave_" + s, type="primary"):
+                        _zap = {"od": "(ručno dodato)",
+                                "ime": st.session_state.get("admin_user", "Administracija"),
+                                "at": _now().strftime("%d.%m.%Y. %H:%M"),
+                                "naslov": "Ručno dodat fajl",
+                                "tekst": "",
+                                "prilozi": [{"ime": _f.name, "vel": len(_f.getvalue())}
+                                            for _f in _up]}
+                        _keš = st.session_state.setdefault("_prikup_up_" + str(mesec_key), {})
+                        for _f in _up:
+                            _keš[_prikup_kljuc_priloga(_zap, {"ime": _f.name})] = _f.getvalue()
+                        if sb_prikup_odgovor_set(mesec_key, s, _zap):
+                            st.success("Dodato " + str(len(_up)) + " fajl(ova).")
+                            st.rerun()
+                        else:
+                            st.warning("Ti fajlovi su već dodati.")
+
             if _odg:
                 st.markdown('<div style="margin:12px 0 4px;font-size:12px;font-weight:700;'
                             'color:#166534;">📎 Stigli fajlovi (' + str(_n_dobri) + ')'
@@ -3654,6 +3683,10 @@ def prikup_admin_ui():
                     for _i, _x in enumerate(_pril):
                         _kp = _prikup_kljuc_priloga(_z, _x)
                         _odb = _kp in _odbaceni
+                        if not _x.get("data"):      # ručno ubačen fajl iz ove sesije
+                            _x = dict(_x)
+                            _x["data"] = (st.session_state.get("_prikup_up_" + str(mesec_key))
+                                          or {}).get(_kp)
                         _fc1, _fc2, _fc3 = st.columns([2.2, 0.9, 2.4])
                         with _fc1:
                             if _x.get("data") and not _odb:
