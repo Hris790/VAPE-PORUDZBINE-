@@ -2185,17 +2185,44 @@ def knez_admin_ui():
         if _verk not in st.session_state:
             st.session_state[_verk] = 0
 
-        _fc1, _fc2 = st.columns([1.4, 2])
+        _F_SVE = "Sve"
+        _F_0 = "Nije poslato (0×)"
+        _F_1 = "Poslato tačno 1×"
+        _F_2 = "Poslato tačno 2×"
+        _F_3 = "Poslato 3× i više"
+        _F_BAR1 = "Poslato bar jednom"
+        _fc1, _fc2, _fc3 = st.columns([1.5, 1.5, 2.2])
         with _fc1:
-            _f_st = st.selectbox("Status slanja", ["Sve", "Nije poslato", "Već poslato"],
-                                 key="knez_f_st")
+            _f_st = st.selectbox("Koliko puta je poslat mejl",
+                                 [_F_SVE, _F_0, _F_1, _F_2, _F_3, _F_BAR1],
+                                 key="knez_f_st",
+                                 help="Za podsećanje najčešće treba „Poslato tačno 1×“ — "
+                                      "njima je zahtev otišao jednom, a odgovora nema.")
         with _fc2:
+            _f_odg = st.selectbox("Odgovor",
+                                  ["Samo oni koji NISU odgovorili", "Sve", "Samo koji su odgovorili"],
+                                  key="knez_f_odg",
+                                  help="Pumpe koje su već odgovorile podrazumevano se ne "
+                                       "prikazuju — nema smisla da im ide grupni mejl.")
+        with _fc3:
             _f_q = st.text_input("Pretraga (naziv ili mejl)", key="knez_f_q", placeholder="npr. Novi Sad")
 
         def _ok(r):
-            if _f_st == "Nije poslato" and r["mail_n"] > 0:
+            _n = int(r["mail_n"] or 0)
+            if _f_st == _F_0 and _n != 0:
                 return False
-            if _f_st == "Već poslato" and r["mail_n"] == 0:
+            if _f_st == _F_1 and _n != 1:
+                return False
+            if _f_st == _F_2 and _n != 2:
+                return False
+            if _f_st == _F_3 and _n < 3:
+                return False
+            if _f_st == _F_BAR1 and _n == 0:
+                return False
+            _odg = int(r.get("odg_n") or 0) > 0
+            if _f_odg.startswith("Samo oni koji NISU") and _odg:
+                return False
+            if _f_odg == "Samo koji su odgovorili" and not _odg:
                 return False
             if _f_q.strip():
                 _qq = _f_q.strip().lower()
@@ -2204,7 +2231,12 @@ def knez_admin_ui():
             return True
         _view = [r for r in _pumpe if _ok(r)]
 
-        _sig = str(_f_st) + "|" + _f_q.strip().lower() + "|" + str(mesec_key)
+        _skriveno = sum(1 for r in _pumpe if int(r.get("odg_n") or 0) > 0)
+        if _skriveno and _f_odg.startswith("Samo oni koji NISU"):
+            st.caption("✅ " + str(_skriveno) + " pumpi je već odgovorilo — njih nema u "
+                       "spisku, da im ne ide podsetnik. (Promeni „Odgovor“ ako ti ipak trebaju.)")
+
+        _sig = str(_f_st) + "|" + str(_f_odg) + "|" + _f_q.strip().lower() + "|" + str(mesec_key)
         _sigk = "knez_sig"
         if st.session_state.get(_sigk) != _sig:
             st.session_state[_sigk] = _sig
@@ -2234,6 +2266,7 @@ def knez_admin_ui():
             "Email": r["email"] or "—",
             "Poslato ×": int(r["mail_n"]),
             "Poslednji put": r["mail_at"],
+            "Odgovorili": ("✅ da" if int(r.get("odg_n") or 0) > 0 else "—"),
         } for r in _view])
         _edf.index = [int(r["idk"]) for r in _view]
         _edf["Poslednji put"] = pd.to_datetime(_edf["Poslednji put"], errors="coerce")
@@ -2241,12 +2274,13 @@ def knez_admin_ui():
             _edf, hide_index=True, use_container_width=True,
             height=min(60 + 36 * len(_view), 700),
             key="knez_editor_" + str(mesec_key) + "_" + str(st.session_state[_verk]),
-            disabled=["Naziv", "Email", "Poslato ×", "Poslednji put"],
+            disabled=["Naziv", "Email", "Poslato ×", "Poslednji put", "Odgovorili"],
             column_config={
                 "Izabrano": st.column_config.CheckboxColumn("Izabrano", width="small"),
                 "Poslato ×": st.column_config.NumberColumn("Poslato ×", width="small"),
                 "Poslednji put": st.column_config.DatetimeColumn(
-                    "Poslednji put", format="DD.MM.YYYY. HH:mm")})
+                    "Poslednji put", format="DD.MM.YYYY. HH:mm"),
+                "Odgovorili": st.column_config.TextColumn("Odgovorili", width="small")})
         _new = set()
         for _ix, _rw in _ed.iterrows():
             if bool(_rw["Izabrano"]):
@@ -3967,6 +4001,9 @@ def prikup_admin_ui():
         elif _ima_fajl:
             _zn = ("📎 stigao izveštaj — " + _sadr_txt) if _sadr_txt else \
                   "📎 stigao izveštaj — treba proveriti šta sadrži"
+        elif _n_odb:
+            # stiglo je, ali je SVE označeno kao „ne treba" — nema šta da se preda
+            _zn = ("✕ " + str(_n_odb) + " fajl(ova) odbačeno — nije ostalo ništa za izveštaj")
         elif _odg:
             _zn = "✉️ odgovorili, ali bez fajla"
         elif _mj:
