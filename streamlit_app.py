@@ -1028,15 +1028,20 @@ def sb_rokovi_all():
     if cli is None:
         return {}
     try:
-        res = cli.table("rokovi").select("mesec,rok_admin,rok_sistemi,rok_prodaja,rok_syx,rok_potraz,rok_kontrola,napomena").execute()
+        res = cli.table("rokovi").select("mesec,rok_admin,rok_sistemi,rok_prodaja,rok_syx,rok_potraz,rok_kontrola,rok_knez,rok_prikup,napomena").execute()
         return {r["mesec"]: r for r in (res.data or [])}
     except Exception:
-        # kolone rok_syx/rok_potraz možda još ne postoje -> učitaj bez njih
+        # kolone rok_knez/rok_prikup možda još ne postoje -> učitaj bez njih
         try:
-            res = cli.table("rokovi").select("mesec,rok_admin,rok_sistemi,rok_prodaja,napomena").execute()
+            res = cli.table("rokovi").select("mesec,rok_admin,rok_sistemi,rok_prodaja,rok_syx,rok_potraz,rok_kontrola,napomena").execute()
             return {r["mesec"]: r for r in (res.data or [])}
         except Exception:
-            return {}
+            # ni rok_syx/rok_potraz možda ne postoje
+            try:
+                res = cli.table("rokovi").select("mesec,rok_admin,rok_sistemi,rok_prodaja,napomena").execute()
+                return {r["mesec"]: r for r in (res.data or [])}
+            except Exception:
+                return {}
 
 def sb_rokovi_get(mesec_key):
     try:
@@ -1044,23 +1049,31 @@ def sb_rokovi_get(mesec_key):
     except Exception:
         return {}
 
-def sb_rokovi_set(mesec_key, rok_admin, rok_sistemi, rok_prodaja, napomena, rok_syx=None, rok_potraz=None, rok_kontrola=None):
+def sb_rokovi_set(mesec_key, rok_admin, rok_sistemi, rok_prodaja, napomena, rok_syx=None, rok_potraz=None, rok_kontrola=None, rok_knez=None, rok_prikup=None):
     cli = _sb()
     if cli is None:
         raise RuntimeError("Supabase nije podešen.")
     payload = {"mesec": mesec_key,
                "rok_admin": rok_admin or None, "rok_sistemi": rok_sistemi or None,
                "rok_prodaja": rok_prodaja or None, "rok_syx": rok_syx or None,
-               "rok_potraz": rok_potraz or None, "rok_kontrola": rok_kontrola or None, "napomena": napomena or "",
+               "rok_potraz": rok_potraz or None, "rok_kontrola": rok_kontrola or None,
+               "rok_knez": rok_knez or None, "rok_prikup": rok_prikup or None,
+               "napomena": napomena or "",
                "azurirano": _now().isoformat()}
     try:
         cli.table("rokovi").upsert(payload, on_conflict="mesec").execute()
     except Exception:
-        # fallback ako rok_syx/rok_potraz kolone ne postoje
-        payload.pop("rok_syx", None)
-        payload.pop("rok_potraz", None)
-        payload.pop("rok_kontrola", None)
-        cli.table("rokovi").upsert(payload, on_conflict="mesec").execute()
+        # fallback ako kolone rok_knez/rok_prikup ne postoje
+        payload.pop("rok_knez", None)
+        payload.pop("rok_prikup", None)
+        try:
+            cli.table("rokovi").upsert(payload, on_conflict="mesec").execute()
+        except Exception:
+            # fallback ako ni rok_syx/rok_potraz kolone ne postoje
+            payload.pop("rok_syx", None)
+            payload.pop("rok_potraz", None)
+            payload.pop("rok_kontrola", None)
+            cli.table("rokovi").upsert(payload, on_conflict="mesec").execute()
     try:
         sb_rokovi_all.clear()
     except Exception:
@@ -1608,33 +1621,12 @@ def knez_admin_ui():
         st.caption("Traži se stanje zaliha na **" + _do + "** i prodaja **"
                    + _od.rstrip(".") + " – " + _do + "**")
 
-    # --- rok koji je postavio analitičar ---
-    _rok_k = sb_rokovi_get()
-    _rok_kd = _rok_datum(mesec_key, _rok_k.get("knez"))
-    if _rok_kd:
-        _dana_k = (_rok_kd - _now().date()).days
-        if _dana_k < 0:
-            _bgk, _brk, _fgk, _oznk = ("#fef2f2", "#fecaca", "#991b1b",
-                                       "⛔ ROK JE PROŠAO — ")
-            _dodk = "kasnimo " + str(abs(_dana_k)) + " dan(a)."
-        elif _dana_k <= 2:
-            _bgk, _brk, _fgk, _oznk = ("#fff7ed", "#fed7aa", "#9a3412",
-                                       "⏳ ROK JE BLIZU — ")
-            _dodk = ("poslednji je dan." if _dana_k == 0
-                     else "ostalo je još " + str(_dana_k) + " dan(a).")
-        else:
-            _bgk, _brk, _fgk, _oznk = "#f0fdf4", "#bbf7d0", "#166534", "⏳ ROK — "
-            _dodk = "ostalo je još " + str(_dana_k) + " dan(a)."
-        st.markdown(
-            '<div style="background:' + _bgk + ';border:1px solid ' + _brk + ';'
-            'border-radius:10px;padding:9px 14px;margin:6px 0 4px;color:' + _fgk + ';">'
-            '<b style="font-size:13.5px;">' + _oznk + 'izveštaj Knez Petrol za '
-            + _h_escape(str(_sel_lbl_k)) + ' mora biti popunjen do '
-            + _rok_kd.strftime("%d.%m.%Y.") + '</b>'
-            '<span style="font-size:12.5px;"> &nbsp;·&nbsp; ' + _h_escape(_dodk)
-            + '</span><div style="font-size:12px;margin-top:2px;">'
-            + _h_escape(str(_rok_k.get("napomena") or ROK_NAPOMENA_DEF))
-            + '</div></div>', unsafe_allow_html=True)
+    # --- rok (postavlja se u kartici „📅 Rokovi") ---
+    _tr_k = _rok_traka(sb_rokovi_get(mesec_key).get("rok_knez"),
+                       "izveštaj Knez Petrol za " + str(_sel_lbl_k)
+                       + " mora biti popunjen do")
+    if _tr_k:
+        st.markdown(_tr_k, unsafe_allow_html=True)
 
     # --- Pumpe iz šifarnika ---
     if st.session_state.get("_komfull") is None:
@@ -3112,89 +3104,31 @@ def _prikup_mes(kljuc):
     return str(kljuc or "").split(":")[0]
 
 
-# ---------------- Rokovi za izveštaje (postavlja analitičar) ----------------
-ROKOVI_KLJUC = "ROKOVI"                  # red u bazi u kome stoje rokovi
-ROK_KNEZ_DAN = 5                         # podrazumevano: Knez do 5. u narednom mesecu
-ROK_PRIKUP_DAN = 7                       # podrazumevano: ostali izveštaji do 7.
-ROK_NAPOMENA_DEF = "Molimo da svi rokovi budu ispoštovani."
-
-
-def sb_rokovi_get():
-    """Rokovi koje je postavio analitičar: {"knez": dan, "prikup": dan, "napomena"}."""
-    _d = {"knez": ROK_KNEZ_DAN, "prikup": ROK_PRIKUP_DAN,
-          "napomena": ROK_NAPOMENA_DEF, "ko": "", "at": ""}
-    cli = _sb()
-    if cli is None:
-        return _d
+def _rok_traka(datum_iso, tekst):
+    """Traka sa rokom na vrhu kartice. Zelena dok ima vremena, narandžasta kad je
+    blizu, crvena kad je prošao. Prazan datum -> ništa se ne prikazuje."""
     try:
-        res = (cli.table("obrada").select("dnevnik")
-               .eq("mesec", ROKOVI_KLJUC).eq("sistem", ROKOVI_KLJUC)
-               .eq("idk", 0).limit(1).execute())
-        if not res.data:
-            return _d
-        _r = (res.data[0].get("dnevnik") or {}).get("rokovi") or {}
-        for _k in ("knez", "prikup"):
-            try:
-                _v = int(_r.get(_k) or 0)
-                if 1 <= _v <= 28:
-                    _d[_k] = _v
-            except Exception:
-                pass
-        if str(_r.get("napomena") or "").strip():
-            _d["napomena"] = str(_r["napomena"])[:300]
-        _d["ko"] = str(_r.get("ko") or "")
-        _d["at"] = str(_r.get("at") or "")
-        return _d
+        _d = datetime.date.fromisoformat(str(datum_iso)[:10])
     except Exception:
-        return _d
-
-
-def sb_rokovi_set(knez_dan, prikup_dan, napomena="", ko=""):
-    """Analitičar upisuje do kada izveštaji treba da budu gotovi."""
-    cli = _sb()
-    if cli is None:
-        return False
-    try:
-        cli.table("obrada").upsert(
-            {"mesec": ROKOVI_KLJUC, "sistem": ROKOVI_KLJUC, "idk": 0,
-             "reakcije": [], "trebovali": False, "trebovali_tip": "", "njihova": {},
-             "napomena": "", "reakcije_ko": {},
-             "dnevnik": {"rokovi": {"knez": int(knez_dan), "prikup": int(prikup_dan),
-                                    "napomena": str(napomena or "")[:300],
-                                    "ko": str(ko or ""), "at": _now().isoformat()}},
-             "azurirano": _now().isoformat()},
-            on_conflict="mesec,sistem,idk").execute()
-        return True
-    except Exception:
-        return False
-
-
-def _rok_datum(mesec_key, dan):
-    """Datum roka za izabrani period. Za ceo mesec: „dan" u NAREDNOM mesecu.
-    Za prvu polovinu (01–15): isto toliko dana posle 15. (npr. rok 7 -> 22.)."""
-    _mes = _prikup_mes(mesec_key)
-    _deo = (str(mesec_key or "").split(":") + [""])[1]
-    try:
-        _g, _m = int(_mes[:4]), int(_mes[5:7])
-        _d = max(1, min(int(dan or 1), 28))
-    except Exception:
-        return None
-    try:
-        if _deo == "P1":
-            return datetime.date(_g, _m, min(15 + _d, 28))
-        if _deo == "P2":
-            _g2, _m2 = (_g + 1, 1) if _m == 12 else (_g, _m + 1)
-            return datetime.date(_g2, _m2, _d)
-        _g2, _m2 = (_g + 1, 1) if _m == 12 else (_g, _m + 1)
-        return datetime.date(_g2, _m2, _d)
-    except Exception:
-        return None
-
-
-def _rok_tekst(mesec_key, dan):
-    """Rok kao „07.09.2026." — prazno ako se ne može izračunati."""
-    _d = _rok_datum(mesec_key, dan)
-    return _d.strftime("%d.%m.%Y.") if _d else ""
+        return ""
+    _dana = (_d - _now().date()).days
+    if _dana < 0:
+        _bg, _br, _fg, _ozn = "#fef2f2", "#fecaca", "#991b1b", "⛔ ROK JE PROŠAO — "
+        _dod = "kasnimo " + str(abs(_dana)) + " dan(a)."
+    elif _dana <= 2:
+        _bg, _br, _fg, _ozn = "#fff7ed", "#fed7aa", "#9a3412", "⏳ ROK JE BLIZU — "
+        _dod = ("poslednji je dan." if _dana == 0
+                else "ostalo je još " + str(_dana) + " dan(a).")
+    else:
+        _bg, _br, _fg, _ozn = "#f0fdf4", "#bbf7d0", "#166534", "⏳ ROK — "
+        _dod = "ostalo je još " + str(_dana) + " dan(a)."
+    return ('<div style="background:' + _bg + ';border:1px solid ' + _br + ';'
+            'border-radius:10px;padding:9px 14px;margin:6px 0 4px;color:' + _fg + ';">'
+            '<b style="font-size:13.5px;">' + _ozn + _h_escape(str(tekst)) + ' '
+            + _d.strftime("%d.%m.%Y.") + '</b>'
+            '<span style="font-size:12.5px;"> &nbsp;·&nbsp; ' + _h_escape(_dod)
+            + '</span><div style="font-size:12px;margin-top:2px;">'
+            'Molimo da svi rokovi budu ispoštovani.</div></div>')
 
 
 def _prikup_period_lbl(kljuc):
@@ -3643,31 +3577,12 @@ def prikup_admin_ui():
         st.caption("Traži se prodaja **" + _od.rstrip(".") + " – " + _do
                    + "** i stanje zaliha na **" + _do + "**")
 
-    # --- rok koji je postavio analitičar ---
-    _rok = sb_rokovi_get()
-    _rok_d = _rok_datum(mesec_key, _rok.get("prikup"))
-    if _rok_d:
-        _dana = (_rok_d - _now().date()).days
-        if _dana < 0:
-            _bg, _br, _fg, _ozn = "#fef2f2", "#fecaca", "#991b1b", "⛔ ROK JE PROŠAO — "
-            _dod = "kasnimo " + str(abs(_dana)) + " dan(a)."
-        elif _dana <= 2:
-            _bg, _br, _fg, _ozn = "#fff7ed", "#fed7aa", "#9a3412", "⏳ ROK JE BLIZU — "
-            _dod = ("poslednji je dan." if _dana == 0
-                    else "ostalo je još " + str(_dana) + " dan(a).")
-        else:
-            _bg, _br, _fg, _ozn = "#f0fdf4", "#bbf7d0", "#166534", "⏳ ROK — "
-            _dod = "ostalo je još " + str(_dana) + " dan(a)."
-        st.markdown(
-            '<div style="background:' + _bg + ';border:1px solid ' + _br + ';'
-            'border-radius:10px;padding:9px 14px;margin:6px 0 4px;color:' + _fg + ';">'
-            '<b style="font-size:13.5px;">' + _ozn + 'izveštaji za '
-            + _h_escape(_prikup_period_lbl(mesec_key)) + ' moraju biti prikupljeni '
-            'do ' + _rok_d.strftime("%d.%m.%Y.") + '</b>'
-            '<span style="font-size:12.5px;"> &nbsp;·&nbsp; ' + _h_escape(_dod)
-            + '</span><div style="font-size:12px;margin-top:2px;">'
-            + _h_escape(str(_rok.get("napomena") or ROK_NAPOMENA_DEF)) + '</div></div>',
-            unsafe_allow_html=True)
+    # --- rok (postavlja se u kartici „📅 Rokovi") ---
+    _tr_p = _rok_traka(sb_rokovi_get(_mesec_baza).get("rok_prikup"),
+                       "izveštaji za " + _prikup_period_lbl(mesec_key)
+                       + " moraju biti prikupljeni do")
+    if _tr_p:
+        st.markdown(_tr_p, unsafe_allow_html=True)
 
     # --- spisak sistema ---
     _pod = sb_prikup_podesavanja()
@@ -13363,13 +13278,32 @@ def prikazi_direktore():
         with _r6:
             _dkn = st.date_input("Rok — Kontrola komercijale", value=_dflt(_post.get("rok_kontrola")),
                                  key="rok_kontrola_in", format="DD.MM.YYYY")
+        _r7, _r8, _r9 = st.columns(3)
+        with _r7:
+            _dkz = st.date_input("Rok — Izveštaj Knez Petrol", value=_dflt(_post.get("rok_knez")),
+                                 key="rok_knez_in", format="DD.MM.YYYY",
+                                 help="Do kada izveštaj Knez Petrol mora da bude popunjen. "
+                                      "Administracija ovaj datum vidi na vrhu svoje kartice.")
+        with _r8:
+            _dpk = st.date_input("Rok — Prikupljanje izveštaja", value=_dflt(_post.get("rok_prikup")),
+                                 key="rok_prikup_in", format="DD.MM.YYYY",
+                                 help="Do kada izveštaji ostalih sistema moraju da budu "
+                                      "prikupljeni, pregledani i prosleđeni. Obično 5–7. u "
+                                      "mesecu koji dolazi posle izveštajnog.")
+        with _r9:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            st.caption("Ova dva roka administracija vidi kao traku na vrhu kartica "
+                       "„⛽ Izveštaj Knez Petrol“ i „📨 Prikupljanje izveštaja“, sa brojem "
+                       "dana koji su ostali. Uz njih uvek stoji i „Molimo da svi rokovi "
+                       "budu ispoštovani.“")
         _nap = st.text_area("Napomena (za izveštaj prodaje — šta osvežiti, na šta obratiti pažnju)",
                             value=_post.get("napomena") or "", key="rok_nap_in", height=80)
         if st.button("💾 Sačuvaj rokove", key="rok_save", type="primary"):
             try:
                 sb_rokovi_set(_rsel, _da.isoformat(), _ds.isoformat(), _dp.isoformat(), _nap,
                               rok_syx=_dsx.isoformat(), rok_potraz=_dpz.isoformat(),
-                              rok_kontrola=_dkn.isoformat())
+                              rok_kontrola=_dkn.isoformat(), rok_knez=_dkz.isoformat(),
+                              rok_prikup=_dpk.isoformat())
                 st.success("Rokovi za " + mesec_label(_rsel) + " sačuvani.")
                 st.rerun()
             except Exception as _e:
@@ -13389,6 +13323,8 @@ def prikazi_direktore():
                               "SYX": _rok_fmt(_v.get("rok_syx")),
                               "Potraživanja": _rok_fmt(_v.get("rok_potraz")),
                               "Kontrola komercijale": _rok_fmt(_v.get("rok_kontrola")),
+                              "Knez Petrol": _rok_fmt(_v.get("rok_knez")),
+                              "Prikupljanje": _rok_fmt(_v.get("rok_prikup")),
                               "Napomena": (_v.get("napomena") or "")[:50]})
             st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
         return
@@ -15057,42 +14993,8 @@ def prikazi_primljene():
         st.info("Supabase nije podešen.")
         return
 
-    # ---------- Rokovi: ovde ih postavljam ja, a administracija ih vidi na vrhu ----------
-    _rk = sb_rokovi_get()
-    _rk_txt = ("Knez do " + str(_rk["knez"]) + ".  ·  ostali izveštaji do "
-               + str(_rk["prikup"]) + ". u mesecu")
-    with st.expander("📅 Rokovi za izveštaje  —  " + _rk_txt, expanded=False):
-        st.caption("Ovo vide u administraciji, na vrhu kartice „⛽ Izveštaj Knez Petrol“ "
-                   "i „📨 Prikupljanje izveštaja“ — sa tačnim datumom za izabrani mesec "
-                   "i brojem dana koji su ostali. Upisuje se DAN u mesecu koji dolazi "
-                   "posle izveštajnog (npr. 7 znači: izveštaj za avgust — do 7. septembra).")
-        with st.form("rok_forma", border=False):
-            _rc1, _rc2 = st.columns(2)
-            with _rc1:
-                _rk_knez = st.number_input(
-                    "⛽ Knez Petrol — izveštaj popunjen do (dan u mesecu)",
-                    min_value=1, max_value=28, step=1, value=int(_rk["knez"]),
-                    key="rok_knez")
-            with _rc2:
-                _rk_prik = st.number_input(
-                    "📨 Ostali sistemi — izveštaji prikupljeni do (dan u mesecu)",
-                    min_value=1, max_value=28, step=1, value=int(_rk["prikup"]),
-                    key="rok_prikup")
-            _rk_nap = st.text_input("Poruka uz rok", value=str(_rk["napomena"]),
-                                    key="rok_nap", max_chars=200)
-            _rk_save = st.form_submit_button("💾 Sačuvaj rokove", type="primary")
-        st.caption("Uobičajeno je 5.–7. u mesecu. Za polumesečni izveštaj rok se "
-                   "računa isto toliko dana posle 15. (npr. 7 → 22. u istom mesecu).")
-        if _rk_save:
-            if sb_rokovi_set(_rk_knez, _rk_prik, _rk_nap,
-                             st.session_state.get("admin_user", "Analitika")):
-                st.success("Rokovi su sačuvani — administracija ih odmah vidi.")
-                st.rerun()
-            else:
-                st.error("Čuvanje nije uspelo.")
-        if _rk.get("at"):
-            st.caption("Poslednja izmena: " + _dt_kratko(_rk.get("at"))
-                       + ((" · " + str(_rk.get("ko"))) if _rk.get("ko") else ""))
+    st.caption("Rokove postavljaš u kartici „📅 Rokovi“ — administracija ih vidi na vrhu "
+               "kartica „⛽ Izveštaj Knez Petrol“ i „📨 Prikupljanje izveštaja“.")
 
     _sve = sb_prikup_predati()
     if not _sve:
