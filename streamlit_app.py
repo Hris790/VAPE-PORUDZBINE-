@@ -3342,7 +3342,8 @@ def sb_prikup_odgovor_set(mesec_key, sistem, zapis):
                      "tekst": str(zapis.get("tekst", ""))[:800],
                      "prilozi": [{"ime": _p.get("ime", ""),
                                   "vel": int(_p.get("vel", 0) or 0),
-                                  "url": str(_p.get("url", "") or "")[:400]}
+                                  "url": str(_p.get("url", "") or "")[:400],
+                                  "razlog": str(_p.get("razlog", "") or "")[:160]}
                                  for _p in (zapis.get("prilozi") or [])],
                      "upisano": _now().isoformat()})
         _dn["odgovori"] = _lst[-30:]
@@ -3826,7 +3827,7 @@ def prikup_admin_ui():
             if _err and not _po:
                 st.error("Čitanje sandučeta nije uspelo: " + str(_err))
             _n_up = 0
-            _f_ok, _f_los = 0, 0
+            _f_ok, _f_los, _f_prazno = 0, 0, 0
             st.session_state.pop("_prikup_up_err", None)
             for _a, _lst in (_po or {}).items():
                 _s = _mapa.get(str(_a).lower())
@@ -3848,6 +3849,8 @@ def prikup_admin_ui():
                                 _f_ok += 1
                             else:
                                 _f_los += 1
+                        else:
+                            _f_prazno += 1
                     try:
                         if sb_prikup_odgovor_set(mesec_key, _s, _z):
                             _n_up += 1
@@ -3887,6 +3890,11 @@ def prikup_admin_ui():
                        + " s  ·  novih izveštaja (poruka sa fajlom): " + str(_n_up)
                        + (("  ·  fajlova sačuvano u bazu: " + str(_f_ok))
                           if _f_ok else ""))
+            if _f_prazno:
+                st.warning("📎 " + str(_f_prazno) + " prilog(a) je stiglo bez sadržaja "
+                           "(prazan ili prevelik fajl) — kod tog sistema piše zašto. "
+                           "Takav prilog otvori u sandučetu, sačuvaj ga na računar i "
+                           "ubaci ručno.")
             if _f_los:
                 st.error("⚠️ " + str(_f_los) + " fajl(ova) nije moglo da se sačuva u bazu, "
                          "pa ih analitičar neće videti. Probaj ponovo „📥 Proveri "
@@ -4183,10 +4191,13 @@ def prikup_admin_ui():
                                     '<div style="font-size:12.5px;padding:7px 0;'
                                     'color:#b45309;">📎 '
                                     + _h_escape(str(_x.get("ime") or "prilog"))
-                                    + ' <span style="color:#9ca3af;">— vidi se samo ime, '
-                                    'fajl nije sačuvan. Gore vrati „OD“ na 1. u mesecu, '
-                                    '„DO“ na danas i klikni „📥 Proveri odgovore“ — ili '
-                                    'ubaci fajl ručno.</span></div>',
+                                    + ' <span style="color:#9ca3af;">— '
+                                    + _h_escape(str(_x.get("razlog") or "")
+                                                or "vidi se samo ime, fajl nije sačuvan. "
+                                                   "Gore vrati „OD“ na 1. u mesecu, „DO“ "
+                                                   "na danas i klikni „📥 Proveri "
+                                                   "odgovore“ — ili ubaci fajl ručno.")
+                                    + '</span></div>',
                                     unsafe_allow_html=True)
                         with _fc2:
                             if _odb:
@@ -6639,8 +6650,10 @@ def _mail_telo_tekst(msg, maks=800):
     return _out[:int(maks)]
 
 
-def _mail_prilozi(msg, maks_po_fajlu=6_000_000, maks_fajlova=5):
-    """Vrati [{ime, vel, data}] za priloge poruke (preskače inline slike i potpise)."""
+def _mail_prilozi(msg, maks_po_fajlu=25_000_000, maks_fajlova=8):
+    """Vrati [{ime, vel, data, razlog}] za priloge poruke (preskače inline slike i
+    potpise). Ako sadržaj ne može da se izvuče, „razlog" kaže ZAŠTO — da se u kartici
+    ne vidi samo golo ime fajla bez objašnjenja."""
     _out = []
     try:
         for _p in msg.walk():
@@ -6665,10 +6678,36 @@ def _mail_prilozi(msg, maks_po_fajlu=6_000_000, maks_fajlova=5):
                 _dat = _p.get_payload(decode=True) or b""
             except Exception:
                 _dat = b""
-            if not _dat or len(_dat) > int(maks_po_fajlu):
-                _out.append({"ime": str(_ime)[:120], "vel": len(_dat), "data": None})
+            if not _dat:
+                # Neki serveri vrate prilog koji standardno dekodiranje ne uhvati —
+                # probaj ručno, po Content-Transfer-Encoding.
+                try:
+                    _sir = _p.get_payload()
+                    _enc = str(_p.get("Content-Transfer-Encoding") or "").lower().strip()
+                    if isinstance(_sir, str) and _sir.strip():
+                        if "base64" in _enc:
+                            import base64 as _b64
+                            _dat = _b64.b64decode("".join(_sir.split()) + "===")
+                        elif "quoted-printable" in _enc:
+                            import quopri as _qp
+                            _dat = _qp.decodestring(_sir.encode("utf-8", "ignore"))
+                        else:
+                            _dat = _sir.encode("utf-8", "ignore")
+                except Exception:
+                    _dat = b""
+            _vel = len(_dat or b"")
+            if _vel > int(maks_po_fajlu):
+                _out.append({"ime": str(_ime)[:120], "vel": _vel, "data": None,
+                             "razlog": ("prilog je prevelik ("
+                                        + str(round(_vel / 1048576.0, 1)) + " MB) — "
+                                        "traži da ga pošalju manjeg ili ga ubaci ručno")})
+            elif not _dat:
+                _out.append({"ime": str(_ime)[:120], "vel": 0, "data": None,
+                             "razlog": "prilog je stigao prazan — otvori mejl u "
+                                       "sandučetu, sačuvaj fajl i ubaci ga ručno"})
             else:
-                _out.append({"ime": str(_ime)[:120], "vel": len(_dat), "data": _dat})
+                _out.append({"ime": str(_ime)[:120], "vel": _vel, "data": _dat,
+                             "razlog": ""})
             if len(_out) >= int(maks_fajlova):
                 break
     except Exception:
