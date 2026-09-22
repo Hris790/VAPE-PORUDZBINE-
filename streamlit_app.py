@@ -6484,8 +6484,13 @@ def _imap_cfg(nalog=None):
         _p = int(_smtp_kljuc("IMAP_PORT", n, 993) or 993)
     except Exception:
         _p = 993
-    return {"host": _h, "port": _p, "user": c.get("user", ""), "password": c.get("password", ""),
-            "nalog": n}
+    # Sanduče iz kog se ČITAJU odgovori može da bude drugo od onog sa kog se ŠALJE.
+    # (npr. šalje se sa lične adrese, a odgovori i dalje stižu na zajedničku).
+    # Ako IMAP_USER / IMAP_PASSWORD nisu upisani, koristi se isti nalog kao za slanje.
+    _u = _smtp_kljuc("IMAP_USER", n, "") or c.get("user", "")
+    _pw = (_smtp_kljuc("IMAP_PASSWORD", n, "")
+           if _smtp_kljuc("IMAP_USER", n, "") else "") or c.get("password", "")
+    return {"host": _h, "port": _p, "user": _u, "password": _pw, "nalog": n}
 
 
 def _imap_folderi(imap):
@@ -7664,9 +7669,15 @@ def _potpis(nalog=None):
     POTPIS_IME_1 / POTPIS_MEJL_1 / POTPIS_TEL_1 / POTPIS_ADRESA_1 (isto i _2),
     ili zajednički bez sufiksa."""
     n = _mail_nalog() if nalog is None else str(nalog or "")
+    # Ako POTPIS_MEJL nije upisan, u potpis ide adresa sa koje se stvarno šalje —
+    # da promena SMTP naloga ne ostavi tuđu adresu u potpisu.
+    try:
+        _sa = str(_smtp_cfg(n).get("from_email") or "")
+    except Exception:
+        _sa = ""
     return {
         "ime": _smtp_kljuc("POTPIS_IME", n, "Aleksandra Apatović"),
-        "mejl": _smtp_kljuc("POTPIS_MEJL", n, "nabavka@vapeshop.rs"),
+        "mejl": (_smtp_kljuc("POTPIS_MEJL", n, "") or _sa or "nabavka@vapeshop.rs"),
         "tel": _smtp_kljuc("POTPIS_TEL", n, "+381 654 769 055"),
         "adresa": _smtp_kljuc("POTPIS_ADRESA", n, "Futoška 71, Novi Sad"),
     }
