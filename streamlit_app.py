@@ -1774,6 +1774,15 @@ def knez_admin_ui():
     if _do_dat and _od_dat and _do_dat < _od_dat:
         st.warning("Datum „DO“ je pre datuma „OD“ — ispravi ga, inače nema šta da se pročita.")
     with _oc2:
+        try:
+            _san = [str(_c.get("user") or "") for _c in _imap_nalozi()]
+        except Exception:
+            _san = []
+        if _san:
+            st.caption("📬 Čita se iz: " + "  ·  ".join(_san)
+                       + ("" if len(_san) > 1 else
+                          "  (ako odgovori stižu i na drugu adresu, dodaj IMAP_STARO "
+                          "i IMAP_STARO_LOZINKA u Secrets)"))
         if _odg_ses.get("kada") or _scan_db.get("kada"):
             st.caption("📥 Odgovori su zapamćeni u bazi — ne čita se ponovo ceo mesec, nego samo "
                        "poruke od " + _od_dat.strftime("%d.%m.%Y") + ". Ko je odgovorio, kada i šta "
@@ -3793,6 +3802,12 @@ def prikup_admin_ui():
         st.warning("Datum „DO“ je pre datuma „OD“ — ispravi ga, inače nema šta da se pročita.")
     with _sc3:
         st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+        try:
+            _san_p = [str(_c.get("user") or "") for _c in _imap_nalozi()]
+        except Exception:
+            _san_p = []
+        if _san_p:
+            st.caption("📬 Čita se iz: " + "  ·  ".join(_san_p))
         st.caption("Povlače se SAMO poruke sa upisanih adresa i SAMO one koje imaju "
                    "fajl u prilogu (svejedno da li je Excel, PDF ili nešto treće). "
                    "Poruke bez priloga se preskaču. Ako se neki izveštaj ovde ne pojavi "
@@ -6520,6 +6535,23 @@ def _imap_cfg(nalog=None):
     return {"host": _h, "port": _p, "user": _u, "password": _pw, "nalog": n}
 
 
+def _imap_nalozi(nalog=None):
+    """Sva sandučad iz kojih se ČITAJU odgovori: glavno (ono sa kog se šalje, ili
+    IMAP_USER ako je upisan) + po želji STARO sanduče (IMAP_STARO / IMAP_STARO_LOZINKA).
+    Služi kad se adresa promeni, pa stari odgovori leže u starom sandučetu."""
+    _gl = _imap_cfg(nalog)
+    _lista = [_gl] if (_gl.get("host") and _gl.get("user") and _gl.get("password")) else []
+    _n = _gl.get("nalog") or ""
+    _su = str(_smtp_kljuc("IMAP_STARO", _n, "") or "").strip()
+    _sp = str(_smtp_kljuc("IMAP_STARO_LOZINKA", _n, "") or "")
+    if _su and _sp:
+        _sh = str(_smtp_kljuc("IMAP_STARO_HOST", _n, "") or "") or _gl.get("host", "")
+        if _su.lower() != str(_gl.get("user") or "").lower():
+            _lista.append({"host": _sh, "port": _gl.get("port", 993), "user": _su,
+                           "password": _sp, "nalog": _n})
+    return _lista
+
+
 def _imap_folderi(imap):
     """Vrati listu (ime_foldera, zastavice) iz IMAP LIST odgovora, ispravno isparsirano."""
     import re as _re
@@ -6732,6 +6764,36 @@ def _mail_prilozi(msg, maks_po_fajlu=25_000_000, maks_fajlova=8):
 
 
 def knez_odgovori(adrese, nalog=None, od_datum=None, _v=0, do_datum=None):
+    """Pročita SVA podešena sandučad i spoji odgovore (glavno + staro, ako postoji)."""
+    _nal = _imap_nalozi(nalog)
+    if not _nal:
+        return ({}, [], "IMAP nije podešen (IMAP_HOST / SMTP_USER / SMTP_PASSWORD u Secrets).")
+    if len(_nal) == 1:
+        return _knez_odgovori_jedno(adrese, od_datum, do_datum, _nal[0])
+    _po, _nep, _gr = {}, [], []
+
+    def _kl(_z):
+        return (str(_z.get("od", "")), str(_z.get("at", "")), str(_z.get("naslov", ""))[:60])
+    for _c in _nal:
+        _p1, _n1, _e1 = _knez_odgovori_jedno(adrese, od_datum, do_datum, _c)
+        if _e1:
+            _gr.append(str(_c.get("user", "")) + ": " + str(_e1))
+        for _a, _lst in (_p1 or {}).items():
+            _ex = _po.setdefault(_a, [])
+            _imam = {_kl(_z) for _z in _ex}
+            for _z in _lst:
+                if _kl(_z) not in _imam:
+                    _ex.append(_z)
+                    _imam.add(_kl(_z))
+        _imam_n = {_kl(_z) for _z in _nep}
+        for _z in (_n1 or []):
+            if _kl(_z) not in _imam_n:
+                _nep.append(_z)
+                _imam_n.add(_kl(_z))
+    return (_po, _nep[:60], ("  ·  ".join(_gr) if (_gr and not _po) else ""))
+
+
+def _knez_odgovori_jedno(adrese, od_datum=None, do_datum=None, cfg=None):
     """Pro\u010ditaj sandu\u010de i na\u0111i ODGOVORE pumpi. `adrese` = skup mejlova iz \u0161ifarnika.
 
     BRZINA: prvo se povla\u010de SAMO zaglavlja (From/Subject/Date) svih poruka od
@@ -6745,7 +6807,7 @@ def knez_odgovori(adrese, nalog=None, od_datum=None, _v=0, do_datum=None):
     import datetime as _dt
     _po = {}
     _nep = []
-    c = _imap_cfg(nalog)
+    c = cfg or _imap_cfg()
     if not (c["host"] and c["user"] and c["password"]):
         return (_po, _nep, "IMAP nije pode\u0161en (IMAP_HOST / SMTP_USER / SMTP_PASSWORD u Secrets).")
     _skup = set(str(a or "").strip().lower() for a in (adrese or set()) if a)
