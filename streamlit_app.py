@@ -5453,31 +5453,45 @@ def _admin_order_xlsx(rows):
 
 
 def _zadaci_xlsx(rows, sistem, mesec_lbl):
-    """Excel liste zadataka administracije: ID, naziv, mejl + 3 poziva (Da/Ne),
-    4 kolone ko+kada, i Završeno. rows = lista dict-ova."""
+    """Excel liste zadataka administracije: ID, naziv, ZONA, na nuli, izgubljeno,
+    mejl + 3 poziva (Da/Ne), 4 kolone ko+kada, i Završeno. rows = lista dict-ova."""
     import io as _io
     from openpyxl import Workbook as _WB
     from openpyxl.styles import Font as _F, PatternFill as _PF, Alignment as _AL, Border as _BD, Side as _SD
+    from openpyxl.utils import get_column_letter as _GL
     _wb = _WB(); _ws = _wb.active; _ws.title = "Zadaci"
     _thin = _SD(style="thin", color="E5E0F0")
     _bord = _BD(left=_thin, right=_thin, top=_thin, bottom=_thin)
-    _ws.merge_cells("A1:K1")
+
+    # (zaglavlje, širina, poravnanje)
+    _kol = [("ID komitenta", 12, "center"), ("Naziv objekta", 42, "left"),
+            ("Zona", 16, "center"), ("Na nuli", 9, "center"),
+            ("Izgubljeno", 11, "center"), ("Mejl", 9, "center"),
+            ("Pozvala 1. put", 13, "center"), ("Pozvala 2. put", 13, "center"),
+            ("Pozvala 3. put", 13, "center"), ("Mejl — ko i kada", 26, "center"),
+            ("1. poziv — ko i kada", 26, "center"), ("2. poziv — ko i kada", 26, "center"),
+            ("3. poziv — ko i kada", 26, "center"), ("Završeno", 12, "center")]
+    _n = len(_kol)
+    _ws.merge_cells("A1:" + _GL(_n) + "1")
     _t = _ws["A1"]; _t.value = "Lista zadataka · " + str(sistem) + " · " + str(mesec_lbl)
     _t.font = _F(bold=True, size=13, color="3730A3"); _t.alignment = _AL(horizontal="left", vertical="center")
     _ws.row_dimensions[1].height = 22
-    _hdr = ["ID komitenta", "Naziv objekta", "Mejl", "Pozvala 1. put", "Pozvala 2. put", "Pozvala 3. put",
-            "Mejl — ko i kada", "1. poziv — ko i kada", "2. poziv — ko i kada", "3. poziv — ko i kada", "Završeno"]
-    _ws.append([])           # red 2 prazan
-    _ws.append(_hdr)         # red 3 zaglavlje
+    _ws.append([])                                  # red 2 prazan
+    _ws.append([_h for _h, _w, _a in _kol])         # red 3 zaglavlje
     _hf = _PF("solid", fgColor="EDE9FE")
-    for _ci in range(1, len(_hdr) + 1):
+    for _ci in range(1, _n + 1):
         _c = _ws.cell(row=3, column=_ci)
         _c.font = _F(bold=True, size=10, color="4C1D95"); _c.fill = _hf
         _c.alignment = _AL(horizontal="center", vertical="center", wrap_text=True); _c.border = _bord
     _green = _PF("solid", fgColor="DCFCE7")
+    # boja zone — ista logika kao na ekranu
+    _zboja = {"crveno": ("FEE2E2", "991B1B"), "zuto": ("FEF3C7", "92400E"),
+              "zeleno": ("DCFCE7", "14532D")}
+    _i_zona, _i_zav = 3, _n                          # 1-bazirani indeksi kolona
     for _r in rows:
         _ws.append([
             _r.get("idk"), _r.get("naziv", ""),
+            _r.get("zona", ""), _r.get("na_nuli", 0), _r.get("izgubljeno", 0),
             "Da" if _r.get("mejl") else "Ne",
             "Da" if _r.get("p1") else "Ne",
             "Da" if _r.get("p2") else "Ne",
@@ -5486,21 +5500,23 @@ def _zadaci_xlsx(rows, sistem, mesec_lbl):
             "ZAVRŠENO" if _r.get("zavrseno") else "",
         ])
         _rr = _ws.max_row
-        for _ci in range(1, len(_hdr) + 1):
+        for _ci in range(1, _n + 1):
             _cc = _ws.cell(row=_rr, column=_ci)
             _cc.border = _bord
-            _cc.alignment = _AL(horizontal=("left" if _ci == 2 else "center"), vertical="center")
+            _cc.alignment = _AL(horizontal=_kol[_ci - 1][2], vertical="center")
+        _bz = _zboja.get(str(_r.get("nivo") or ""))
+        if _bz:
+            _zc = _ws.cell(row=_rr, column=_i_zona)
+            _zc.fill = _PF("solid", fgColor=_bz[0])
+            _zc.font = _F(bold=True, color=_bz[1])
         if _r.get("zavrseno"):
-            _zc = _ws.cell(row=_rr, column=11); _zc.fill = _green
-            _zc.font = _F(bold=True, color="14532D")
-    _ws.column_dimensions["A"].width = 12
-    _ws.column_dimensions["B"].width = 42
-    for _cl in ("C", "D", "E", "F"):
-        _ws.column_dimensions[_cl].width = 13
-    for _cl in ("G", "H", "I", "J"):
-        _ws.column_dimensions[_cl].width = 26
-    _ws.column_dimensions["K"].width = 12
-    _ws.freeze_panes = "A4"
+            _zc2 = _ws.cell(row=_rr, column=_i_zav); _zc2.fill = _green
+            _zc2.font = _F(bold=True, color="14532D")
+    for _ci, (_h, _w, _a) in enumerate(_kol, start=1):
+        _ws.column_dimensions[_GL(_ci)].width = _w
+    _ws.freeze_panes = "C4"
+    # filter u Excelu — da može da se izdvoji npr. samo crvena zona
+    _ws.auto_filter.ref = "A3:" + _GL(_n) + str(max(_ws.max_row, 4))
     _buf = _io.BytesIO(); _wb.save(_buf); return _buf.getvalue()
 
 
@@ -10629,6 +10645,9 @@ div[data-stale="true"] { opacity: 1 !important; }
                 "p2_ko": _koik(_pz[1] if len(_pz) >= 2 else None),
                 "p3_ko": _koik(_pz[2] if len(_pz) >= 3 else None),
                 "zavrseno": _zav,
+                "zona": z[3], "nivo": o.get("nivo_p", o["nivo"]),
+                "na_nuli": int(o.get("na_nuli", 0) or 0),
+                "izgubljeno": int(round(float(o.get("izgub", 0) or 0))),
             })
             # Prikaz u listi: samo koliko puta je zvala i da li je poslat mejl.
             # (ko je i kada — ostaje u Excel izvozu i u detaljnoj kartici.)
