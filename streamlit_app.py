@@ -2233,25 +2233,47 @@ def knez_admin_ui():
                        "njima se ne može poslati (ispravi u šifarniku komitenata): "
                        + ", ".join(str(r["naziv"])[:38] for r in _bez[:10])
                        + ("…" if len(_bez) > 10 else ""))
+        # --- Izveštaj o radu: ko je kontaktiran, koliko puta, problem i status ---
         try:
-            import io as _io
-            _pdf = pd.DataFrame([{
-                "ID": r["idk"], "Naziv": r["naziv"], "Mesto": r["mesto"],
-                "Email": r["email"] or "—", "Poslato ×": int(r["mail_n"]),
-                "Poslednji put": (_dt_kratko(r["mail_at"]) if r["mail_at"] else ""),
-                "Ko": _ko_kratko(r["mail_ko"]) if r["mail_ko"] else "",
-                "Poziva": len(((_obr.get(int(r["idk"])) or {}).get("dnevnik") or {}).get("pozivi") or []),
-                "Odgovorili": ("DA" if r["odg_n"] else "—"),
-                "Odgovor stigao": ((r["odg_live"] or r["odg_sac"])[-1].get("at", "")
-                                   if r["odg_n"] else ""),
-            } for r in _pumpe])
-            _buf = _io.BytesIO()
-            with pd.ExcelWriter(_buf, engine="openpyxl") as _w:
-                _pdf.to_excel(_w, index=False, sheet_name="Knez Petrol")
-            st.download_button("⬇️ Izvezi pregled u Excel", _buf.getvalue(),
-                               file_name="Knez_Petrol_" + str(mesec_key) + ".xlsx",
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                               key="knez_xlsx")
+            _fdb_r = list((sb_knez_pdf_get(mesec_key).get("fajlovi") or []))
+            _stat_r = knez_status_pumpi(mesec_key, _pumpe, _obr, _fdb_r, _odb_map)
+            _n_zav = sum(1 for _v in _stat_r.values() if str(_v.get("status", "")).startswith("ZAVR"))
+            _rb1, _rb2 = st.columns([1.5, 3])
+            with _rb1:
+                st.download_button(
+                    "⬇️ Izvezi izveštaj o radu (Excel)",
+                    knez_rad_xlsx(mesec_key, _sel_lbl_k, _pumpe, _obr, _stat_r),
+                    file_name=("Knez_rad_" + str(mesec_key) + ".xlsx"),
+                    mime=("application/vnd.openxmlformats-officedocument"
+                          ".spreadsheetml.sheet"),
+                    key="knez_xlsx", use_container_width=True)
+            with _rb2:
+                st.caption("Jedna tabela: kojoj pumpi je koliko puta poslat mejl i kada, "
+                           "kada je zvana, da li je odgovorila, koji je bio problem, da li je "
+                           "rešen i da li je ZAVRŠENA.  ·  Završeno: "
+                           + str(_n_zav) + " od " + str(len(_pumpe)) + " pumpi.")
+            _kp1, _kp2, _kp3 = st.columns([1.6, 1.25, 2.6])
+            _kkey = "_knez_pdf_rada_" + str(mesec_key)
+            with _kp1:
+                if st.button("📄 Napravi PDF izveštaj rada", key="knez_pdf_rada",
+                             use_container_width=True):
+                    try:
+                        with st.spinner("Pravim PDF…"):
+                            st.session_state[_kkey] = napravi_pdf_prikup(
+                                mesec_key, mesec_label(mesec_key))
+                    except Exception as _pe2:
+                        st.session_state.pop(_kkey, None)
+                        st.error("Greška pri pravljenju PDF-a: " + str(_pe2))
+            with _kp2:
+                if st.session_state.get(_kkey):
+                    st.download_button("⬇️ Preuzmi PDF", st.session_state[_kkey],
+                                       file_name=("Izvestaj_rada_prikupljanje_"
+                                                  + str(mesec_key) + ".pdf"),
+                                       mime="application/pdf", key="knez_pdf_rada_dl",
+                                       use_container_width=True)
+            with _kp3:
+                st.caption("Isti PDF kao u kartici „📨 Prikupljanje izveštaja“ — sistemi "
+                           "i Knez Petrol na jednom mestu.")
         except Exception as _ke:
             st.caption("Izvoz trenutno nije moguć: " + str(_ke))
 
@@ -3969,6 +3991,29 @@ def prikup_admin_ui():
                  "hitno treba nabaviti nov:** " + ", ".join(_vraceni)
                  + ".  Otvori taj sistem dole, pročitaj napomenu, traži ispravljen "
                  "izveštaj i ubaci ga ručno pa ponovo prosledi.")
+
+    # ---------- PDF izveštaj o radu (sistemi + Knez Petrol) ----------
+    _rp1, _rp2, _rp3 = st.columns([1.6, 1.25, 2.6])
+    _kpdf = "_prikup_pdf_" + str(mesec_key)
+    with _rp1:
+        if st.button("📄 Napravi PDF izveštaj rada", key="prikup_pdf_make",
+                     use_container_width=True):
+            try:
+                with st.spinner("Pravim PDF…"):
+                    st.session_state[_kpdf] = napravi_pdf_prikup(mesec_key, _sel_lbl)
+            except Exception as _pe:
+                st.session_state.pop(_kpdf, None)
+                st.error("Greška pri pravljenju PDF-a: " + str(_pe))
+    with _rp2:
+        if st.session_state.get(_kpdf):
+            st.download_button("⬇️ Preuzmi PDF", st.session_state[_kpdf],
+                               file_name=("Izvestaj_rada_prikupljanje_"
+                                          + str(mesec_key).replace(":", "_") + ".pdf"),
+                               mime="application/pdf", key="prikup_pdf_dl",
+                               use_container_width=True)
+    with _rp3:
+        st.caption("Zaseban PDF: koji sistem je zvan i koliko puta, dokle se stiglo, "
+                   "plus Knez Petrol po pumpama (mejlovi, pozivi, problem, status).")
 
     # ---------- Provera odgovora u sandučetu (pamti dokle je pročitano) ----------
     _scan_db = sb_prikup_scan_get(mesec_key)
@@ -7683,6 +7728,382 @@ def knez_lager_xlsx(stavke, mesec_lbl=""):
     _buf = _io.BytesIO()
     wb.save(_buf)
     return _buf.getvalue()
+
+
+def knez_status_pumpi(mesec_key, pumpe, obr, fajlovi, odb_map):
+    """Za svaku pumpu: koliko fajlova je stiglo, šta je bio problem, da li je rešen
+    i da li je posao završen. Isti račun kao u kartici, samo na jednom mestu."""
+    _odb = set(odb_map or {})
+    _aktivni = {}
+    _iks = {}
+    for _f in (fajlovi or []):
+        _ik = _f.get("idk")
+        _kl = _knez_kljuc_fajla(_f.get("ime"), _ik)
+        if not _ik:
+            continue
+        _ik = int(_ik)
+        if _f.get("odbaceno") or _kl in _odb:
+            _iks[_ik] = _iks.get(_ik, 0) + 1
+            continue
+        _aktivni.setdefault(_ik, []).append(_f)
+    _out = {}
+    for _r in (pumpe or []):
+        _ik = int(_r["idk"])
+        _fs = _aktivni.get(_ik, [])
+        _rl = ((obr.get(_ik) or {}).get("dnevnik") or {}).get("rucni_lager") or {}
+        _sa_red = [_f for _f in _fs if int(_f.get("redova", 0) or 0) > 0]
+        _kand = [_f for _f in _sa_red if _f.get("per_ok")]
+        if not _fs:
+            _prob = "nije poslala izveštaj"
+        elif not _sa_red:
+            _prob = ("fajl se ne čita — "
+                     + (str(_fs[0].get("greska", ""))[:60] or "nepoznat obrazac"))
+        elif not _kand:
+            _prob = ("parametri nisu kako treba — "
+                     + str(_sa_red[0].get("per_txt", ""))[:60])
+        elif len(_kand) > 1 and len({_knez_otisak_kljuc(_f.get("otisak"))
+                                     for _f in _kand}) > 1:
+            _prob = "više fajlova sa podacima — treba iksirati one koji nisu izveštaj"
+        else:
+            _prob = ""
+        if _rl:
+            _res = ("✅ količine unete ručno"
+                    + (" (nema ničega — sve nule)" if _rl.get("prazno") else ""))
+        elif _prob:
+            _res = ""
+        else:
+            _res = "✅ fajl pročitan"
+        _out[_ik] = {
+            "fajlova": len(_fs), "iksirano": _iks.get(_ik, 0),
+            "problem": _prob or "—", "reseno": _res or "NIJE REŠENO",
+            "status": ("ZAVRŠENO" if _res else "NIJE ZAVRŠENO"),
+            "rucno_ko": str(_rl.get("ko", "")), "rucno_at": _rl.get("at", ""),
+            "fajl": (_kand[0]["ime"] if _kand else (_fs[0]["ime"] if _fs else "")),
+        }
+    return _out
+
+
+def knez_rad_xlsx(mesec_key, mesec_lbl, pumpe, obr, status_map):
+    """Excel o radu: kojoj pumpi je koliko puta poslat mejl, kada je zvana,
+    šta je bio problem, da li je rešen i da li je završena."""
+    import io as _io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Rad po pumpama"
+    _kol = [("ID komitenta", 13), ("Pumpa", 42), ("Mesto", 16), ("Email", 30),
+            ("Mejl poslat ×", 12), ("Datumi slanja mejlova", 34), ("Poslednji mejl", 17),
+            ("Ko je slao", 16), ("Pozvana ×", 10), ("Datumi poziva", 30),
+            ("Odgovorila", 11), ("Odgovor stigao", 17), ("Fajlova", 9),
+            ("Iksirano (nije izveštaj)", 12), ("Problem", 50), ("Rešeno", 30),
+            ("Status", 15)]
+    ws["A1"] = "Knez Petrol — rad po pumpama  ·  " + str(mesec_lbl or mesec_key)
+    ws["A1"].font = Font(name="Arial", bold=True, size=13, color="4C1D95")
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(_kol))
+    ws["A2"] = ("Napravljeno " + _now().strftime("%d.%m.%Y. %H:%M")
+                + "  ·  pumpi: " + str(len(pumpe or [])))
+    ws["A2"].font = Font(name="Arial", size=9, color="6B7280")
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(_kol))
+    ws.append([])
+    ws.append([_k for _k, _ in _kol])
+    _hr = ws.max_row
+    for _i in range(1, len(_kol) + 1):
+        _c = ws.cell(row=_hr, column=_i)
+        _c.font = Font(name="Arial", bold=True, color="FFFFFF", size=10)
+        _c.fill = PatternFill("solid", fgColor="4C1D95")
+        _c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    _zelena = PatternFill("solid", fgColor="DCFCE7")
+    _crvena = PatternFill("solid", fgColor="FEE2E2")
+    _zuta = PatternFill("solid", fgColor="FEF3C7")
+    _tanka = Side(style="thin", color="E5E7EB")
+    for _r in sorted(pumpe or [], key=lambda x: str(x.get("naziv", ""))):
+        _ik = int(_r["idk"])
+        _dn = (obr.get(_ik) or {}).get("dnevnik") or {}
+        _mj = _dn.get("mejlovi") or []
+        _pz = _dn.get("pozivi") or []
+        _odg = _dn.get("odgovori") or []
+        _st = status_map.get(_ik, {})
+        ws.append([
+            _ik, str(_r.get("naziv", "")), str(_r.get("mesto", "")),
+            str(_r.get("email", "")) or "—",
+            len(_mj),
+            "  ·  ".join(_dt_kratko(_m.get("at", "")) for _m in _mj[:6]),
+            (_dt_kratko(_mj[-1].get("at", "")) if _mj else ""),
+            (_ko_kratko(str(_mj[-1].get("ko", ""))) if _mj else ""),
+            len(_pz),
+            "  ·  ".join(_dt_kratko(_p.get("at", "")) for _p in _pz[:6]),
+            ("DA" if _odg else "NE"),
+            (str(_odg[-1].get("at", "")) if _odg else ""),
+            int(_st.get("fajlova", 0)), int(_st.get("iksirano", 0)),
+            str(_st.get("problem", "")), str(_st.get("reseno", "")),
+            str(_st.get("status", "")),
+        ])
+        _red = ws.max_row
+        for _c in ws[_red]:
+            _c.font = Font(name="Arial", size=10)
+            _c.alignment = Alignment(vertical="center", wrap_text=(_c.column in (2, 6, 10, 15, 16)))
+            _c.border = Border(bottom=_tanka)
+        _zav = str(_st.get("status", "")).startswith("ZAVR")
+        ws.cell(row=_red, column=17).fill = _zelena if _zav else _crvena
+        ws.cell(row=_red, column=17).font = Font(name="Arial", size=10, bold=True,
+                                                 color="14532D" if _zav else "991B1B")
+        if _st.get("problem") not in ("—", "", None):
+            ws.cell(row=_red, column=15).fill = _zuta
+        if str(_st.get("reseno", "")).startswith("✅"):
+            ws.cell(row=_red, column=16).fill = _zelena
+    for _i, (_, _w) in enumerate(_kol, 1):
+        ws.column_dimensions[get_column_letter(_i)].width = _w
+    ws.freeze_panes = "C" + str(_hr + 1)
+    ws.auto_filter.ref = ("A" + str(_hr) + ":" + get_column_letter(len(_kol))
+                          + str(max(ws.max_row, _hr)))
+    # za štampu: položeno i sve kolone na jednu širinu strane
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.print_title_rows = str(_hr) + ":" + str(_hr)
+    _buf = _io.BytesIO()
+    wb.save(_buf)
+    return _buf.getvalue()
+
+
+def _prikup_knez_pumpe(mesec_baza):
+    """Pumpe Knez Petrola iz šifarnika (isti filter kao u kartici)."""
+    try:
+        _kom = sb_komitenti_full() or {}
+    except Exception:
+        _kom = {}
+    import re as _r2
+    _q = _r2.sub(r"\s+", " ", str(_cfg("KNEZ_FILTER", "KNEZ PETROL"))).strip().lower()
+    _out = []
+    for _idk, _inf in _kom.items():
+        _nz = str((_inf or {}).get("naziv", "") or "")
+        if _q and not _r2.sub(r"\s+", " ", _nz).strip().lower().startswith(_q):
+            continue
+        _out.append({"idk": int(_idk), "naziv": _nz or ("ID " + str(_idk)),
+                     "email": str((_inf or {}).get("email", "") or "").strip(),
+                     "mesto": str((_inf or {}).get("mesto", "") or "")})
+    _out.sort(key=lambda r: r["naziv"])
+    return _out
+
+
+def napravi_pdf_prikup(mesec_key, mesec_lbl):
+    """PDF izveštaj o radu administracije na PRIKUPLJANJU izveštaja:
+    deo 1 — sistemi (ko je zvan, kada, dokle se stiglo),
+    deo 2 — Knez Petrol po pumpama (mejlovi, pozivi, problem, status)."""
+    import io as _io
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as _plt
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Image,
+                                    LongTable, TableStyle, PageBreak, HRFlowable)
+
+    FN, FB = _pdf_font()
+    H1 = ParagraphStyle('H1', fontName=FB, fontSize=19, leading=23,
+                        textColor=colors.HexColor('#3b0764'), spaceAfter=2)
+    Hsub = ParagraphStyle('Hsub', fontName=FN, fontSize=10, leading=13,
+                          textColor=colors.HexColor('#9188a5'), spaceAfter=12)
+    Hsys = ParagraphStyle('Hsys', fontName=FB, fontSize=13, leading=16,
+                          textColor=colors.HexColor('#7c3aed'), spaceBefore=4, spaceAfter=5)
+    Nar = ParagraphStyle('Nar', fontName=FN, fontSize=10, leading=14.5,
+                         textColor=colors.HexColor('#333333'))
+    Sit = ParagraphStyle('Sit', fontName=FN, fontSize=8.4, leading=11,
+                         textColor=colors.HexColor('#6b7280'))
+
+    def _tab(zaglavlje, redovi, sirine, desno=()):
+        _t = LongTable([zaglavlje] + (redovi or [["—"] + [""] * (len(zaglavlje) - 1)]),
+                       colWidths=sirine, hAlign="LEFT", repeatRows=1)
+        _st = [("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#7c3aed")),
+               ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+               ("FONTNAME", (0, 0), (-1, 0), FB),
+               ("FONTNAME", (0, 1), (-1, -1), FN),
+               ("FONTSIZE", (0, 0), (-1, -1), 7.8),
+               ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+               ("TOPPADDING", (0, 0), (-1, -1), 4),
+               ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+               ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+                [colors.white, colors.HexColor("#faf8ff")]),
+               ("LINEBELOW", (0, 0), (-1, -2), 0.4, colors.HexColor("#ede9fe")),
+               ("TEXTCOLOR", (0, 1), (0, -1), colors.HexColor("#312e81"))]
+        for _c in desno:
+            _st.append(("ALIGN", (_c, 0), (_c, -1), "RIGHT"))
+        _t.setStyle(TableStyle(_st))
+        return _t
+
+    def _donut(vrednosti, boje, nazivi, naslov, sredina):
+        _f, _a = _plt.subplots(figsize=(4.6, 2.0))
+        if sum(vrednosti) <= 0:
+            vrednosti, boje, nazivi = [1], ["#e5e7eb"], ["nema podataka"]
+        _a.pie(vrednosti, colors=boje, startangle=90, counterclock=False,
+               wedgeprops=dict(width=0.44, edgecolor="white", linewidth=1.6))
+        _a.text(0, 0, str(sredina), ha="center", va="center", fontsize=12,
+                fontweight="bold", color="#3b0764")
+        _a.set_title(naslov, fontsize=9.5, fontweight="bold", color="#3b0764", pad=3)
+        _a.legend(nazivi, loc="center left", bbox_to_anchor=(0.92, 0.5), frameon=False,
+                  fontsize=7.5, handlelength=1)
+        _f.subplots_adjust(left=0.01, right=0.52, top=0.86, bottom=0.04)
+        _b = _io.BytesIO()
+        _f.savefig(_b, format="png", dpi=200, facecolor="white")
+        _plt.close(_f)
+        _b.seek(0)
+        return _b
+
+    _mesec_baza = _prikup_mes(mesec_key)
+    buf = _io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=15 * mm, bottomMargin=13 * mm,
+                            leftMargin=15 * mm, rightMargin=15 * mm)
+    el = [Paragraph("Izveštaj rada — prikupljanje izveštaja", H1),
+          Paragraph("Period: " + str(mesec_lbl) + "   ·   generisano "
+                    + _now().strftime("%d.%m.%Y. u %H:%M"), Hsub)]
+
+    # ================= DEO 1: sistemi =================
+    _pod = sb_prikup_podesavanja()
+    _stanje = sb_prikup_stanje(mesec_key)
+    _sistemi = sorted(set(sb_svi_sistemi()) | set(_pod.keys())
+                      | set(sb_sisteme(_mesec_baza)) | set(PRIKUP_ADRESE_UGRADJENE.keys()))
+    _bez = {_prikup_norm_sis(x) for x in PRIKUP_BEZ}
+    _sistemi = [s for s in _sistemi if s and not str(s).startswith("PRIKUP::")
+                and s != "*" and _prikup_norm_sis(s) not in _bez]
+    _red_s, _n_pos, _n_stiglo, _n_predat, _n_vrac, _n_nije = [], 0, 0, 0, 0, 0
+    for _s in _sistemi:
+        _ss = _stanje.get(_s) or {}
+        _mj = _ss.get("mejlovi") or []
+        _odb = set(_ss.get("odbaceno") or [])
+        _fajl = [_x for _z in (_ss.get("odgovori") or [])
+                 for _x in (_z.get("prilozi") or [])
+                 if _prikup_kljuc_priloga(_z, _x) not in _odb]
+        _pred = _ss.get("predat") or {}
+        _odl = _ss.get("odluka") or {}
+        _adr = (_pod.get(_s) or {}).get("adrese") or []
+        if _odl.get("status") == "odbijen":
+            _stat = "VRAĆENO na doradu"
+            _n_vrac += 1
+        elif _odl.get("status") == "prihvacen":
+            _stat = "PRIHVAĆENO"
+            _n_predat += 1
+        elif _pred.get("at"):
+            _stat = "predato, čeka pregled"
+            _n_predat += 1
+        elif _fajl:
+            _stat = "stigao izveštaj"
+        elif _mj:
+            _stat = "poslato, nema odgovora"
+        elif not _adr:
+            _stat = "nema adrese u šifarniku"
+        else:
+            _stat = "nije poslato"
+        if _mj:
+            _n_pos += 1
+        else:
+            _n_nije += 1
+        if _fajl:
+            _n_stiglo += 1
+        _red_s.append([str(_s)[:26], str(len(_mj)),
+                       (_dt_kratko(_mj[-1].get("at", "")) if _mj else "—"),
+                       (_ko_kratko(str(_mj[-1].get("ko", ""))) if _mj else "—"),
+                       str(len(_fajl)),
+                       (_dt_kratko(_pred.get("at")) if _pred.get("at") else "—"),
+                       (_ko_kratko(str(_pred.get("ko", ""))) if _pred.get("ko") else "—"),
+                       _stat])
+    el.append(Paragraph("Sistemi — dokle se stiglo", Hsys))
+    el.append(Paragraph(
+        "Sistema ukupno <b>" + str(len(_sistemi)) + "</b>  ·  zahtev poslat <b>"
+        + str(_n_pos) + "</b>  ·  izveštaj stigao <b>" + str(_n_stiglo)
+        + "</b>  ·  prosleđeno analitičaru <b>" + str(_n_predat)
+        + "</b>  ·  vraćeno na doradu <b>" + str(_n_vrac)
+        + "</b>  ·  nije poslato <b>" + str(_n_nije) + "</b>.", Nar))
+    el.append(Spacer(1, 6))
+    try:
+        el.append(Image(_donut([_n_predat, max(_n_stiglo - _n_predat, 0),
+                                max(_n_pos - _n_stiglo, 0), _n_nije],
+                               ["#17a34a", "#f2820c", "#a78bfa", "#e5e2ee"],
+                               ["Prosleđeno analitičaru (" + str(_n_predat) + ")",
+                                "Stiglo, čeka obradu (" + str(max(_n_stiglo - _n_predat, 0)) + ")",
+                                "Poslato, nema odgovora (" + str(max(_n_pos - _n_stiglo, 0)) + ")",
+                                "Nije poslato (" + str(_n_nije) + ")"],
+                               "Sistemi", len(_sistemi)),
+                        width=170 * mm, height=74 * mm))
+    except Exception:
+        pass
+    el.append(_tab(["Sistem", "Mejl x", "Poslednji mejl", "Ko", "Fajlova",
+                    "Prosleđeno", "Predao", "Status"],
+                   _red_s, [30 * mm, 10 * mm, 27 * mm, 13 * mm, 11 * mm, 27 * mm,
+                            13 * mm, 49 * mm], desno=(1, 4)))
+    el.append(Spacer(1, 4))
+    el.append(Paragraph("Fajlova = prilozi koji su prihvaćeni kao izveštaj (iksirani se ne "
+                        "broje).  ·  „Prosleđeno“ je trenutak kad je izveštaj poslat "
+                        "analitičaru.", Sit))
+
+    # ================= DEO 2: Knez Petrol =================
+    _pumpe = _prikup_knez_pumpe(_mesec_baza)
+    if _pumpe:
+        el.append(PageBreak())
+        el.append(Paragraph("Knez Petrol — po pumpama", Hsys))
+        _obr = sb_load_obrada(_mesec_baza, KNEZ_SIS)
+        _fdb = list((sb_knez_pdf_get(_mesec_baza).get("fajlovi") or []))
+        _odb_m = sb_knez_odb_get(_mesec_baza)
+        _stat = knez_status_pumpi(_mesec_baza, _pumpe, _obr, _fdb, _odb_m)
+        _uk_mejl = _uk_poz = _n_odg = _n_rucno = _n_zav = 0
+        _red_p = []
+        for _r in _pumpe:
+            _ik = int(_r["idk"])
+            _dn = (_obr.get(_ik) or {}).get("dnevnik") or {}
+            _mj, _pz = (_dn.get("mejlovi") or []), (_dn.get("pozivi") or [])
+            _od = _dn.get("odgovori") or []
+            _st = _stat.get(_ik, {})
+            _uk_mejl += len(_mj)
+            _uk_poz += len(_pz)
+            if _od:
+                _n_odg += 1
+            if str(_st.get("reseno", "")).startswith("✅ količine"):
+                _n_rucno += 1
+            if str(_st.get("status", "")).startswith("ZAVR"):
+                _n_zav += 1
+            else:
+                _red_p.append([str(_ik),
+                               str(_r["naziv"]).replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,")[:30],
+                               str(len(_mj)), str(len(_pz)), ("DA" if _od else "NE"),
+                               str(_st.get("problem", "")).replace("✅", "").strip()[:62]])
+        el.append(Paragraph(
+            "Pumpi <b>" + str(len(_pumpe)) + "</b>  ·  poslato mejlova ukupno <b>"
+            + str(_uk_mejl) + "</b>  ·  telefonskih poziva <b>" + str(_uk_poz)
+            + "</b>  ·  odgovorilo <b>" + str(_n_odg) + "</b>  ·  ručno upisano <b>"
+            + str(_n_rucno) + "</b>  ·  <b>završeno " + str(_n_zav) + " od "
+            + str(len(_pumpe)) + "</b>.", Nar))
+        el.append(Spacer(1, 6))
+        try:
+            el.append(Image(_donut([_n_zav, len(_pumpe) - _n_zav],
+                                   ["#17a34a", "#e5484d"],
+                                   ["Završeno (" + str(_n_zav) + ")",
+                                    "Nije završeno (" + str(len(_pumpe) - _n_zav) + ")"],
+                                   "Pumpe", len(_pumpe)),
+                            width=170 * mm, height=74 * mm))
+        except Exception:
+            pass
+        if _red_p:
+            el.append(Paragraph("Pumpe koje nisu završene (" + str(len(_red_p)) + ")", Hsys))
+            el.append(_tab(["ID", "Pumpa", "Mejl x", "Poziva", "Odgovorila", "Problem"],
+                           _red_p, [14 * mm, 52 * mm, 14 * mm, 14 * mm, 20 * mm, 66 * mm],
+                           desno=(2, 3)))
+        else:
+            el.append(Paragraph("Sve pumpe su završene — svaka ima izveštaj ili ručno "
+                                "upisane količine.", Nar))
+        el.append(Spacer(1, 5))
+        el.append(Paragraph("Ceo spisak sa datumima svakog mejla i poziva je u Excel izveštaju "
+                            "(dugme „Izvezi izveštaj o radu“ na kartici Knez Petrol).", Sit))
+
+    el.append(Spacer(1, 8))
+    el.append(HRFlowable(width="100%", thickness=0.6, color=colors.HexColor("#ede9fe")))
+    el.append(Paragraph("Izveštaj je napravljen automatski iz evidencije aplikacije "
+                        "(poslati mejlovi, pozivi, primljeni prilozi i prosleđivanja).", Sit))
+    doc.build(el)
+    return buf.getvalue()
 
 
 def sb_knez_pdf_get(mesec_key):
