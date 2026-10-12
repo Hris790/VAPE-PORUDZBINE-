@@ -3551,6 +3551,8 @@ def sb_prikup_stanje(mesec_key):
                                                          (_dn.get("odbaceno") or [])],
                                             "predat": dict(_dn.get("predat") or {}),
                                             "odluka": dict(_dn.get("odluka") or {}),
+                                            "odluke": list(_dn.get("odluke") or []),
+                                            "predaje": list(_dn.get("predaje") or []),
                                             "scan": dict(_dn.get("scan") or {})}
         return _out
     except Exception:
@@ -3732,6 +3734,11 @@ def sb_prikup_predaj(mesec_key, sistem, fajlovi, ko=""):
                                       "vel": int(_f.get("vel", 0) or 0)}
                                      for _f in (fajlovi or [])][:10],
                          "broj": len(fajlovi or [])}
+        # istorija prosleđivanja — da se vidi da je izveštaj slat više puta
+        _ist_p = list(_dn.get("predaje") or [])
+        _ist_p.append({"at": _dn["predat"]["at"], "ko": str(ko or ""),
+                       "broj": len(fajlovi or [])})
+        _dn["predaje"] = _ist_p[-20:]
         _dn.pop("odluka", None)
         _prikup_upisi(cli, mesec_key, sistem, _dn)
         return True
@@ -3740,7 +3747,10 @@ def sb_prikup_predaj(mesec_key, sistem, fajlovi, ko=""):
 
 
 def sb_prikup_odluka(mesec_key, sistem, status, napomena="", ko=""):
-    """Analitičar prihvata ili vraća izveštaj (uz napomenu)."""
+    """Analitičar prihvata ili vraća izveštaj (uz napomenu).
+
+    Svaka odluka se UPISUJE I U ISTORIJU (`odluke`) — da se kasnije zna da je
+    izveštaj bio vraćen, čak i kad posle toga stigne ispravljen i bude prihvaćen."""
     cli, _dn = _prikup_dnevnik(mesec_key, sistem)
     if cli is None:
         return False
@@ -3748,10 +3758,13 @@ def sb_prikup_odluka(mesec_key, sistem, status, napomena="", ko=""):
         if not status:
             _dn.pop("odluka", None)          # poništena odluka — opet čeka pregled
         else:
-            _dn["odluka"] = {"status": ("prihvacen" if status == "prihvacen"
-                                        else "odbijen"),
-                             "napomena": str(napomena or "")[:1000],
-                             "ko": str(ko or ""), "at": _now().isoformat()}
+            _zapis = {"status": ("prihvacen" if status == "prihvacen" else "odbijen"),
+                      "napomena": str(napomena or "")[:1000],
+                      "ko": str(ko or ""), "at": _now().isoformat()}
+            _dn["odluka"] = dict(_zapis)
+            _ist = list(_dn.get("odluke") or [])
+            _ist.append(_zapis)
+            _dn["odluke"] = _ist[-20:]
         _prikup_upisi(cli, mesec_key, sistem, _dn)
         return True
     except Exception:
@@ -4351,6 +4364,21 @@ def prikup_admin_ui():
                            + _dt_kratko(_odl.get("at"))
                            + ((" · " + str(_odl.get("ko"))) if _odl.get("ko") else "")
                            + ". Posao za ovaj sistem je završen.")
+            # istorija: da se vidi da je izveštaj ranije vraćan, i zašto
+            _ist_s = [_o for _o in (_st_s.get("odluke") or [])
+                      if _o.get("status") == "odbijen"]
+            if _ist_s and not _vracen:
+                with st.expander("⛔ Ovaj izveštaj je ranije vraćan (" + str(len(_ist_s))
+                                 + "×) — napomene", expanded=False):
+                    for _o in _ist_s:
+                        st.markdown(
+                            '<div style="font-size:12.5px;color:#7f1d1d;background:#fff1f2;'
+                            'border:1px solid #fecdd3;border-radius:8px;padding:7px 11px;'
+                            'margin-bottom:6px;"><b>' + _h_escape(_dt_kratko(_o.get("at", "")))
+                            + '</b>' + ((' · ' + _h_escape(str(_o.get("ko", ""))))
+                                        if _o.get("ko") else '')
+                            + '<br>' + _h_escape(str(_o.get("napomena") or "(bez napomene)"))
+                            + '</div>', unsafe_allow_html=True)
             st.markdown(
                 '<div style="font-size:12.5px;color:#4b5563;line-height:1.7;'
                 'background:#faf8ff;border:1px solid #ede9fe;border-radius:10px;'
@@ -7798,7 +7826,7 @@ def knez_rad_xlsx(mesec_key, mesec_lbl, pumpe, obr, status_map):
             ("Ko je slao", 16), ("Pozvana ×", 10), ("Datumi poziva", 30),
             ("Odgovorila", 11), ("Odgovor stigao", 17), ("Fajlova", 9),
             ("Iksirano (nije izveštaj)", 12), ("Problem", 50), ("Rešeno", 30),
-            ("Status", 15)]
+            ("Status", 15), ("Preduzeto", 34)]
     ws["A1"] = "Knez Petrol — rad po pumpama  ·  " + str(mesec_lbl or mesec_key)
     ws["A1"].font = Font(name="Arial", bold=True, size=13, color="4C1D95")
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(_kol))
@@ -7829,16 +7857,21 @@ def knez_rad_xlsx(mesec_key, mesec_lbl, pumpe, obr, status_map):
             _ik, str(_r.get("naziv", "")), str(_r.get("mesto", "")),
             str(_r.get("email", "")) or "—",
             len(_mj),
-            "  ·  ".join(_dt_kratko(_m.get("at", "")) for _m in _mj[:6]),
+            "  ·  ".join(_dt_kratko(_m.get("at", "")) for _m in _mj[:12]),
             (_dt_kratko(_mj[-1].get("at", "")) if _mj else ""),
             (_ko_kratko(str(_mj[-1].get("ko", ""))) if _mj else ""),
             len(_pz),
-            "  ·  ".join(_dt_kratko(_p.get("at", "")) for _p in _pz[:6]),
+            "  ·  ".join(_dt_kratko(_p.get("at", "")) for _p in _pz[:12]),
             ("DA" if _odg else "NE"),
             (str(_odg[-1].get("at", "")) if _odg else ""),
             int(_st.get("fajlova", 0)), int(_st.get("iksirano", 0)),
             str(_st.get("problem", "")), str(_st.get("reseno", "")),
             str(_st.get("status", "")),
+            ("—" if str(_st.get("status", "")).startswith("ZAVR") else
+             ("sve je preduzeto" if (len(_mj) >= 2 and _pz) else
+              ("NIJE ni kontaktirana" if (not _mj and not _pz) else
+               ("poslat samo " + str(len(_mj)) + " mejl" + ("" if _pz else " i nije zvana"))
+               if len(_mj) < 2 else "nije zvana telefonom"))),
         ])
         _red = ws.max_row
         for _c in ws[_red]:
@@ -7936,6 +7969,12 @@ def napravi_pdf_prikup(mesec_key, mesec_lbl):
         _t.setStyle(TableStyle(_st))
         return _t
 
+    Cel = ParagraphStyle('Cel', fontName=FN, fontSize=7.2, leading=9,
+                         textColor=colors.HexColor('#333333'))
+
+    def _pcel(t):
+        return Paragraph(_h_escape(str(t or "")), Cel)
+
     def _donut(vrednosti, boje, nazivi, naslov, sredina):
         _f, _a = _plt.subplots(figsize=(4.6, 2.0))
         if sum(vrednosti) <= 0:
@@ -7971,6 +8010,7 @@ def napravi_pdf_prikup(mesec_key, mesec_lbl):
     _sistemi = [s for s in _sistemi if s and not str(s).startswith("PRIKUP::")
                 and s != "*" and _prikup_norm_sis(s) not in _bez]
     _red_s, _n_pos, _n_stiglo, _n_predat, _n_vrac, _n_nije = [], 0, 0, 0, 0, 0
+    _vraceni_red = []          # svako vraćanje posebno, sa napomenom
     for _s in _sistemi:
         _ss = _stanje.get(_s) or {}
         _mj = _ss.get("mejlovi") or []
@@ -7980,10 +8020,24 @@ def napravi_pdf_prikup(mesec_key, mesec_lbl):
                  if _prikup_kljuc_priloga(_z, _x) not in _odb]
         _pred = _ss.get("predat") or {}
         _odl = _ss.get("odluka") or {}
+        _ist = list(_ss.get("odluke") or [])
+        _pred_ist = list(_ss.get("predaje") or [])
         _adr = (_pod.get(_s) or {}).get("adrese") or []
+        # koliko je PUTA izveštaj vraćen na doradu (iz istorije odluka)
+        _vrac_n = sum(1 for _o in _ist if _o.get("status") == "odbijen")
+        if not _vrac_n and _odl.get("status") == "odbijen":
+            _vrac_n = 1                      # stari zapis, bez istorije
+        for _o in _ist:
+            if _o.get("status") == "odbijen":
+                _vraceni_red.append([str(_s)[:22], _dt_kratko(_o.get("at", "")),
+                                     _ko_kratko(str(_o.get("ko", ""))),
+                                     str(_o.get("napomena", ""))[:150] or "—"])
+        if not _ist and _odl.get("status") == "odbijen":
+            _vraceni_red.append([str(_s)[:22], _dt_kratko(_odl.get("at", "")),
+                                 _ko_kratko(str(_odl.get("ko", ""))),
+                                 str(_odl.get("napomena", ""))[:150] or "—"])
         if _odl.get("status") == "odbijen":
-            _stat = "VRAĆENO na doradu"
-            _n_vrac += 1
+            _stat = "VRAĆENO — čeka ispravku"
         elif _odl.get("status") == "prihvacen":
             _stat = "PRIHVAĆENO"
             _n_predat += 1
@@ -7998,6 +8052,9 @@ def napravi_pdf_prikup(mesec_key, mesec_lbl):
             _stat = "nema adrese u šifarniku"
         else:
             _stat = "nije poslato"
+        if _vrac_n and _odl.get("status") != "odbijen":
+            _stat += "  (vraćan " + str(_vrac_n) + "×)"
+        _n_vrac += _vrac_n
         if _mj:
             _n_pos += 1
         else:
@@ -8008,16 +8065,17 @@ def napravi_pdf_prikup(mesec_key, mesec_lbl):
                        (_dt_kratko(_mj[-1].get("at", "")) if _mj else "—"),
                        (_ko_kratko(str(_mj[-1].get("ko", ""))) if _mj else "—"),
                        str(len(_fajl)),
+                       str(len(_pred_ist) or (1 if _pred.get("at") else 0)),
                        (_dt_kratko(_pred.get("at")) if _pred.get("at") else "—"),
-                       (_ko_kratko(str(_pred.get("ko", ""))) if _pred.get("ko") else "—"),
+                       (str(_vrac_n) if _vrac_n else "—"),
                        _stat])
     el.append(Paragraph("Sistemi — dokle se stiglo", Hsys))
     el.append(Paragraph(
         "Sistema ukupno <b>" + str(len(_sistemi)) + "</b>  ·  zahtev poslat <b>"
         + str(_n_pos) + "</b>  ·  izveštaj stigao <b>" + str(_n_stiglo)
         + "</b>  ·  prosleđeno analitičaru <b>" + str(_n_predat)
-        + "</b>  ·  vraćeno na doradu <b>" + str(_n_vrac)
-        + "</b>  ·  nije poslato <b>" + str(_n_nije) + "</b>.", Nar))
+        + "</b>  ·  vraćano na doradu <b>" + str(_n_vrac)
+        + "</b> put(a)  ·  nije poslato <b>" + str(_n_nije) + "</b>.", Nar))
     el.append(Spacer(1, 6))
     try:
         el.append(Image(_donut([_n_predat, max(_n_stiglo - _n_predat, 0),
@@ -8032,13 +8090,19 @@ def napravi_pdf_prikup(mesec_key, mesec_lbl):
     except Exception:
         pass
     el.append(_tab(["Sistem", "Mejl x", "Poslednji mejl", "Ko", "Fajlova",
-                    "Prosleđeno", "Predao", "Status"],
-                   _red_s, [30 * mm, 10 * mm, 27 * mm, 13 * mm, 11 * mm, 27 * mm,
-                            13 * mm, 49 * mm], desno=(1, 4)))
+                    "Predato x", "Predato kad", "Vraćano x", "Status"],
+                   _red_s, [27 * mm, 11 * mm, 25 * mm, 10 * mm, 13 * mm, 14 * mm,
+                            25 * mm, 14 * mm, 41 * mm], desno=(1, 4, 5, 7)))
     el.append(Spacer(1, 4))
     el.append(Paragraph("Fajlova = prilozi koji su prihvaćeni kao izveštaj (iksirani se ne "
-                        "broje).  ·  „Prosleđeno“ je trenutak kad je izveštaj poslat "
-                        "analitičaru.", Sit))
+                        "broje).  ·  „Predato x“ = koliko je puta izveštaj prosleđen "
+                        "analitičaru.  ·  „Vraćano x“ = koliko ga je puta analitičar vratio "
+                        "na doradu.", Sit))
+    if _vraceni_red:
+        el.append(Spacer(1, 9))
+        el.append(Paragraph("Vraćeni izveštaji — napomene analitičara", Hsys))
+        el.append(_tab(["Sistem", "Kada je vraćen", "Ko je vratio", "Napomena"],
+                       _vraceni_red, [26 * mm, 25 * mm, 20 * mm, 109 * mm]))
 
     # ================= DEO 2: Knez Petrol =================
     _pumpe = _prikup_knez_pumpe(_mesec_baza)
@@ -8050,6 +8114,9 @@ def napravi_pdf_prikup(mesec_key, mesec_lbl):
         _odb_m = sb_knez_odb_get(_mesec_baza)
         _stat = knez_status_pumpi(_mesec_baza, _pumpe, _obr, _fdb, _odb_m)
         _uk_mejl = _uk_poz = _n_odg = _n_rucno = _n_zav = 0
+        _n_zvano = _n_bez_kont = _n_bez_mejla = 0
+        _raspodela = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}      # 4 = „4 i više"
+        _dani = []
         _red_p = []
         for _r in _pumpe:
             _ik = int(_r["idk"])
@@ -8059,23 +8126,54 @@ def napravi_pdf_prikup(mesec_key, mesec_lbl):
             _st = _stat.get(_ik, {})
             _uk_mejl += len(_mj)
             _uk_poz += len(_pz)
+            _raspodela[min(len(_mj), 4)] = _raspodela.get(min(len(_mj), 4), 0) + 1
+            if _pz:
+                _n_zvano += 1
+            if not _mj and not _pz:
+                _n_bez_kont += 1
+            if not str(_r.get("email", "") or "").strip():
+                _n_bez_mejla += 1
             if _od:
                 _n_odg += 1
+                # za koliko dana su odgovorili posle PRVOG mejla
+                try:
+                    _d1 = datetime.datetime.fromisoformat(str(_mj[0].get("at"))).date()
+                    _d2 = datetime.datetime.strptime(
+                        str(_od[-1].get("at", ""))[:10].strip(". "), "%d.%m.%Y").date()
+                    if 0 <= (_d2 - _d1).days <= 90:
+                        _dani.append((_d2 - _d1).days)
+                except Exception:
+                    pass
             if str(_st.get("reseno", "")).startswith("✅ količine"):
                 _n_rucno += 1
             if str(_st.get("status", "")).startswith("ZAVR"):
                 _n_zav += 1
             else:
-                _red_p.append([str(_ik),
-                               str(_r["naziv"]).replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,")[:30],
-                               str(len(_mj)), str(len(_pz)), ("DA" if _od else "NE"),
-                               str(_st.get("problem", "")).replace("✅", "").strip()[:62]])
+                # šta je preduzeto za pumpu koja nije završena
+                if len(_mj) >= 2 and _pz:
+                    _pre = "sve je preduzeto"
+                elif not _mj and not _pz:
+                    _pre = "NIJE ni kontaktirana"
+                elif len(_mj) < 2:
+                    _pre = ("poslat samo " + str(len(_mj)) + " mejl"
+                            + ("" if _pz else " i nije zvana"))
+                else:
+                    _pre = "nije zvana telefonom"
+                _red_p.append([
+                    str(_ik),
+                    _pcel(str(_r["naziv"]).replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,")[:40]),
+                    _pcel("  ·  ".join(_dt_kratko(_m.get("at", "")) for _m in _mj) or "—"),
+                    _pcel("  ·  ".join(_dt_kratko(_z.get("at", "")) for _z in _pz) or "—"),
+                    ("DA" if _od else "NE"),
+                    _pcel(str(_st.get("problem", "")).replace("✅", "").strip()[:70]),
+                    _pcel(_pre)])
+        _pct = (lambda _a: str(int(round(100.0 * _a / max(len(_pumpe), 1)))) + "%")
         el.append(Paragraph(
             "Pumpi <b>" + str(len(_pumpe)) + "</b>  ·  poslato mejlova ukupno <b>"
             + str(_uk_mejl) + "</b>  ·  telefonskih poziva <b>" + str(_uk_poz)
-            + "</b>  ·  odgovorilo <b>" + str(_n_odg) + "</b>  ·  ručno upisano <b>"
-            + str(_n_rucno) + "</b>  ·  <b>završeno " + str(_n_zav) + " od "
-            + str(len(_pumpe)) + "</b>.", Nar))
+            + "</b>  ·  odgovorilo <b>" + str(_n_odg) + "</b> (" + _pct(_n_odg)
+            + ")  ·  ručno upisano <b>" + str(_n_rucno) + "</b>  ·  <b>završeno "
+            + str(_n_zav) + " od " + str(len(_pumpe)) + "</b>.", Nar))
         el.append(Spacer(1, 6))
         try:
             el.append(Image(_donut([_n_zav, len(_pumpe) - _n_zav],
@@ -8086,17 +8184,48 @@ def napravi_pdf_prikup(mesec_key, mesec_lbl):
                             width=170 * mm, height=74 * mm))
         except Exception:
             pass
+        # --- kratka analitika o slanju i zvanju ---
+        el.append(Paragraph("Kratka analitika — slanje i zvanje", Hsys))
+        _sr_mejl = ("%.1f" % (_uk_mejl / float(max(len(_pumpe), 1)))).replace(".", ",")
+        _sr_dana = ("%.1f" % (sum(_dani) / float(len(_dani)))).replace(".", ",") if _dani else "—"
+        _an = [
+            ["Prosečno mejlova po pumpi", _sr_mejl,
+             "ukupno " + str(_uk_mejl) + " mejlova na " + str(len(_pumpe)) + " pumpi"],
+            ["Nijedan mejl", str(_raspodela.get(0, 0)),
+             "pumpe kojima zahtev uopšte nije poslat"],
+            ["Jedan mejl", str(_raspodela.get(1, 0)), "poslato jednom"],
+            ["Dva mejla", str(_raspodela.get(2, 0)), "poslata opomena"],
+            ["Tri mejla", str(_raspodela.get(3, 0)), "dve opomene"],
+            ["Četiri i više", str(_raspodela.get(4, 0)), "uporno slanje"],
+            ["Pozvano telefonom", str(_n_zvano) + " (" + _pct(_n_zvano) + ")",
+             "ukupno " + str(_uk_poz) + " poziva"],
+            ["Odgovorilo na zahtev", str(_n_odg) + " (" + _pct(_n_odg) + ")",
+             ("prosečno za " + _sr_dana + " dana od prvog mejla") if _dani else ""],
+            ["Nije ni kontaktirano", str(_n_bez_kont),
+             "ni mejl ni poziv — ovo ne sme da ostane tako"],
+            ["Bez mejla u šifarniku", str(_n_bez_mejla),
+             "njima se može samo telefonom"],
+        ]
+        el.append(_tab(["Šta se meri", "Koliko", "Napomena"],
+                       _an, [58 * mm, 30 * mm, 92 * mm], desno=(1,)))
+        el.append(Spacer(1, 8))
         if _red_p:
-            el.append(Paragraph("Pumpe koje nisu završene (" + str(len(_red_p)) + ")", Hsys))
-            el.append(_tab(["ID", "Pumpa", "Mejl x", "Poziva", "Odgovorila", "Problem"],
-                           _red_p, [14 * mm, 52 * mm, 14 * mm, 14 * mm, 20 * mm, 66 * mm],
-                           desno=(2, 3)))
+            el.append(Paragraph("Pumpe bez izveštaja — šta je sve preduzeto ("
+                                + str(len(_red_p)) + ")", Hsys))
+            el.append(Paragraph("Za svaku pumpu je upisan datum SVAKOG poslatog mejla i "
+                                "SVAKOG poziva — da se vidi da li je urađeno sve što treba "
+                                "(najmanje dva mejla i jedan poziv).", Sit))
+            el.append(Spacer(1, 4))
+            el.append(_tab(["ID", "Pumpa", "Datumi mejlova", "Datumi poziva", "Odg.",
+                            "Problem", "Preduzeto"],
+                           _red_p, [12 * mm, 30 * mm, 36 * mm, 28 * mm, 10 * mm,
+                                    32 * mm, 32 * mm]))
         else:
             el.append(Paragraph("Sve pumpe su završene — svaka ima izveštaj ili ručno "
                                 "upisane količine.", Nar))
         el.append(Spacer(1, 5))
-        el.append(Paragraph("Ceo spisak sa datumima svakog mejla i poziva je u Excel izveštaju "
-                            "(dugme „Izvezi izveštaj o radu“ na kartici Knez Petrol).", Sit))
+        el.append(Paragraph("Ceo spisak (i za pumpe koje su završene) je u Excel izveštaju — "
+                            "dugme „Izvezi izveštaj o radu“ na kartici Knez Petrol.", Sit))
 
     el.append(Spacer(1, 8))
     el.append(HRFlowable(width="100%", thickness=0.6, color=colors.HexColor("#ede9fe")))
