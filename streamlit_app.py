@@ -2385,6 +2385,9 @@ def knez_admin_ui():
     with _kt3:
         st.caption("Pumpe uz odgovor \u0161alju PDF \u201eLager lista\u201c. Ovde se ti PDF-ovi \u010ditaju i "
                    "prave jedan Excel: ID komitenta \u00b7 naziv artikla \u00b7 izlaz \u00b7 stanje.")
+        _lf = st.session_state.pop("_knez_lager_flash", None)
+        if _lf:
+            st.success(_lf)
         _pdf_izvori = []          # [{"ime", "data", "idk", "pumpa", "izvor"}]
         for r in _pumpe:
             for _o in (r.get("odg_live") or []):
@@ -2493,45 +2496,46 @@ def knez_admin_ui():
         _novi_izvori = [_p for _p in _pdf_izvori
                         if _p.get("izvor") == "ručno"
                         or _knez_kljuc_fajla(_p.get("ime"), _p.get("idk")) not in _imam_f]
-        if not _pdf_izvori and not _fajlovi_db:
-            return
-        try:
-            import pdfplumber as _pp_test          # noqa: F401
-            _ima_pp = True
-        except Exception:
-            _ima_pp = False
-        if not _ima_pp:
-            st.error("\U0001F9E9 **Fali biblioteka `pdfplumber` na serveru** \u2014 zato nijedan PDF ne mo\u017ee "
-                     "da se pro\u010dita (fajlovi su ispravni, pumpe su prepoznate).\n\n"
-                     "Kako se popravlja, jednom:\n"
-                     "1. Otvori svoj GitHub repo (VAPE-PORUDZBINE-) \u2192 fajl `requirements.txt`\n"
-                     "2. Dodaj novi red: `pdfplumber`\n"
-                     "3. Commit \u2192 pa u Streamlit-u \u201eManage app\u201c \u2192 **Reboot app**\n\n"
-                     "Posle toga klikni ponovo \u201ePro\u010ditaj PDF-ove i napravi Excel\u201c.")
-            if not _fajlovi_db:
-                return
-        _gc1, _gc2 = st.columns([1.35, 3])
-        with _gc1:
-            _go_pdf = _ima_pp and st.button(
-                ("📊 Pročitaj nove PDF-ove (" + str(len(_novi_izvori)) + ")")
-                if _fajlovi_db else "📊 Pročitaj PDF-ove",
-                key="knez_pdf_go", type="primary", use_container_width=True,
-                disabled=bool(_fajlovi_db and not _novi_izvori))
-        with _gc2:
-            if _fajlovi_db:
-                st.markdown('<div style="font-size:12px;color:#9ca3af;padding-top:9px;">'
-                            'Već pročitano: <b>' + str(len(_fajlovi_db)) + '</b> lager listi'
-                            '  ·  poslednje ažuriranje '
-                            + _h_escape(_dt_kratko(_pdf_db.get("at")))
-                            + (("  ·  " + _h_escape(str(_pdf_db.get("ko"))))
-                               if _pdf_db.get("ko") else "")
-                            + '<br>Čita se samo ono što još nije pročitano — staro ostaje.'
-                            '</div>', unsafe_allow_html=True)
-            else:
-                st.markdown('<div style="font-size:12px;color:#9ca3af;padding-top:9px;">'
-                            'Pročita PDF-ove iz odgovora i napravi jedan Excel. Pročitano se '
-                            'pamti, pa se sledeći put otvara odmah.</div>',
-                            unsafe_allow_html=True)
+        # Nema nijednog PDF-a? Ne izlazi se iz kartice — ispod su ručni unos i Excel,
+        # a oni moraju da postoje i za mesec u kome nijedna lager lista nije stigla.
+        _ima_pp = False
+        _go_pdf = False
+        if _pdf_izvori or _fajlovi_db:
+            try:
+                import pdfplumber as _pp_test          # noqa: F401
+                _ima_pp = True
+            except Exception:
+                _ima_pp = False
+            if not _ima_pp:
+                st.error("\U0001F9E9 **Fali biblioteka `pdfplumber` na serveru** \u2014 zato nijedan PDF ne mo\u017ee "
+                         "da se pro\u010dita (fajlovi su ispravni, pumpe su prepoznate).\n\n"
+                         "Kako se popravlja, jednom:\n"
+                         "1. Otvori svoj GitHub repo (VAPE-PORUDZBINE-) \u2192 fajl `requirements.txt`\n"
+                         "2. Dodaj novi red: `pdfplumber`\n"
+                         "3. Commit \u2192 pa u Streamlit-u \u201eManage app\u201c \u2192 **Reboot app**\n\n"
+                         "Posle toga klikni ponovo \u201ePro\u010ditaj PDF-ove i napravi Excel\u201c.")
+            _gc1, _gc2 = st.columns([1.35, 3])
+            with _gc1:
+                _go_pdf = _ima_pp and st.button(
+                    ("\U0001F4CA Pročitaj nove PDF-ove (" + str(len(_novi_izvori)) + ")")
+                    if _fajlovi_db else "\U0001F4CA Pročitaj PDF-ove",
+                    key="knez_pdf_go", type="primary", use_container_width=True,
+                    disabled=bool(_fajlovi_db and not _novi_izvori))
+            with _gc2:
+                if _fajlovi_db:
+                    st.markdown('<div style="font-size:12px;color:#9ca3af;padding-top:9px;">'
+                                'Već pročitano: <b>' + str(len(_fajlovi_db)) + '</b> lager listi'
+                                '  ·  poslednje ažuriranje '
+                                + _h_escape(_dt_kratko(_pdf_db.get("at")))
+                                + (("  ·  " + _h_escape(str(_pdf_db.get("ko"))))
+                                   if _pdf_db.get("ko") else "")
+                                + '<br>Čita se samo ono što još nije pročitano — staro ostaje.'
+                                '</div>', unsafe_allow_html=True)
+                else:
+                    st.markdown('<div style="font-size:12px;color:#9ca3af;padding-top:9px;">'
+                                'Pročita PDF-ove iz odgovora i napravi jedan Excel. Pročitano se '
+                                'pamti, pa se sledeći put otvara odmah.</div>',
+                                unsafe_allow_html=True)
         if _go_pdf:
             _novi_fajlovi = []
             _prog2 = st.progress(0, "📄 Čitam PDF-ove…")
@@ -2584,8 +2588,11 @@ def knez_admin_ui():
             st.rerun()
 
         _rez = st.session_state.get("_knez_pdf_rez") or {}
-        if _rez.get("izv"):
-            _izv = _rez["izv"]; _stavke = _rez["stavke"]
+        # Prikazuje se UVEK — i kad nijedna lager lista još nije pročitana.
+        # Inače bi ručni unos (i Excel) nestali čim se promeni mesec ili posle
+        # ponovne prijave, pa bi izgledalo kao da ručno upisanih podataka nema.
+        if _pumpe:
+            _izv = list(_rez.get("izv") or []); _stavke = list(_rez.get("stavke") or [])
 
             # ---------- 1) Ista pumpa poslala VIŠE fajlova ----------
             # Ako su fajlovi isti — uzima se jedan. Ako NISU — to je problem i mora
@@ -2702,6 +2709,94 @@ def knez_admin_ui():
                     + "".join(_tr) + '</tbody></table></div>', unsafe_allow_html=True)
             elif _samo_prob:
                 st.success("✅ Nema nijednog problema — svi fajlovi su pročitani kako treba.")
+            elif not _izv:
+                st.info("Još nijedna lager lista nije pročitana za ovaj mesec. "
+                        "Pumpe možeš i ručno da upišeš — spisak je ispod.")
+
+            # ---------- 4) Fajlovi koji NISU izveštaj (otpremnica, cenovnik…) ----------
+            # Pumpa koja pošalje lager listu + otpremnicu ima „dva različita fajla" i
+            # ispada iz izveštaja. Čim se otpremnica iksira, ostaje jedan fajl — ako je
+            # on ispravan, pumpa je uredna i nema više problema.
+            _odb_svi = [_f for _f in _fajlovi_db if _f.get("odbaceno")]
+            if _izv:
+                _ima_vise = {_ik for _ik, _fs in _po_pumpi.items() if len(_fs) > 1}
+                with st.expander("✕ Fajl koji NIJE izveštaj (otpremnica, cenovnik, dopis…) — "
+                                 "iksiraj ga"
+                                 + (("  ·  " + str(len(_ima_vise)) + " pumpi je poslalo više fajlova")
+                                    if _ima_vise else ""),
+                                 expanded=bool(_dupli_razl)):
+                    st.caption("Izaberi fajl koji nije lager lista pa klikni Sačuvaj — izlazi iz "
+                               "izveštaja kao da nije ni stigao. Ako pumpi posle toga ostane jedan "
+                               "ispravan fajl, ona više NIJE pumpa sa problemom i ulazi u Excel.")
+                    _samo_vise = st.checkbox(
+                        "Prikaži samo pumpe koje su poslale više fajlova",
+                        value=bool(_dupli_razl), key="knez_odb_flt")
+                    _kand = []
+                    for _x in sorted(_izv, key=lambda z: (_rang_ik.get(z.get("st_ikona"), 9),
+                                                          _nz_sort(z))):
+                        _ikx = _x.get("idk")
+                        if _samo_vise and not (_ikx and int(_ikx) in _ima_vise):
+                            continue
+                        _nzx = ((_x.get("pumpa") or _x.get("bs_naziv") or "—")
+                                .replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,"))[:40]
+                        _kand.append((str(_x.get("st_ikona", "")) + " " + _nzx + "  ·  "
+                                      + str(_x.get("ime", ""))[:48] + "  ·  "
+                                      + str(_x.get("redova", 0)) + " redova",
+                                      _knez_kljuc_fajla(_x.get("ime"), _ikx)))
+                    if not _kand:
+                        st.caption("Nema takvih fajlova.")
+                    else:
+                        _mapa_odb = {_lbl: _k for _lbl, _k in _kand}
+                        _izbor_lbl = st.multiselect(
+                            "Fajlovi koji NISU izveštaj", [_l for _l, _ in _kand],
+                            key="knez_odb_pick",
+                            placeholder="izaberi fajl (otpremnica, cenovnik…)")
+                        _oc1, _oc2 = st.columns([1.6, 3])
+                        with _oc1:
+                            if st.button("✕ Izbaci izabrane (" + str(len(_izbor_lbl)) + ")",
+                                         key="knez_odb_save", type="primary",
+                                         use_container_width=True, disabled=not _izbor_lbl):
+                                _n_odb = sb_knez_fajl_odbaci(
+                                    mesec_key, [_mapa_odb[_l] for _l in _izbor_lbl], True,
+                                    st.session_state.get("admin_user", ""))
+                                if _n_odb:
+                                    st.session_state.pop("_knez_pdf_rez", None)
+                                    st.session_state["_knez_lager_flash"] = (
+                                        "✕ Izbačeno " + str(_n_odb) + " fajlova koji nisu izveštaj "
+                                        "— tabela i spisak problema su preračunati.")
+                                    st.rerun()
+                                else:
+                                    st.error("Nije sačuvano — Supabase nije dostupan.")
+                        with _oc2:
+                            st.caption("Iksirani fajlovi se pamte u bazi — ostaju iksirani i posle "
+                                       "ponovne prijave.")
+            if _odb_svi:
+                with st.expander("🚫 Iksirani fajlovi — nisu izveštaj (" + str(len(_odb_svi)) + ")"):
+                    st.dataframe(pd.DataFrame([
+                        {"Pumpa": str(_f.get("pumpa") or _f.get("bs_naziv") or "—")
+                                  .replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,")[:46],
+                         "Fajl": str(_f.get("ime", ""))[:60],
+                         "Redova": int(_f.get("redova", 0) or 0),
+                         "Ko": str(_f.get("odb_ko", "")),
+                         "Kada": _dt_kratko(_f.get("odb_at", ""))}
+                        for _f in _odb_svi]), hide_index=True, use_container_width=True)
+                    _vrati_odb = st.multiselect(
+                        "Vrati u izveštaj (ako je greškom iksiran)",
+                        [str(_f.get("ime", "")) + "  ·  " + str(_f.get("idk") or "?")
+                         for _f in _odb_svi], key="knez_odb_vrati")
+                    if _vrati_odb and st.button("↩ Vrati označene", key="knez_odb_vratib"):
+                        _kl_v = []
+                        for _lbl_v in _vrati_odb:
+                            _im_v = _lbl_v.split("  ·  ")[0]
+                            for _f in _odb_svi:
+                                if str(_f.get("ime", "")) == _im_v:
+                                    _kl_v.append(_knez_kljuc_fajla(_f.get("ime"), _f.get("idk")))
+                        if sb_knez_fajl_odbaci(mesec_key, _kl_v, False,
+                                               st.session_state.get("admin_user", "")):
+                            st.session_state.pop("_knez_pdf_rez", None)
+                            st.session_state["_knez_lager_flash"] = (
+                                "↩ Vraćeno " + str(len(_kl_v)) + " fajlova u izveštaj.")
+                            st.rerun()
 
             # (Pumpe sa DVA RAZLIČITA fajla se ne rešavaju ovde — idu dole, u spisak
             #  pumpi za proveru, gde se podaci upisuju/potvrđuju ručno.)
@@ -2807,12 +2902,36 @@ def knez_admin_ui():
                 else:
                     _raz = "nije ušla u tabelu"
                 _za_rucno.append({"idk": _ik, "naziv": r["naziv"], "razlog": _raz})
+            # Pumpe koje su rešene ručnim unosom — one su ZAVRŠENE i ne vraćaju se
+            # na spisak problema. Pamte se u bazi, pa stoje i posle ponovne prijave.
+            _zav_rucno = []
+            for r in _pumpe:
+                _rlz = ((_obr.get(int(r["idk"])) or {}).get("dnevnik") or {}).get("rucni_lager") or {}
+                if _rlz:
+                    _zav_rucno.append({"idk": int(r["idk"]), "naziv": r["naziv"],
+                                       "n": len(_rlz.get("redovi") or []),
+                                       "prazno": bool(_rlz.get("prazno")),
+                                       "ko": str(_rlz.get("ko", "")), "at": _rlz.get("at", "")})
             st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+            if _zav_rucno:
+                st.markdown('<div style="background:#dcfce7;border:1px solid #86efac;'
+                            'border-radius:10px;padding:9px 14px;margin:2px 0 10px;'
+                            'font-size:13px;color:#14532d;font-weight:700;">'
+                            '✅ Ručno upisano i završeno: ' + str(len(_zav_rucno))
+                            + ' pumpi — više nisu na spisku problema i ušle su u Excel.'
+                            '</div>', unsafe_allow_html=True)
+                with st.expander("✅ Završene ručnim unosom (" + str(len(_zav_rucno)) + ")"):
+                    st.dataframe(pd.DataFrame([
+                        {"ID": _z["idk"],
+                         "Pumpa": str(_z["naziv"]).replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,")[:46],
+                         "Artikala": ("nema ničega (sve nule)" if _z["prazno"] else _z["n"]),
+                         "Ko": _z["ko"], "Kada": _dt_kratko(_z["at"])}
+                        for _z in _zav_rucno]), hide_index=True, use_container_width=True)
             st.markdown('<div style="font-size:14px;font-weight:800;color:#7c2d12;">'
                         '🛠 Pumpe bez izveštaja ili sa problemom (' + str(len(_za_rucno))
                         + ')</div><div style="font-size:12px;color:#9a3412;margin:2px 0 8px;">'
                         'Klikni na pumpu pa upiši prodaju (izlaz) i lager (stanje) — čim sačuvaš, '
-                        'automatski ulazi u Excel.</div>', unsafe_allow_html=True)
+                        'pumpa prelazi u završene i ulazi u Excel.</div>', unsafe_allow_html=True)
             if not _za_rucno:
                 st.success("✅ Sve pumpe iz šifarnika imaju podatke.")
             if not _kat_p:
@@ -2907,13 +3026,21 @@ def knez_admin_ui():
                     elif sb_knez_rucni_set(mesec_key, _tid, _red_nov,
                                            ko=st.session_state.get("admin_user", ""),
                                            prazno=bool(not _red_nov)):
-                        st.session_state["_knez_scan_flash"] = (
-                            "💾 Upisano ručno za " + str(_za_rucno[_zi]["naziv"])[:40] + ": "
-                            + (str(len(_red_nov)) + " artikala — ušlo je u Excel."
-                               if _red_nov else "nema ničega (sve nule) — sklonjena sa spiska."))
+                        _nz_fl = str(_za_rucno[min(_zi, len(_za_rucno) - 1)]["naziv"]).replace(
+                            "KNEZ PETROL DOO ZEMUN,", "").strip(" -,")[:44]
+                        st.session_state["_knez_lager_flash"] = (
+                            "✅ " + _nz_fl + " — "
+                            + ((str(len(_red_nov)) + " artikala je upisano ručno")
+                               if _red_nov else "nema ničega (sve nule)")
+                            + ". Pumpa je ZAVRŠENA: skinuta je sa spiska problema, ušla je u "
+                              "Excel i zapamćena je u bazi (ostaje i posle odjave).")
                         st.rerun()
                     else:
-                        st.error("Nije sačuvano — Supabase nije dostupan.")
+                        st.error("❌ Nije sačuvano — "
+                                 + (str(st.session_state.pop("_knez_rucni_err", ""))[:180]
+                                    or "Supabase nije dostupan")
+                                 + ". NE zatvaraj stranicu — probaj ponovo za koji trenutak; "
+                                   "ako ni tada ne uspe, javi analitičaru.")
                 if _stara and st.button("🗑 Obriši ručni unos za ovu pumpu",
                                         key="knez_rucni_del"):
                     sb_knez_rucni_set(mesec_key, _tid, [], ko=st.session_state.get("admin_user", ""))
@@ -3007,6 +3134,9 @@ def knez_admin_ui():
                                            use_container_width=True)
                 except Exception as _xe:
                     st.error("Excel nije napravljen: " + str(_xe))
+            else:
+                st.caption("Excel još nema nijedan red — pročitaj lager liste ili upiši bar "
+                           "jednu pumpu ručno, pa će se ovde pojaviti dugme „⬇️ Izvezi u Excel“.")
 
 
 # ========================= PRIKUPLJANJE IZVEŠTAJA =========================
@@ -7195,9 +7325,13 @@ def sb_knez_nije_nase_vrati(kljucevi, ko=""):
 def sb_knez_rucni_set(mesec_key, idk, redovi, ko="", prazno=False):
     """Ručno upisano stanje/prodaja za pumpu koja nije poslala (ili se fajl ne čita).
     prazno=True znači „proverila sam, nema ničega" — pumpa je rešena, ali bez redova.
-    Pamti se u bazi, uz ostatak dnevnika te pumpe."""
+    Pamti se u bazi, uz ostatak dnevnika te pumpe.
+
+    Posle upisa se PROVERAVA da li je zaista zapisano — da se ne desi da aplikacija
+    kaže „sačuvano", a posle odjave podataka nema."""
     cli = _sb()
     if cli is None:
+        st.session_state["_knez_rucni_err"] = "nema veze sa bazom"
         return False
     try:
         res = (cli.table("obrada")
@@ -7224,8 +7358,19 @@ def sb_knez_rucni_set(mesec_key, idk, redovi, ko="", prazno=False):
              "reakcije_ko": dict(_r.get("reakcije_ko") or {}),
              "dnevnik": _dn, "azurirano": _now().isoformat()},
             on_conflict="mesec,sistem,idk").execute()
+        # provera: pročitaj nazad ono što je upravo upisano
+        _pr = (cli.table("obrada").select("dnevnik")
+               .eq("mesec", mesec_key).eq("sistem", KNEZ_SIS).eq("idk", int(idk))
+               .limit(1).execute())
+        _ima = bool(_pr.data) and bool((_pr.data[0].get("dnevnik") or {}).get("rucni_lager"))
+        if (redovi or prazno) and not _ima:
+            st.session_state["_knez_rucni_err"] = ("baza je primila upis, ali ga ne vraća "
+                                                   "nazad (proveri prava pristupa tabeli obrada)")
+            return False
+        st.session_state.pop("_knez_rucni_err", None)
         return True
-    except Exception:
+    except Exception as _e:
+        st.session_state["_knez_rucni_err"] = str(_e)[:200]
         return False
 
 
@@ -7456,11 +7601,47 @@ def _knez_kljuc_fajla(ime, idk):
     return str(ime or "").strip().lower() + "|" + str(idk or "")
 
 
+def sb_knez_fajl_odbaci(mesec_key, kljucevi, odbaci=True, ko=""):
+    """Označi fajl(ove) kao „nije izveštaj" (otpremnica, cenovnik, dopis…) — ili
+    vrati nazad. Pamti se u bazi, uz same pročitane lager liste.
+
+    `kljucevi` = lista ključeva iz `_knez_kljuc_fajla(ime, idk)`.
+    Vraća koliko je fajlova promenjeno."""
+    _pdf = sb_knez_pdf_get(mesec_key)
+    _fajlovi = list(_pdf.get("fajlovi") or [])
+    if not _fajlovi:
+        return 0
+    _set = set(kljucevi or [])
+    _n = 0
+    for _f in _fajlovi:
+        if _knez_kljuc_fajla(_f.get("ime"), _f.get("idk")) not in _set:
+            continue
+        if bool(_f.get("odbaceno")) == bool(odbaci):
+            continue
+        if odbaci:
+            _f["odbaceno"] = True
+            _f["odb_ko"] = str(ko or "")
+            _f["odb_at"] = _now().isoformat()
+        else:
+            _f.pop("odbaceno", None)
+            _f.pop("odb_ko", None)
+            _f.pop("odb_at", None)
+        _n += 1
+    if _n and not sb_knez_pdf_set(mesec_key, _fajlovi, ko):
+        return 0
+    return _n
+
+
 def _knez_iz_fajlova(fajlovi, mesec_key):
     """Iz zapamćenih fajlova napravi (izveštaj_po_fajlu, stavke) — isti oblik
-    kao posle čitanja PDF-ova, sa ponovo dodeljenim našim ID-jevima artikala."""
+    kao posle čitanja PDF-ova, sa ponovo dodeljenim našim ID-jevima artikala.
+
+    Fajlovi označeni kao „nije izveštaj" (otpremnica, cenovnik…) se preskaču —
+    kao da nisu ni stigli."""
     _izv, _stavke = [], []
     for _f in (fajlovi or []):
+        if _f.get("odbaceno"):
+            continue
         _izv.append({k: _f.get(k) for k in
                      ("ime", "bs", "bs_naziv", "idk", "redova", "greska", "izvor",
                       "od", "do", "per_ok", "per_txt", "otisak", "pumpa", "url")})
