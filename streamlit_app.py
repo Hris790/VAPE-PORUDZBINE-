@@ -1622,10 +1622,20 @@ def knez_admin_ui():
                    + _od.rstrip(".") + " – " + _do + "**")
 
     # --- rok (postavlja se u kartici „📅 Rokovi") ---
+    _zakljucan_k = _knez_zakljucan(mesec_key)
+    if _zakljucan_k:
+        _rd = _knez_rok_datum(mesec_key)
+        st.markdown('<div style="background:#eef2ff;border:1px solid #c7d2fe;border-radius:10px;'
+                    'padding:11px 14px;margin:4px 0 12px;color:#3730a3;font-size:13.5px;'
+                    'font-weight:600;">🔒 Izveštaj za ' + _h_escape(str(_sel_lbl_k))
+                    + ' je ZAKLJUČAN — prošao je ' + _h_escape(_rok_fmt(str(_rd)))
+                    + '. Sve ostaje vidljivo, ali se više ništa ne menja: ne šalju se mejlovi, '
+                    'ne čitaju se fajlovi i ne upisuje se ručno. Excel izveštaj može samo da se '
+                    'preuzme.</div>', unsafe_allow_html=True)
     _tr_k = _rok_traka(sb_rokovi_get(mesec_key).get("rok_knez"),
                        "izveštaj Knez Petrol za " + str(_sel_lbl_k)
                        + " mora biti popunjen do")
-    if _tr_k:
+    if _tr_k and not _zakljucan_k:
         st.markdown(_tr_k, unsafe_allow_html=True)
 
     # --- Pumpe iz šifarnika ---
@@ -1685,6 +1695,11 @@ def knez_admin_ui():
                 _pdf_url[str(_f9.get("ime") or "").strip().lower()] = _f9["url"]
     except Exception:
         _pdf_url = {}
+    # fajlovi koje je neko označio kao „nije izveštaj" (otpremnica, cenovnik…)
+    try:
+        _odb_map = sb_knez_odb_get(mesec_key)
+    except Exception:
+        _odb_map = {}
     _n_uk = len(_pumpe)
     _n_mail = sum(1 for r in _pumpe if r["_email_ok"])
     _n_pos = sum(1 for r in _pumpe if r["mail_n"] > 0)
@@ -1746,6 +1761,7 @@ def knez_admin_ui():
     with _oc1:
         st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
         _chk_odg = st.button("📥 Proveri odgovore", key="knez_scan", use_container_width=True,
+                             disabled=_zakljucan_k,
                              help="Čita sanduče i vezuje odgovore za pumpe po adresi pošiljaoca. "
                                   "Već pročitani odgovori se pamte — čita se samo razlika.")
         # sitnim slovima ispod dugmeta: kada je poslednji put ažurirano (pamti se u bazi)
@@ -2009,7 +2025,8 @@ def knez_admin_ui():
                     st.button("✉️ Pošalji mejl",
                               key="knez_send1_" + str(mesec_key) + "_" + str(_idk),
                               type="primary", use_container_width=True,
-                              disabled=(not r["_email_ok"] or not smtp_dostupan()),
+                              disabled=(not r["_email_ok"] or not smtp_dostupan()
+                                        or _zakljucan_k),
                               on_click=_knez_posalji, args=(r,))
                 with _b3:
                     if not r["_email_ok"]:
@@ -2057,6 +2074,7 @@ def knez_admin_ui():
                 # --- ODGOVOR PUMPE (iz sandučeta) ---
                 _odg_prikaz = r["odg_live"] or r["odg_sac"]
                 if _odg_prikaz:
+                    _iks_pz, _vrati_pz = [], []     # šta je štiklirano kod OVE pumpe
                     st.markdown('<div style="background:#eef2ff;border:2px solid #818cf8;'
                                 'border-radius:10px;padding:10px 14px;margin:10px 0 4px;">'
                                 '<div style="font-size:14px;font-weight:900;color:#312e81;">'
@@ -2081,24 +2099,79 @@ def knez_admin_ui():
                             _vel = int(_pz.get("vel", 0) or 0)
                             _vt = (str(round(_vel / 1024.0)) + " KB" if _vel < 1024 * 1024
                                    else str(round(_vel / 1048576.0, 1)) + " MB")
-                            if _pz.get("data"):
-                                st.download_button(
-                                    "⬇️ " + str(_pz.get("ime", "prilog")) + "  (" + _vt + ")",
-                                    _pz["data"], file_name=str(_pz.get("ime", "prilog")),
-                                    key=("knez_dl_" + str(mesec_key) + "_" + str(_idk) + "_"
-                                         + str(_oi) + "_" + str(_pi)))
-                            elif _pdf_url.get(str(_pz.get("ime", "")).strip().lower()):
-                                # fajl je jednom pročitan i sačuvan u bazi
-                                st.markdown(
-                                    '<a href="' + _h_escape(
-                                        _pdf_url[str(_pz.get("ime", "")).strip().lower()])
-                                    + '" target="_blank" class="prikup-fajl">⬇️ '
-                                    + _h_escape(str(_pz.get("ime", "prilog")))
-                                    + '  (' + _vt + ')</a>', unsafe_allow_html=True)
-                            else:
-                                st.caption("📎 " + str(_pz.get("ime", "prilog")) + " (" + _vt
-                                           + ") — klikni „📥 Proveri odgovore“ gore da se prilog "
-                                             "povuče iz sandučeta.")
+                            _k_pz = _knez_kljuc_fajla(_pz.get("ime", ""), _idk)
+                            _je_odb = _k_pz in _odb_map
+                            _pc1, _pc2 = st.columns([4.3, 1.4])
+                            with _pc1:
+                                if _je_odb:
+                                    st.markdown(
+                                        '<div style="background:#f3f4f6;border:1px dashed #d1d5db;'
+                                        'border-radius:8px;padding:7px 12px;font-size:12.5px;'
+                                        'color:#6b7280;">🚫 <b>'
+                                        + _h_escape(str(_pz.get("ime", "prilog")))
+                                        + '</b> — nije izveštaj, ne ulazi u Excel</div>',
+                                        unsafe_allow_html=True)
+                                elif _knez_zakljucan(mesec_key):
+                                    st.markdown(
+                                        '<div style="font-size:12.5px;color:#374151;'
+                                        'padding:5px 0;">📎 <b>'
+                                        + _h_escape(str(_pz.get("ime", "prilog")))
+                                        + '</b>  ·  ' + _vt + '</div>', unsafe_allow_html=True)
+                                elif _pz.get("data"):
+                                    st.download_button(
+                                        "⬇️ " + str(_pz.get("ime", "prilog")) + "  (" + _vt + ")",
+                                        _pz["data"], file_name=str(_pz.get("ime", "prilog")),
+                                        use_container_width=True,
+                                        key=("knez_dl_" + str(mesec_key) + "_" + str(_idk) + "_"
+                                             + str(_oi) + "_" + str(_pi)))
+                                elif _pdf_url.get(str(_pz.get("ime", "")).strip().lower()):
+                                    # fajl je jednom pročitan i sačuvan u bazi
+                                    st.markdown(
+                                        '<a href="' + _h_escape(
+                                            _pdf_url[str(_pz.get("ime", "")).strip().lower()])
+                                        + '" target="_blank" class="prikup-fajl">⬇️ '
+                                        + _h_escape(str(_pz.get("ime", "prilog")))
+                                        + '  (' + _vt + ')</a>', unsafe_allow_html=True)
+                                else:
+                                    st.caption("📎 " + str(_pz.get("ime", "prilog")) + " (" + _vt
+                                               + ") — klikni „📥 Proveri odgovore“ gore da se prilog "
+                                                 "povuče iz sandučeta.")
+                            with _pc2:
+                                _kcb = ("knezodb_" + str(mesec_key) + "_" + str(_idk) + "_"
+                                        + str(_oi) + "_" + str(_pi))
+                                if _knez_zakljucan(mesec_key):
+                                    pass
+                                elif _je_odb:
+                                    if st.checkbox("↩ vrati", key=_kcb + "_v",
+                                                   help="Ipak jeste izveštaj — vrati ga"):
+                                        _vrati_pz.append(_k_pz)
+                                else:
+                                    if st.checkbox("✕ nije izveštaj", key=_kcb,
+                                                   help="Otpremnica, cenovnik, overen račun, "
+                                                        "dopis… — ovo nije lager lista"):
+                                        _iks_pz.append((_k_pz, str(_pz.get("ime", "")), _idk))
+                    if (_iks_pz or _vrati_pz) and not _knez_zakljucan(mesec_key):
+                        _sv1, _sv2 = st.columns([1.9, 3])
+                        with _sv1:
+                            if st.button("💾 Sačuvaj (" + str(len(_iks_pz) + len(_vrati_pz)) + ")",
+                                         key="knez_odb_save_" + str(mesec_key) + "_" + str(_idk),
+                                         type="primary", use_container_width=True):
+                                _ko_s = st.session_state.get("admin_user", "")
+                                _n_s = 0
+                                if _iks_pz:
+                                    _n_s += sb_knez_fajl_odbaci(mesec_key, _iks_pz, True, _ko_s)
+                                if _vrati_pz:
+                                    _n_s += sb_knez_fajl_odbaci(mesec_key, _vrati_pz, False, _ko_s)
+                                st.session_state.pop("_knez_pdf_rez", None)
+                                st.session_state["_knez_scan_flash"] = (
+                                    "✕ Sačuvano za " + str(r["naziv"])[:40] + ": "
+                                    + str(_n_s) + " fajl(ova). Fajl koji nije izveštaj se ne čita "
+                                    "i ne ulazi u Excel — ako pumpi ostane jedan ispravan, više "
+                                    "nije pumpa sa problemom.")
+                                st.rerun()
+                        with _sv2:
+                            st.caption("Štikliraj sve što nije lager lista (otpremnica, račun, "
+                                       "dopis) pa klikni Sačuvaj.")
                     if not r["odg_live"] and r["odg_sac"]:
                         st.caption("ℹ️ Prikazano iz zabeleženog. Prilozi koji su već pročitani "
                                    "otvaraju se odavde; za ostale klikni „📥 Proveri odgovore“ "
@@ -2310,7 +2383,7 @@ def knez_admin_ui():
 
         if st.button("📧 Pošalji izabranima (" + str(len(_spremni)) + ")", key="knez_send",
                      type="primary", use_container_width=True,
-                     disabled=(len(_spremni) == 0 or not smtp_dostupan())):
+                     disabled=(len(_spremni) == 0 or not smtp_dostupan() or _zakljucan_k)):
             try:
                 _bmax = int(str(_cfg("GRUPNO_BATCH", "8")).strip() or 0)
             except Exception:
@@ -2399,6 +2472,15 @@ def knez_admin_ui():
         # --- Već pročitano (pamti se u bazi) — otvara se odmah, bez ijednog klika ---
         _pdf_db = sb_knez_pdf_get(mesec_key)
         _fajlovi_db = list(_pdf_db.get("fajlovi") or [])
+        # „Nije izveštaj" se pamti ODVOJENO (po imenu fajla i pumpi), pa ostaje
+        # označeno i kad se sanduče ili PDF-ovi čitaju ponovo.
+        _odb_kljuc = set(_odb_map or {})
+        if _odb_kljuc:
+            for _f in _fajlovi_db:
+                if _knez_kljuc_fajla(_f.get("ime"), _f.get("idk")) in _odb_kljuc:
+                    _f["odbaceno"] = True
+            _pdf_izvori = [_p for _p in _pdf_izvori
+                           if _knez_kljuc_fajla(_p.get("ime"), _p.get("idk")) not in _odb_kljuc]
         _imam_f = {_knez_kljuc_fajla(_f.get("ime"), _f.get("idk")) for _f in _fajlovi_db}
 
         # --- Sam PDF se čuva u bazi. Ranije pročitane liste nemaju sačuvan fajl,
@@ -2488,8 +2570,9 @@ def knez_admin_ui():
         else:
             st.info("Iz odgovora trenutno nema PDF priloga \u2014 klikni \u201e\U0001F4E5 Proveri odgovore\u201c gore, "
                     "ili ubaci PDF-ove ru\u010dno ispod.")
-        _upl = st.file_uploader("Ili ubaci PDF-ove ru\u010dno (mo\u017ee vi\u0161e odjednom)",
-                                type=["pdf"], accept_multiple_files=True, key="knez_pdf_upl")
+        _upl = (None if _zakljucan_k else
+                st.file_uploader("Ili ubaci PDF-ove ru\u010dno (mo\u017ee vi\u0161e odjednom)",
+                                 type=["pdf"], accept_multiple_files=True, key="knez_pdf_upl"))
         for _f in (_upl or []):
             _pdf_izvori.append({"ime": _f.name, "data": _f.getvalue(), "idk": None,
                                 "pumpa": "", "izvor": "ru\u010dno"})
@@ -2520,7 +2603,7 @@ def knez_admin_ui():
                     ("\U0001F4CA Pročitaj nove PDF-ove (" + str(len(_novi_izvori)) + ")")
                     if _fajlovi_db else "\U0001F4CA Pročitaj PDF-ove",
                     key="knez_pdf_go", type="primary", use_container_width=True,
-                    disabled=bool(_fajlovi_db and not _novi_izvori))
+                    disabled=bool((_fajlovi_db and not _novi_izvori) or _zakljucan_k))
             with _gc2:
                 if _fajlovi_db:
                     st.markdown('<div style="font-size:12px;color:#9ca3af;padding-top:9px;">'
@@ -2595,50 +2678,83 @@ def knez_admin_ui():
             _izv = list(_rez.get("izv") or []); _stavke = list(_rez.get("stavke") or [])
 
             # ---------- 1) Ista pumpa poslala VIŠE fajlova ----------
-            # Ako su fajlovi isti — uzima se jedan. Ako NISU — to je problem i mora
-            # da se odluči koji važi (inače bi stanje te pumpe bilo pogrešno).
+            # Aplikacija prvo sama bira koji je od njih lager lista: traže se fajlovi
+            # koji su pročitani (imaju naše kolone) I imaju ispravan period. Ako je
+            # takav samo jedan — on važi, ostali se zanemaruju. Ako su dva ista — uzima
+            # se jedan. Tek ako ima više RAZLIČITIH ispravnih — to je problem i treba
+            # ih iksirati kod pumpe (na prvoj kartici).
             _po_pumpi = {}
             for _x in _izv:
                 if _x.get("idk") and _x.get("redova"):
                     _po_pumpi.setdefault(int(_x["idk"]), []).append(_x)
             _dupli_isti, _dupli_razl = {}, {}
+            _uzmi = {}
             for _ik, _fs in _po_pumpi.items():
                 if len(_fs) < 2:
                     continue
-                if len({_knez_otisak_kljuc(_f.get("otisak")) for _f in _fs}) == 1:
-                    _dupli_isti[_ik] = _fs
+                _kand = [_f for _f in _fs if _f.get("per_ok")] or list(_fs)
+                if len(_kand) == 1:
+                    # jedan jedini liči na pravu lager listu — on je izveštaj
+                    _uzmi[_ik] = _kand[0]["ime"]
+                elif len({_knez_otisak_kljuc(_f.get("otisak")) for _f in _kand}) == 1:
+                    _dupli_isti[_ik] = _kand
+                    _uzmi[_ik] = sorted(_kand, key=lambda f: (-f["redova"], f["ime"]))[0]["ime"]
                 else:
-                    _dupli_razl[_ik] = _fs
-            _uzmi = {}
-            for _ik, _fs in _dupli_isti.items():
-                _uzmi[_ik] = sorted(_fs, key=lambda f: (-f["redova"], f["ime"]))[0]["ime"]
+                    _dupli_razl[_ik] = _kand
 
             # ---------- 2) Status po fajlu ----------
+            # Pumpa koja je poslala i lager listu i nešto drugo (otpremnicu, račun…):
+            # aplikacija SAMA prepozna koji fajl liči na lager listu (ima naše kolone
+            # i ispravan period) i uzme njega. Ostali fajlovi te pumpe se zanemaruju,
+            # pa pumpa NIJE pumpa sa problemom. Ručno iksiranje treba samo tamo gde
+            # ni jedan fajl nije prepoznat ili ih je više ispravnih.
+            _ima_dobar = set()
+            for _x in _izv:
+                if (_x.get("idk") and _x.get("redova") and _x.get("per_ok")
+                        and int(_x["idk"]) not in _dupli_razl):
+                    _ima_dobar.add(int(_x["idk"]))
             for _x in _izv:
                 _ik = _x.get("idk")
+                _ikn = int(_ik) if _ik else 0
                 if not _x.get("redova"):
-                    _x["st_ikona"] = "✗"
-                    _x["st_txt"] = "nije pročitan — " + (str(_x.get("greska", ""))[:70]
-                                                         or "nepoznat obrazac")
+                    if _ikn and _ikn in _ima_dobar:
+                        # pumpa ima ispravnu lager listu — ovo je prilog uz nju
+                        _x["st_ikona"] = "·"
+                        _x["st_txt"] = ("nije lager lista — zanemareno (pumpa ima ispravan "
+                                        "izveštaj)")
+                    else:
+                        _x["st_ikona"] = "✗"
+                        _x["st_txt"] = "nije pročitan — " + (str(_x.get("greska", ""))[:70]
+                                                             or "nepoznat obrazac")
                 elif not _ik:
                     _x["st_ikona"] = "⚠"
                     _x["st_txt"] = "pumpa nije prepoznata (BS " + str(_x.get("bs") or "?") + ")"
+                elif _ikn in _uzmi and str(_x.get("ime")) != _uzmi[_ikn]:
+                    _x["st_ikona"] = "·"
+                    _x["st_txt"] = ("zanemareno — kao izveštaj je uzet „"
+                                    + str(_uzmi[_ikn])[:34] + "“")
                 elif not _x.get("per_ok"):
                     _x["st_ikona"] = "⚠"
                     _x["st_txt"] = "parametri nisu kako treba — " + str(_x.get("per_txt", ""))
-                elif int(_ik) in _dupli_razl:
+                elif _ikn in _dupli_razl:
                     _x["st_ikona"] = "⚠"
-                    _x["st_txt"] = ("dva fajla i NISU ista (" + str(_x["redova"])
-                                    + " redova) — vidi dole, upiši ručno")
-                elif int(_ik) in _dupli_isti:
-                    _x["st_ikona"] = "✓"
-                    _x["st_txt"] = ("dva ista fajla — uzet jedan" if _uzmi.get(int(_ik)) == _x["ime"]
-                                    else "duplikat, preskočen")
+                    _x["st_txt"] = ("više fajlova sa podacima — iksiraj one koji nisu izveštaj "
+                                    "(kod pumpe na prvoj kartici)")
                 else:
                     _x["st_ikona"] = "✓"
-                    _x["st_txt"] = "OK"
+                    _x["st_txt"] = ("uzet kao izveštaj (pumpa je poslala i druge fajlove)"
+                                    if _ikn in _uzmi else "OK")
+            # pumpe rešene ručnim unosom — njihov problem je rešen
+            _rucno_idk_t = set()
+            for _rr in _pumpe:
+                if ((_obr.get(int(_rr["idk"])) or {}).get("dnevnik") or {}).get("rucni_lager"):
+                    _rucno_idk_t.add(int(_rr["idk"]))
+            for _x in _izv:
+                _ikr = _x.get("idk")
+                _x["re_txt"] = ("✅ količine unete ručno"
+                                if (_ikr and int(_ikr) in _rucno_idk_t) else "")
             _n_ok = sum(1 for _x in _izv if _x["st_ikona"] == "✓")
-            _prob = [_x for _x in _izv if _x["st_ikona"] != "✓"]
+            _prob = [_x for _x in _izv if _x["st_ikona"] not in ("✓", "·") and not _x["re_txt"]]
 
             # ---------- 3) Pregledna tabela ----------
             st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
@@ -2678,13 +2794,14 @@ def knez_admin_ui():
                                                    str(x.get("st_txt", ""))[:26], _nz_sort(x)))
             if _pri:
                 _boja = {"✓": ("#dcfce7", "#166534"), "⚠": ("#fef3c7", "#92400e"),
-                         "✗": ("#fee2e2", "#991b1b")}
+                         "✗": ("#fee2e2", "#991b1b"), "·": ("#f1f5f9", "#64748b")}
                 _tr = []
                 for _x in _pri:
                     _bg, _fg = _boja.get(_x["st_ikona"], ("#f1f5f9", "#334155"))
                     _nzp = ((_x.get("pumpa") or _x.get("bs_naziv") or "—")
                             .replace("KNEZ PETROL DOO ZEMUN,", "")
                             .replace("KNEZ PETROL DOO ZEMUN", "").strip(" -,"))
+                    _re = str(_x.get("re_txt") or "")
                     _tr.append(
                         '<tr>'
                         '<td class="ik"><span class="chip" style="background:' + _bg
@@ -2694,18 +2811,21 @@ def knez_admin_ui():
                         + ('<td class="fj"><a href="' + _h_escape(str(_x.get("url")))
                            + '" target="_blank" class="knez-fajl" title="Otvori PDF">📄 '
                            + _h_escape(str(_x["ime"])[:46]) + '</a></td>'
-                           if _x.get("url") else
+                           if (_x.get("url") and not _zakljucan_k) else
                            '<td class="fj">' + _h_escape(str(_x["ime"])[:46]) + '</td>')
                         +
                         '<td class="br">' + str(_x["redova"]) + '</td>'
                         '<td class="st" style="color:' + _fg + ';">'
-                        + _h_escape(str(_x["st_txt"])) + '</td></tr>')
+                        + _h_escape(str(_x["st_txt"])) + '</td>'
+                        '<td class="st" style="color:#166534;font-weight:700;">'
+                        + _h_escape(_re) + '</td></tr>')
                 st.markdown(
                     '<div class="knez-tab-wrap"><table class="knez-tab">'
                     '<thead><tr><th style="width:44px;"></th><th>Pumpa</th>'
                     '<th style="width:64px;">ID</th><th style="width:190px;">Fajl</th>'
                     '<th style="width:74px;text-align:right;">Redova</th>'
-                    '<th>Status</th></tr></thead><tbody>'
+                    '<th>Prethodni problem / status</th>'
+                    '<th style="width:170px;">Rešeno</th></tr></thead><tbody>'
                     + "".join(_tr) + '</tbody></table></div>', unsafe_allow_html=True)
             elif _samo_prob:
                 st.success("✅ Nema nijednog problema — svi fajlovi su pročitani kako treba.")
@@ -2718,7 +2838,7 @@ def knez_admin_ui():
             # ispada iz izveštaja. Čim se otpremnica iksira, ostaje jedan fajl — ako je
             # on ispravan, pumpa je uredna i nema više problema.
             _odb_svi = [_f for _f in _fajlovi_db if _f.get("odbaceno")]
-            if _izv:
+            if _izv and not _zakljucan_k:
                 _ima_vise = {_ik for _ik, _fs in _po_pumpi.items() if len(_fs) > 1}
                 with st.expander("✕ Fajl koji NIJE izveštaj (otpremnica, cenovnik, dopis…) — "
                                  "iksiraj ga"
@@ -2934,6 +3054,9 @@ def knez_admin_ui():
                         'pumpa prelazi u završene i ulazi u Excel.</div>', unsafe_allow_html=True)
             if not _za_rucno:
                 st.success("✅ Sve pumpe iz šifarnika imaju podatke.")
+            if _zakljucan_k:
+                st.info("🔒 Izveštaj je zaključan — ručni unos se više ne menja. Sve upisano "
+                        "ostaje i vidi se, a Excel može da se preuzme.")
             if not _kat_p:
                 st.info("Ručni unos nije moguć dok nemam naš šifarnik artikala (objavi jedan sistem).")
             else:
@@ -3012,7 +3135,8 @@ def knez_admin_ui():
                                                key="knez_rucni_nule_" + str(_tid))
                     with _fc2:
                         _cuvaj = st.form_submit_button("💾 Sačuvaj", type="primary",
-                                                       use_container_width=True)
+                                                       use_container_width=True,
+                                                       disabled=_zakljucan_k)
                 if _cuvaj:
                     _red_nov = [{"ida": int(_rr["ID artikla"]), "naziv": str(_rr["Naziv artikla"]),
                                  "izlaz": float(_rr["Izlaz (prodaja)"] or 0),
@@ -3041,8 +3165,8 @@ def knez_admin_ui():
                                     or "Supabase nije dostupan")
                                  + ". NE zatvaraj stranicu — probaj ponovo za koji trenutak; "
                                    "ako ni tada ne uspe, javi analitičaru.")
-                if _stara and st.button("🗑 Obriši ručni unos za ovu pumpu",
-                                        key="knez_rucni_del"):
+                if _stara and not _zakljucan_k and st.button(
+                        "🗑 Obriši ručni unos za ovu pumpu", key="knez_rucni_del"):
                     sb_knez_rucni_set(mesec_key, _tid, [], ko=st.session_state.get("admin_user", ""))
                     st.rerun()
 
@@ -3132,6 +3256,10 @@ def knez_admin_ui():
                                                  ".spreadsheetml.sheet"),
                                            key="knez_lager_dl", type="primary",
                                            use_container_width=True)
+                    with _ec2:
+                        if _zakljucan_k:
+                            st.caption("🔒 Konačan izveštaj za " + str(_sel_lbl_k)
+                                       + " — može samo da se preuzme, ne menja se više.")
                 except Exception as _xe:
                     st.error("Excel nije napravljen: " + str(_xe))
             else:
@@ -7601,35 +7729,112 @@ def _knez_kljuc_fajla(ime, idk):
     return str(ime or "").strip().lower() + "|" + str(idk or "")
 
 
-def sb_knez_fajl_odbaci(mesec_key, kljucevi, odbaci=True, ko=""):
-    """Označi fajl(ove) kao „nije izveštaj" (otpremnica, cenovnik, dopis…) — ili
-    vrati nazad. Pamti se u bazi, uz same pročitane lager liste.
+KNEZ_ROK_DAN = 15      # posle 15. u mesecu koji sledi — izveštaj se zaključava
 
-    `kljucevi` = lista ključeva iz `_knez_kljuc_fajla(ime, idk)`.
+
+def _knez_rok_datum(mesec_key):
+    """Poslednji dan kada izveštaj za taj mesec može da se menja:
+    15. u SLEDEĆEM mesecu (izveštaj za septembar radi se u oktobru)."""
+    try:
+        _g, _m = int(str(mesec_key).split("-")[0]), int(str(mesec_key).split("-")[1])
+    except Exception:
+        return None
+    _g2, _m2 = (_g + 1, 1) if _m == 12 else (_g, _m + 1)
+    try:
+        return datetime.date(_g2, _m2, KNEZ_ROK_DAN)
+    except Exception:
+        return None
+
+
+def _knez_zakljucan(mesec_key):
+    """Posle roka se ništa više ne menja — samo pregled i preuzimanje Excela."""
+    _d = _knez_rok_datum(mesec_key)
+    if not _d:
+        return False
+    try:
+        return _now().date() > _d
+    except Exception:
+        return False
+
+
+def sb_knez_odb_get(mesec_key):
+    """Spisak fajlova koji su označeni kao „nije izveštaj" (otpremnica, cenovnik…).
+    Vraća {kljuc_fajla: {"ime","idk","ko","at"}}. Pamti se u bazi (red idk=0), pa
+    važi i za priloge koji još nisu pročitani."""
+    cli = _sb()
+    if cli is None:
+        return {}
+    try:
+        res = (cli.table("obrada").select("dnevnik")
+               .eq("mesec", mesec_key).eq("sistem", KNEZ_SIS).eq("idk", 0).limit(1).execute())
+        if not res.data:
+            return {}
+        return ((res.data[0].get("dnevnik") or {}).get("odb_fajlovi") or {})
+    except Exception:
+        return {}
+
+
+def sb_knez_fajl_odbaci(mesec_key, stavke, odbaci=True, ko=""):
+    """Označi fajl(ove) kao „nije izveštaj" (otpremnica, cenovnik, dopis…) — ili
+    vrati nazad. Radi i za prilog koji još nije pročitan.
+
+    `stavke` = lista ključeva `_knez_kljuc_fajla(ime, idk)`, ili lista
+    (kljuc, ime, idk) ako hoćemo da se zapamti i ime fajla.
     Vraća koliko je fajlova promenjeno."""
-    _pdf = sb_knez_pdf_get(mesec_key)
-    _fajlovi = list(_pdf.get("fajlovi") or [])
-    if not _fajlovi:
+    cli = _sb()
+    if cli is None:
         return 0
-    _set = set(kljucevi or [])
-    _n = 0
-    for _f in _fajlovi:
-        if _knez_kljuc_fajla(_f.get("ime"), _f.get("idk")) not in _set:
-            continue
-        if bool(_f.get("odbaceno")) == bool(odbaci):
-            continue
-        if odbaci:
-            _f["odbaceno"] = True
-            _f["odb_ko"] = str(ko or "")
-            _f["odb_at"] = _now().isoformat()
+    _norm = []
+    for _s in (stavke or []):
+        if isinstance(_s, (list, tuple)):
+            _norm.append((str(_s[0]), str(_s[1] if len(_s) > 1 else ""),
+                          _s[2] if len(_s) > 2 else None))
         else:
-            _f.pop("odbaceno", None)
-            _f.pop("odb_ko", None)
-            _f.pop("odb_at", None)
-        _n += 1
-    if _n and not sb_knez_pdf_set(mesec_key, _fajlovi, ko):
+            _norm.append((str(_s), "", None))
+    if not _norm:
         return 0
-    return _n
+    try:
+        res = (cli.table("obrada").select("dnevnik")
+               .eq("mesec", mesec_key).eq("sistem", KNEZ_SIS).eq("idk", 0).limit(1).execute())
+        _dn = dict((res.data[0].get("dnevnik") or {}) if res.data else {})
+        _odb = dict(_dn.get("odb_fajlovi") or {})
+        _n = 0
+        for _k, _ime, _idk in _norm:
+            if odbaci and _k not in _odb:
+                _odb[_k] = {"ime": _ime, "idk": _idk, "ko": str(ko or ""),
+                            "at": _now().isoformat()}
+                _n += 1
+            elif (not odbaci) and _k in _odb:
+                _odb.pop(_k, None)
+                _n += 1
+        # isto zabeleži i na samim pročitanim fajlovima (da se odmah vidi u tabeli)
+        _pdf = dict(_dn.get("pdf_rez") or {})
+        _fajlovi = list(_pdf.get("fajlovi") or [])
+        _kljucevi = {_k for _k, _, _ in _norm}
+        for _f in _fajlovi:
+            if _knez_kljuc_fajla(_f.get("ime"), _f.get("idk")) not in _kljucevi:
+                continue
+            if odbaci:
+                _f["odbaceno"] = True
+                _f["odb_ko"] = str(ko or "")
+                _f["odb_at"] = _now().isoformat()
+            else:
+                _f.pop("odbaceno", None)
+                _f.pop("odb_ko", None)
+                _f.pop("odb_at", None)
+        if _fajlovi:
+            _pdf["fajlovi"] = _fajlovi
+            _dn["pdf_rez"] = _pdf
+        _dn["odb_fajlovi"] = _odb
+        cli.table("obrada").upsert(
+            {"mesec": mesec_key, "sistem": KNEZ_SIS, "idk": 0,
+             "reakcije": [], "trebovali": False, "trebovali_tip": "", "njihova": {},
+             "napomena": "", "reakcije_ko": {}, "dnevnik": _dn,
+             "azurirano": _now().isoformat()},
+            on_conflict="mesec,sistem,idk").execute()
+        return _n or len(_norm)
+    except Exception:
+        return 0
 
 
 def _knez_iz_fajlova(fajlovi, mesec_key):
