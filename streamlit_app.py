@@ -88,14 +88,92 @@ def mesec_label(key):
     except Exception:
         return str(key)
 
+DIR_RO_PORUKA = ("👀 Ovo je pregled za direktore — ovde se samo gleda. Izmene, slanje "
+                 "mejlova i predaju izveštaja radi administracija sa svog naloga.")
+
+
+def _dir_pregled():
+    """Da li je trenutno otvorena direktorska kartica „Administracija porudžbina".
+    U tom režimu se u bazu NE upisuje ništa i mejlovi se ne šalju."""
+    try:
+        return bool(st.session_state.get("_dir_pregled_admin"))
+    except Exception:
+        return False
+
+
+class _RoTabela:
+    """Tabela iz koje se sme samo čitati."""
+
+    def __init__(self, t):
+        self._t = t
+
+    def __getattr__(self, ime):
+        if ime in ("insert", "update", "upsert", "delete"):
+            def _blok(*a, **k):
+                raise RuntimeError(DIR_RO_PORUKA)
+            return _blok
+        return getattr(self._t, ime)
+
+
+class _RoKanta:
+    """Folder u storage-u iz koga se sme samo čitati."""
+
+    def __init__(self, b):
+        self._b = b
+
+    def __getattr__(self, ime):
+        if ime in ("upload", "update", "remove", "move", "copy",
+                   "create_signed_upload_url", "upload_to_signed_url"):
+            def _blok(*a, **k):
+                raise RuntimeError(DIR_RO_PORUKA)
+            return _blok
+        return getattr(self._b, ime)
+
+
+class _RoStorage:
+    def __init__(self, s):
+        self._s = s
+
+    def from_(self, ime):
+        return _RoKanta(self._s.from_(ime))
+
+    def __getattr__(self, ime):
+        return getattr(self._s, ime)
+
+
+class _RoKlijent:
+    """Supabase klijent bez prava upisa (direktorski pregled)."""
+
+    def __init__(self, c):
+        self._c = c
+
+    def table(self, ime):
+        return _RoTabela(self._c.table(ime))
+
+    @property
+    def storage(self):
+        return _RoStorage(self._c.storage)
+
+    def __getattr__(self, ime):
+        return getattr(self._c, ime)
+
+
 @st.cache_resource
-def _sb():
+def _sb_klijent():
     if not (create_client and SUPABASE_URL and SUPABASE_KEY):
         return None
     try:
         return create_client(SUPABASE_URL, SUPABASE_KEY)
     except Exception:
         return None
+
+
+def _sb():
+    """Klijent za bazu. U direktorskom pregledu vraća verziju bez prava upisa."""
+    _c = _sb_klijent()
+    if _c is None:
+        return None
+    return _RoKlijent(_c) if _dir_pregled() else _c
 
 def sb_dostupan():
     return _sb() is not None
@@ -8990,6 +9068,8 @@ class MejlSesija:
     # ---------- slanje ----------
     def posalji(self, to_email, subject, body, attach_bytes=None, attach_filename=None, cc_email=None):
         import smtplib
+        if _dir_pregled():
+            raise RuntimeError(DIR_RO_PORUKA)
         if not smtp_dostupan(self.nalog):
             _n = self.cfg.get("nalog") or ""
             _suf = ("_" + _n) if _n else ""
@@ -9958,9 +10038,12 @@ def ned_problem_objekat(stavke, por_map, dani, prag_min=0):
     return (_out, _uk, _u_prob)
 
 
-def prikazi_administraciju():
-    st.set_page_config(page_title="VAPE — Porudžbine", page_icon="📦",
-                       layout="wide", initial_sidebar_state="collapsed")
+def prikazi_administraciju(ugradjeno=False):
+    """ugradjeno=True — isti ekran, ali ubačen u drugu karticu (direktorski pregled):
+    bez podešavanja stranice i bez dugmadi Odjava / Ažuriraj iz admina / Predaj."""
+    if not ugradjeno:
+        st.set_page_config(page_title="VAPE — Porudžbine", page_icon="📦",
+                           layout="wide", initial_sidebar_state="collapsed")
     st.markdown("""<style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
     section[data-testid="stSidebar"]{display:none !important;}
@@ -10110,22 +10193,29 @@ div[data-stale="true"] { opacity: 1 !important; }
     </style>""", unsafe_allow_html=True)
 
     _adm_user = st.session_state.get("admin_user", "Administracija")
-    _hc1, _hc2 = st.columns([7.5, 1.15])
-    with _hc1:
-        st.markdown('<div class="adm-hdr"><div class="adm-logo"><div></div></div>'
-                    '<span class="t1">VAPE Porudžbine</span><span class="t2">· ' + _h_escape(_adm_user) + '</span></div>',
-                    unsafe_allow_html=True)
-    with _hc2:
-        st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
-        if st.button("Odjava", key="adm_odjava", use_container_width=True):
-            for _k in ("authenticated", "role", "admin_user", "mail_nalog"):
-                st.session_state.pop(_k, None)
-            st.rerun()
-        if st.button("🔄 Ažuriraj iz admina", key="refresh_all_admin",
-                     use_container_width=True, type="primary"):
-            st.session_state["_req_refresh_admin"] = True
-        if st.button("📝 Predaj izveštaj", key="predaj_izvestaj", use_container_width=True):
-            st.session_state["_req_predaj"] = True
+    if ugradjeno:
+        st.markdown('<div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:10px;'
+                    'padding:9px 14px;font-size:12.5px;color:#4c1d95;margin:2px 0 14px;">'
+                    '👀 <b>Pregled ekrana administracije</b> — vidiš sve isto što i one. '
+                    'Podaci se ovde ne menjaju: upis u bazu i slanje mejlova su isključeni.'
+                    '</div>', unsafe_allow_html=True)
+    else:
+        _hc1, _hc2 = st.columns([7.5, 1.15])
+        with _hc1:
+            st.markdown('<div class="adm-hdr"><div class="adm-logo"><div></div></div>'
+                        '<span class="t1">VAPE Porudžbine</span><span class="t2">· ' + _h_escape(_adm_user) + '</span></div>',
+                        unsafe_allow_html=True)
+        with _hc2:
+            st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+            if st.button("Odjava", key="adm_odjava", use_container_width=True):
+                for _k in ("authenticated", "role", "admin_user", "mail_nalog"):
+                    st.session_state.pop(_k, None)
+                st.rerun()
+            if st.button("🔄 Ažuriraj iz admina", key="refresh_all_admin",
+                         use_container_width=True, type="primary"):
+                st.session_state["_req_refresh_admin"] = True
+            if st.button("📝 Predaj izveštaj", key="predaj_izvestaj", use_container_width=True):
+                st.session_state["_req_predaj"] = True
 
     if not sb_dostupan():
         st.error("Veza sa bazom trenutno nije podešena. Javi se analitičaru.")
@@ -13832,6 +13922,8 @@ def prikazi_direktore():
     _prev_mk = str(_pv_y0) + "-" + ("0" + str(_pv_m0))[-2:]
     _prev_idx = _mes_keys.index(_prev_mk) if _prev_mk in _mes_keys else 0
     _view = st.session_state.get("dir_view", "dash")
+    # Kartica „Administracija porudžbina" = pregled bez prava izmene
+    st.session_state["_dir_pregled_admin"] = (_view == "admin_pregled")
 
     # ---- Render izveštaja po sistemu (isti prikaz za pune i delimične podatke) ----
     def _render_sistem_report(dd, puno):
@@ -14361,10 +14453,25 @@ def prikazi_direktore():
                             unsafe_allow_html=True)
                 if st.button("Otvori →", key="dir_open_stat", use_container_width=True):
                     st.session_state["dir_view"] = "statistika"; st.rerun()
+        with _ce2:
+            with st.container(border=True):
+                st.markdown('<div style="font-size:32px;">🗂️</div>'
+                            '<div style="font-size:16px;font-weight:800;margin:6px 0 4px;">Administracija porudžbina</div>'
+                            '<div style="font-size:13px;color:#8b8fa0;line-height:1.5;margin-bottom:12px;">Ekran administracije, onakav kakav one vide: porudžbine, potraživanja, Knez Petrol i prikupljanje izveštaja. Samo za gledanje.</div>',
+                            unsafe_allow_html=True)
+                if st.button("Otvori →", key="dir_open_admpr", use_container_width=True):
+                    st.session_state["dir_view"] = "admin_pregled"; st.rerun()
         return
 
     if st.button("← Nazad na kartice", key="dir_back"):
         st.session_state["dir_view"] = "dash"; st.rerun()
+
+    # ---------- KARTICA: ADMINISTRACIJA PORUDŽBINA (isti ekran kao kod administracije) ----------
+    if _view == "admin_pregled":
+        st.markdown('<div style="font-size:20px;font-weight:800;margin:6px 0 10px;">'
+                    '🗂️ Administracija porudžbina</div>', unsafe_allow_html=True)
+        prikazi_administraciju(ugradjeno=True)
+        return
 
     # ---------- KARTICA: STATISTIKA (ko je šta uradio) ----------
     if _view == "statistika":
@@ -15041,8 +15148,13 @@ class PredictionEngine:
             self.log(f"Trenutni lager: {len(self.trenutni)} redova")
         # --- Prazne ćelije u brojčanim kolonama: popuni nulom i JASNO prijavi ---
         # (jedna prazna ćelija je ranije rušila celu objavu porukom o NaN)
-        self._ocisti_brojeve(self.prodaja, ["Prodata Kolicina", "Lager"], "prodaja")
+        self._ocisti_brojeve(self.prodaja, ["Prodata Kolicina"], "prodaja")
         self._ocisti_brojeve(self.startni, ["Kolicina"], "startni lager")
+        # Mesec za koji sistem nije poslao lager, a znamo promet i prodaju:
+        # lager se izracuna (prethodni lager + promet - prodaja). Mora PRE ciscenja
+        # kolone Lager, dok se jos vidi koja je celija prazna.
+        self._popuni_lager()
+        self._ocisti_brojeve(self.prodaja, ["Lager"], "prodaja")
         if len(self.trenutni):
             self._ocisti_brojeve(self.trenutni, ["Lager"], "trenutni lager")
         if len(self.povrat_df):
@@ -15092,6 +15204,81 @@ class PredictionEngine:
         self.trosak_po_objektu = self.mesecni_trosak / max(self.num_komitenti, 1) if self.mesecni_trosak > 0 else 0
         if self.mesecni_trosak > 0:
             self.log(f"Ukupan trosak: {self.mesecni_trosak:,.0f} / {self.num_komitenti} objekata = {self.trosak_po_objektu:,.0f} po objektu za period")
+    def _popuni_lager(self):
+        """Prazan lager u mesecu za koji sistem nije poslao izvestaj.
+
+        Ako za taj mesec imamo PROMET (nasa isporuka) i prodaju, lager na kraju
+        meseca je tacno: lager na kraju prethodnog meseca + promet - prodaja.
+        Tako jedan mesec bez izvestaja ne obara ceo sistem — ostali meseci i
+        predikcija rade normalno.
+
+        Popunjavaju se SAMO prazne celije; sve sto je sistem poslao ostaje kako jeste.
+        """
+        self.lager_izracunat = []        # [(idk, ida, godina, mesec, kolicina)]
+        self.lager_nemoguc = []          # prazno, a ne moze da se izracuna
+        if self.prodaja is None or not len(self.prodaja):
+            return
+        if "Lager" not in self.prodaja.columns:
+            return
+        _lg = pd.to_numeric(self.prodaja["Lager"], errors="coerce")
+        _prazno = _lg.isna()
+        if not bool(_prazno.any()):
+            return
+        _ima_prom = "PROMET KA NJIMA" in self.prodaja.columns
+        _poc = {}
+        try:
+            for _, r in self.startni.iterrows():
+                _v = pd.to_numeric(pd.Series([r.get("Kolicina", 0)]), errors="coerce").iloc[0]
+                _poc[(r["ID KOMITENTA"], r["id artikla"])] = 0 if pd.isna(_v) else float(_v)
+        except Exception:
+            _poc = {}
+        _prom = (pd.to_numeric(self.prodaja["PROMET KA NJIMA"], errors="coerce")
+                 if _ima_prom else None)
+        _prod = pd.to_numeric(self.prodaja["Prodata Kolicina"], errors="coerce") \
+            if "Prodata Kolicina" in self.prodaja.columns else None
+        _red = sorted(self.prodaja.index,
+                      key=lambda i: (self.prodaja.at[i, "ID KOMITENTA"],
+                                     self.prodaja.at[i, "id artikla"],
+                                     int(self.prodaja.at[i, "Godina"]),
+                                     int(self.prodaja.at[i, "Mesec"])))
+        for _i in _red:
+            _k = (self.prodaja.at[_i, "ID KOMITENTA"], self.prodaja.at[_i, "id artikla"])
+            _pre = _poc.get(_k, 0.0)
+            if bool(_prazno.at[_i]):
+                _tv = float(_prom.at[_i]) if (_prom is not None
+                                              and not pd.isna(_prom.at[_i])) else None
+                _pv = float(_prod.at[_i]) if (_prod is not None
+                                              and not pd.isna(_prod.at[_i])) else None
+                if _tv is None or _pv is None:
+                    self.lager_nemoguc.append((_k[0], _k[1],
+                                               int(self.prodaja.at[_i, "Godina"]),
+                                               int(self.prodaja.at[_i, "Mesec"])))
+                    continue                       # ostaje prazno -> posle ide 0 uz prijavu
+                _nov = max(_pre + _tv - _pv, 0.0)
+                self.prodaja.at[_i, "Lager"] = _nov
+                self.lager_izracunat.append((_k[0], _k[1],
+                                             int(self.prodaja.at[_i, "Godina"]),
+                                             int(self.prodaja.at[_i, "Mesec"]), int(_nov)))
+                _poc[_k] = _nov
+            else:
+                _poc[_k] = float(_lg.at[_i])
+        if self.lager_izracunat:
+            _mes = sorted({(_x[2], _x[3]) for _x in self.lager_izracunat})
+            _mn = {1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr', 5: 'Maj', 6: 'Jun', 7: 'Jul',
+                   8: 'Avg', 9: 'Sep', 10: 'Okt', 11: 'Nov', 12: 'Dec'}
+            _lbl = ", ".join(_mn.get(int(m), '?') + " " + str(int(g)) for g, m in _mes)
+            self.log("Lager nije bio upisan za " + str(len(self.lager_izracunat))
+                     + " redova (" + _lbl + ") — izracunat je: lager prethodnog meseca "
+                     "+ promet - prodaja.")
+            self.upozorenja.append(
+                "ℹ️ Lager nije bio upisan za **" + str(len(self.lager_izracunat))
+                + "** redova (" + _lbl + ") — aplikacija ga je **izračunala** iz prometa i "
+                "prodaje (lager prethodnog meseca + promet − prodaja). Sve ostalo je "
+                "računato normalno.")
+        if self.lager_nemoguc:
+            self.log("Lager je prazan za " + str(len(self.lager_nemoguc))
+                     + " redova, a nema prometa ili prodaje — racuna se kao 0.")
+
     def _prepare_lookups(self):
         kp = self.prodaja[['ID KOMITENTA','id artikla','Naziv artikla','Grupa']].drop_duplicates()
         ks = self.startni[['ID KOMITENTA','id artikla','Naziv artikla','Grupa']].drop_duplicates()
