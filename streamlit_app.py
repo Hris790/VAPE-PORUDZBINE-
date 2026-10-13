@@ -5344,6 +5344,88 @@ def _pdf_font():
     return "Helvetica", "Helvetica-Bold"
 
 
+def izv_grafik_dani(po_danu):
+    """Stubići: koliko je sati aktivnog rada po danu (isto kao u PDF-u)."""
+    import io as _io
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as _plt
+    _dn = sorted((po_danu or {}).items())
+    if len(_dn) < 2:
+        return None
+    _fig, _ax = _plt.subplots(figsize=(9.0, 1.75))
+    _ax.bar([_d[8:10] + "." for _d, _ in _dn], [_m / 60.0 for _, _m in _dn],
+            color="#7c3aed", width=0.62)
+    _ax.set_ylabel("sati", fontsize=7.5, color="#6b7280")
+    _ax.tick_params(axis="both", labelsize=7, colors="#6b7280")
+    for _sp in ("top", "right"):
+        _ax.spines[_sp].set_visible(False)
+    _ax.spines["left"].set_color("#e5e7eb")
+    _ax.spines["bottom"].set_color("#e5e7eb")
+    _ax.grid(axis="y", color="#f1eefb", linewidth=0.8)
+    _ax.set_axisbelow(True)
+    _fig.tight_layout()
+    _b = _io.BytesIO()
+    _fig.savefig(_b, format="png", dpi=190, facecolor="white")
+    _plt.close(_fig)
+    _b.seek(0)
+    return _b
+
+
+def izv_grafik_prsten(vrednosti, boje, legende, naslov, sredina):
+    """Jedan prsten (donut) — za sistemske sisteme: koliko je u problemu, koliko uredno."""
+    import io as _io
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as _plt
+    _v = [max(float(x or 0), 0) for x in vrednosti]
+    if sum(_v) <= 0:
+        return None
+    _fig, _ax = _plt.subplots(figsize=(6.4, 1.9))
+    _ax.pie(_v, colors=boje, startangle=90, counterclock=False,
+            wedgeprops=dict(width=0.44, edgecolor="white", linewidth=1.6))
+    _ax.text(0, 0, str(sredina), ha="center", va="center", fontsize=12,
+             fontweight="bold", color="#3b0764")
+    _ax.set_title(naslov, fontsize=9.5, fontweight="bold", color="#3b0764", pad=3)
+    _ax.legend(legende, loc="center left", bbox_to_anchor=(0.92, 0.5), frameon=False,
+               fontsize=8, handlelength=1)
+    _fig.subplots_adjust(left=0.02, right=0.62, top=0.86, bottom=0.04)
+    _b = _io.BytesIO()
+    _fig.savefig(_b, format="png", dpi=190, facecolor="white")
+    _plt.close(_fig)
+    _b.seek(0)
+    return _b
+
+
+def izv_grafik_sistem(nred, norg, ngrn, n, nnas, nnj, nnije, neob, nrev):
+    """Dva prstena (zone i trebovanje) — isti grafik u PDF-u i na kartici."""
+    import io as _io
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as _plt
+    fig, ax = _plt.subplots(1, 2, figsize=(9.0, 2.15))
+    ax[0].pie([nred, norg, ngrn], colors=['#e5484d', '#f2820c', '#17a34a'], startangle=90,
+              counterclock=False, wedgeprops=dict(width=0.44, edgecolor='white', linewidth=1.6))
+    ax[0].text(0, 0, str(n), ha='center', va='center', fontsize=12, fontweight='bold', color='#3b0764')
+    ax[0].set_title('Zone', fontsize=9.5, fontweight='bold', color='#3b0764', pad=3)
+    ax[0].legend(["Hitno (" + str(nred) + ")", "Iskontrolisati (" + str(norg) + ")", "Dobra (" + str(ngrn) + ")"],
+                 loc='center left', bbox_to_anchor=(0.94, 0.5), frameon=False, fontsize=7.5, handlelength=1)
+    ax[1].pie([max(nnas, 0), max(nnj, 0), max(nnije, 0), max(neob, 0)],
+              colors=['#17a34a', '#f2820c', '#c9b8ec', '#e5e2ee'], startangle=90,
+              counterclock=False, wedgeprops=dict(width=0.44, edgecolor='white', linewidth=1.6))
+    ax[1].text(0, 0, str(nrev), ha='center', va='center', fontsize=12, fontweight='bold', color='#3b0764')
+    ax[1].set_title('Trebovanje', fontsize=9.5, fontweight='bold', color='#3b0764', pad=3)
+    ax[1].legend(["Prema našem predlogu (" + str(nnas) + ")", "Po njihovom (" + str(nnj) + ")",
+                  "Bez porudžbine (" + str(nnije) + ")", "Neobrađeno (" + str(neob) + ")"],
+                 loc='center left', bbox_to_anchor=(0.94, 0.5), frameon=False, fontsize=7.5, handlelength=1)
+    fig.subplots_adjust(left=0.01, right=0.72, top=0.84, bottom=0.04, wspace=1.7)
+    b = _io.BytesIO()
+    fig.savefig(b, format='png', dpi=200, facecolor='white')
+    _plt.close(fig)
+    b.seek(0)
+    return b
+
+
 def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
     import io as _io
     import matplotlib
@@ -5361,28 +5443,7 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
     Hsys = ParagraphStyle('Hsys', fontName=FB, fontSize=13, leading=16, textColor=colors.HexColor('#7c3aed'), spaceBefore=2, spaceAfter=4)
     Nar = ParagraphStyle('Nar', fontName=FN, fontSize=10, leading=14.5, textColor=colors.HexColor('#333333'))
 
-    def _chart(nred, norg, ngrn, n, nnas, nnj, nnije, neob, nrev):
-        fig, ax = _plt.subplots(1, 2, figsize=(9.0, 2.15))
-        ax[0].pie([nred, norg, ngrn], colors=['#e5484d', '#f2820c', '#17a34a'], startangle=90,
-                  counterclock=False, wedgeprops=dict(width=0.44, edgecolor='white', linewidth=1.6))
-        ax[0].text(0, 0, str(n), ha='center', va='center', fontsize=12, fontweight='bold', color='#3b0764')
-        ax[0].set_title('Zone', fontsize=9.5, fontweight='bold', color='#3b0764', pad=3)
-        ax[0].legend(["Hitno (" + str(nred) + ")", "Iskontrolisati (" + str(norg) + ")", "Dobra (" + str(ngrn) + ")"],
-                     loc='center left', bbox_to_anchor=(0.94, 0.5), frameon=False, fontsize=7.5, handlelength=1)
-        ax[1].pie([max(nnas, 0), max(nnj, 0), max(nnije, 0), max(neob, 0)],
-                  colors=['#17a34a', '#f2820c', '#c9b8ec', '#e5e2ee'], startangle=90,
-                  counterclock=False, wedgeprops=dict(width=0.44, edgecolor='white', linewidth=1.6))
-        ax[1].text(0, 0, str(nrev), ha='center', va='center', fontsize=12, fontweight='bold', color='#3b0764')
-        ax[1].set_title('Trebovanje', fontsize=9.5, fontweight='bold', color='#3b0764', pad=3)
-        ax[1].legend(["Prema našem predlogu (" + str(nnas) + ")", "Po njihovom (" + str(nnj) + ")",
-                      "Bez porudžbine (" + str(nnije) + ")", "Neobrađeno (" + str(neob) + ")"],
-                     loc='center left', bbox_to_anchor=(0.94, 0.5), frameon=False, fontsize=7.5, handlelength=1)
-        fig.subplots_adjust(left=0.01, right=0.72, top=0.84, bottom=0.04, wspace=1.7)
-        b = _io.BytesIO()
-        fig.savefig(b, format='png', dpi=200, facecolor='white')
-        _plt.close(fig)
-        b.seek(0)
-        return b
+    _chart = izv_grafik_sistem
 
     buf = _io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=16 * mm, bottomMargin=14 * mm,
@@ -13969,65 +14030,47 @@ def render_izvestaj_admin(mesec_key, sel_lbl):
         return
     _obicni = [x for x in _sis_lst if not x["nedeljni"]]
     _sistemski = [x for x in _sis_lst if x["nedeljni"]]
-    if _obicni:
-        _tr = []
-        for x in _obicni:
-            _pct = int(round(100.0 * x["obradjeno"] / max(x["n"], 1)))
-            _tr.append(
-                '<tr><td class="nz">' + _h_escape(x["sistem"]) + '</td>'
-                '<td class="br">' + str(x["n"]) + '</td>'
-                '<td class="br" style="color:#dc2626;font-weight:700;">' + str(x["crveno"]) + '</td>'
-                '<td class="br" style="color:#b45309;">' + str(x["zuto"]) + '</td>'
-                '<td class="br" style="color:#15803d;">' + str(x["zeleno"]) + '</td>'
-                '<td class="br">' + str(x["obradjeno"]) + ' (' + str(_pct) + '%)</td>'
-                '<td class="br">' + str(x["pozvano"]) + '</td>'
-                '<td class="br">' + str(x["mejlova"]) + '</td>'
-                '<td class="br">' + str(x["komercijali"]) + '</td>'
-                '<td class="br" style="color:#15803d;font-weight:700;">' + str(x["nas"])
-                + '  <span style="color:#9ca3af;font-weight:400;">(' + _rs(x["kom_nas"])
-                + ' kom)</span></td>'
-                '<td class="br" style="color:#b45309;">' + str(x["njihov"])
-                + '  <span style="color:#9ca3af;">(' + _rs(x["kom_njihov"]) + ' kom)</span></td>'
-                '<td class="br">' + str(x["bez"]) + '</td>'
-                '<td class="br">' + str(x["neobradjeno"]) + '</td></tr>')
-        st.markdown('<div class="knez-tab-wrap"><table class="knez-tab"><thead><tr>'
-                    '<th>Sistem</th><th style="text-align:right;">Objekata</th>'
-                    '<th style="text-align:right;">Hitno</th>'
-                    '<th style="text-align:right;">Kontrola</th>'
-                    '<th style="text-align:right;">Dobra</th>'
-                    '<th style="text-align:right;">Obrađeno</th>'
-                    '<th style="text-align:right;">Pozvano</th>'
-                    '<th style="text-align:right;">Mejlova</th>'
-                    '<th style="text-align:right;">Komercijali</th>'
-                    '<th style="text-align:right;">Naš predlog</th>'
-                    '<th style="text-align:right;">Po njihovom</th>'
-                    '<th style="text-align:right;">Bez por.</th>'
-                    '<th style="text-align:right;">Neobrađeno</th></tr></thead><tbody>'
-                    + "".join(_tr) + '</tbody></table></div>', unsafe_allow_html=True)
-        _uk_kom = sum(x["kom_ukupno"] for x in _obicni)
-        _uk_pred = sum(x["kom_predlozeno"] for x in _obicni)
-        st.caption("Ukupno trebovano: " + _rs(_uk_kom) + " kom (predloženo "
-                   + _rs(_uk_pred) + " kom).")
-        with st.expander("👤 Ko je šta uradio — po sistemu", expanded=False):
-            _rr = []
-            for x in _obicni:
-                for _ko, _d in sorted((x["po_osobi"] or {}).items()):
-                    _rr.append('<tr><td class="nz">' + _h_escape(x["sistem"]) + '</td>'
-                               '<td>' + _h_escape(str(_ko)) + '</td>'
-                               '<td class="br">' + str(_d.get("Pozvala sam", 0)) + '</td>'
-                               '<td class="br">' + str(_d.get("Poslala sam mejl", 0)) + '</td>'
-                               '<td class="br">' + str(_d.get("Obavestila direktorku", 0))
-                               + '</td></tr>')
-            if _rr:
-                st.markdown('<div class="knez-tab-wrap"><table class="knez-tab"><thead><tr>'
-                            '<th>Sistem</th><th>Ko</th>'
-                            '<th style="text-align:right;">Pozvano</th>'
-                            '<th style="text-align:right;">Mejlova</th>'
-                            '<th style="text-align:right;">Komercijali</th></tr></thead>'
-                            '<tbody>' + "".join(_rr) + '</tbody></table></div>',
-                            unsafe_allow_html=True)
-            else:
-                st.caption("Nema upisanih poteza po osobi za ovaj mesec.")
+
+    # ---- sistem po sistem, isto kao u PDF-u: rečenica + dva prstena ----
+    for x in _obicni:
+        _pct = int(round(100.0 * x["obradjeno"] / max(x["n"], 1)))
+        _osoba = "  ·  ".join(
+            "<b>" + _h_escape(str(_ko)) + "</b>: pozvano " + str(_d.get("Pozvala sam", 0))
+            + ", mejlova " + str(_d.get("Poslala sam mejl", 0))
+            + ", komercijali " + str(_d.get("Obavestila direktorku", 0))
+            for _ko, _d in sorted((x["po_osobi"] or {}).items()))
+        with st.container(border=True):
+            st.markdown(
+                '<div style="font-size:16px;font-weight:800;color:#6d28d9;margin-bottom:4px;">'
+                + _h_escape(x["sistem"]) + '</div>'
+                '<div style="font-size:13.5px;color:#374151;line-height:1.6;">'
+                'Od <b>' + str(x["n"]) + '</b> objekata za porudžbinu, '
+                '<b style="color:#dc2626;">' + str(x["crveno"]) + '</b> je u hitnoj zoni, '
+                + str(x["zuto"]) + ' za kontrolu i ' + str(x["zeleno"]) + ' u dobroj. '
+                'Obrađeno je <b>' + str(x["obradjeno"]) + '</b> (' + str(_pct) + '%) — '
+                'pozvano ' + str(x["pozvano"]) + ', mejlova ' + str(x["mejlova"])
+                + ', prosleđeno komercijali ' + str(x["komercijali"]) + '. '
+                'Trebovanje: <b style="color:#15803d;">' + str(x["nas"])
+                + ' prema našem predlogu (' + _rs(x["kom_nas"]) + ' kom)</b>, '
+                '<span style="color:#b45309;">' + str(x["njihov"]) + ' po njihovom ('
+                + _rs(x["kom_njihov"]) + ' kom)</span>, ' + str(x["bez"])
+                + ' bez porudžbine; <b>' + str(x["neobradjeno"]) + '</b> neobrađeno. '
+                'Ukupno trebovano: <b>' + _rs(x["kom_ukupno"]) + ' kom</b> (predloženo '
+                + _rs(x["kom_predlozeno"]) + ' kom).</div>'
+                + ('<div style="font-size:12.5px;color:#6b7280;margin-top:6px;">'
+                   'Ko je šta uradio — ' + _osoba + '</div>' if _osoba else ""),
+                unsafe_allow_html=True)
+            try:
+                _c1g, _c2g = st.columns([3, 1])
+                with _c1g:
+                    st.image(izv_grafik_sistem(x["crveno"], x["zuto"], x["zeleno"], x["n"],
+                                               x["nas"], x["njihov"], x["bez"],
+                                               x["n"] - x["obradjeno"], x["obradjeno"]),
+                             use_container_width=True)
+            except Exception:
+                pass
+
+    # ---- sistemski sistemi (trebuju u fiksnom periodu) ----
     for x in _sistemski:
         _t = x["trebovanje"] or {}
         _tl = ""
@@ -14043,26 +14086,40 @@ def render_izvestaj_admin(mesec_key, sel_lbl):
                             (" i nisu upozoreni." if _t.get("upozoreni") is False else "."))
             else:
                 _tl = "Sistem NIJE poslao svoje trebovanje za ovaj period."
-            _tl += "  <span style='color:#9ca3af;'>(" + _h_escape(str(_t.get("ko", ""))) \
-                   + ", " + _h_escape(str(_t.get("at", ""))) + ")</span>"
-        st.markdown('<div style="border:1px solid #e9e3fb;border-radius:12px;padding:12px 16px;'
-                    'margin-top:10px;background:#fcfbff;">'
-                    '<div style="font-weight:800;color:#4c1d95;">' + _h_escape(x["sistem"])
-                    + '  <span style="font-weight:600;color:#8b7fa8;font-size:12.5px;">'
-                    '(sistemski · period ' + str(x["dani"]) + ' dana)</span></div>'
-                    '<div style="font-size:13px;color:#374151;margin-top:4px;">'
-                    + (('Na startu (' + _h_escape(str(x["start"].get("kada", ""))) + '): <b>'
-                        + str(x["start"].get("problem", 0)) + '</b> objekata sa problemom.  ')
-                       if x["start"] else "")
-                    + 'Trenutno sa problemom: <b>' + str(x["problem"]) + '</b> od '
-                    + str(x["n"]) + '.  Prijavljeno komercijali: <b>' + str(x["prijave"])
-                    + '</b>.'
-                    + ('  Objekti kojima ukupno fali ' + str(x["min_treb"])
-                       + ' kom ili manje se ne računaju.' if x["min_treb"] else "")
-                    + '</div>'
-                    + ('<div style="font-size:13px;color:#374151;margin-top:4px;">'
-                       '<b>Trebovanje:</b> ' + _tl + '</div>' if _tl else "")
-                    + '</div>', unsafe_allow_html=True)
+            _tl += ("  <span style='color:#9ca3af;'>(" + _h_escape(str(_t.get("ko", "")))
+                    + ", " + _h_escape(str(_t.get("at", ""))) + ")</span>")
+        _ok_n = max(x["n"] - x["problem"], 0)
+        with st.container(border=True):
+            st.markdown(
+                '<div style="font-size:16px;font-weight:800;color:#6d28d9;margin-bottom:4px;">'
+                + _h_escape(x["sistem"])
+                + '  <span style="font-weight:600;color:#8b7fa8;font-size:12.5px;">'
+                '(sistemski · period ' + str(x["dani"]) + ' dana)</span></div>'
+                '<div style="font-size:13.5px;color:#374151;line-height:1.6;">'
+                + (('Na startu (' + _h_escape(str(x["start"].get("kada", ""))) + '): <b>'
+                    + str(x["start"].get("problem", 0)) + '</b> objekata sa problemom.  ')
+                   if x["start"] else "")
+                + 'Trenutno sa problemom (realni lager ispod prodaje za '
+                + str(x["dani"]) + ' dana): <b style="color:#dc2626;">' + str(x["problem"])
+                + '</b> od ' + str(x["n"]) + '.  Prijavljeno komercijali: <b>'
+                + str(x["prijave"]) + '</b>.'
+                + ('  Objekti kojima ukupno fali ' + str(x["min_treb"])
+                   + ' kom ili manje se ne računaju.' if x["min_treb"] else "")
+                + '</div>'
+                + ('<div style="font-size:13px;color:#374151;margin-top:5px;">'
+                   '<b>Trebovanje:</b> ' + _tl + '</div>' if _tl else ""),
+                unsafe_allow_html=True)
+            try:
+                _gp = izv_grafik_prsten(
+                    [x["problem"], _ok_n], ["#e5484d", "#17a34a"],
+                    ["Sa problemom (" + str(x["problem"]) + ")",
+                     "Uredno (" + str(_ok_n) + ")"], "Objekti", x["n"])
+                if _gp is not None:
+                    _p1g, _p2g = st.columns([2, 2])
+                    with _p1g:
+                        st.image(_gp, use_container_width=True)
+            except Exception:
+                pass
 
 
 KNEZ_TAB_CSS = """/* ===== Naše tabele (Knez): obojeno zaglavlje, čiste linije ===== */
@@ -14158,6 +14215,14 @@ def render_aktivno_vreme(mesec_key):
                     '<th style="text-align:right;width:90px;">Dana</th>'
                     '<th>Na kojim sistemima</th></tr></thead><tbody>'
                     + "".join(_red_o) + '</tbody></table></div>', unsafe_allow_html=True)
+        try:
+            _gd = izv_grafik_dani(_vr["po_danu"])
+            if _gd is not None:
+                _gc1, _gc2 = st.columns([3, 1])
+                with _gc1:
+                    st.image(_gd, use_container_width=True)
+        except Exception:
+            pass
         st.caption("Procena, ne štoperica: potezi jedne osobe u razmaku do "
                    + str(EFIK_PAUZA_MIN) + " minuta broje se kao jedna sesija rada; veći "
                    "razmak je pauza. Meri se samo rad KROZ APLIKACIJU — ne i vreme u "
@@ -14733,73 +14798,51 @@ def prikazi_direktore():
                     'Pregled izveštaja i efikasnosti administracije.</div>', unsafe_allow_html=True)
         st.markdown('<div style="font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:#9aa0ad;'
                     'font-weight:700;margin-bottom:12px;">Kartice</div>', unsafe_allow_html=True)
-        _cc1, _cc2, _cc3 = st.columns(3)
-        with _cc1:
-            with st.container(border=True):
-                st.markdown('<div style="font-size:32px;">📊</div>'
-                            '<div style="font-size:16px;font-weight:800;margin:6px 0 4px;">Izveštaj efikasnosti administracije</div>'
-                            '<div style="font-size:13px;color:#8b8fa0;line-height:1.5;margin-bottom:12px;">PDF izveštaj administracije i upozorenja koja je administracija prosledila komercijali.</div>',
-                            unsafe_allow_html=True)
-                if st.button("Otvori →", key="dir_open_efik", use_container_width=True):
-                    st.session_state["dir_view"] = "efikasnost"; st.rerun()
-        with _cc2:
-            with st.container(border=True):
-                st.markdown('<div style="font-size:32px;">📈</div>'
-                            '<div style="font-size:16px;font-weight:800;margin:6px 0 4px;">Detaljan izveštaj po sistemima</div>'
-                            '<div style="font-size:13px;color:#8b8fa0;line-height:1.5;margin-bottom:12px;">Prodaja, grupe, out-of-stock i preuzimanje analitike — po sistemu i mesecu.</div>',
-                            unsafe_allow_html=True)
-                if st.button("Otvori →", key="dir_open_sist", use_container_width=True):
-                    st.session_state["dir_view"] = "sistemi"; st.rerun()
-        with _cc3:
-            with st.container(border=True):
-                st.markdown('<div style="font-size:32px;">💹</div>'
-                            '<div style="font-size:16px;font-weight:800;margin:6px 0 4px;">Izveštaj prodaje</div>'
-                            '<div style="font-size:13px;color:#8b8fa0;line-height:1.5;margin-bottom:12px;">Kompletan dashboard: prodaja, uspešnost akcije, profitabilnost, zalihe — plus izvoz u Excel.</div>',
-                            unsafe_allow_html=True)
-                if st.button("Otvori →", key="dir_open_prod", use_container_width=True):
-                    st.session_state["dir_view"] = "prodaja"; st.rerun()
-        _cd1, _cd2, _cd3 = st.columns(3)
-        with _cd1:
-            with st.container(border=True):
-                st.markdown('<div style="font-size:32px;">🧊</div>'
-                            '<div style="font-size:16px;font-weight:800;margin:6px 0 4px;">Izveštaj SYX</div>'
-                            '<div style="font-size:13px;color:#8b8fa0;line-height:1.5;margin-bottom:12px;">Word izveštaji za SYX nikotinske vrećice, izlistani po mesecima za preuzimanje.</div>',
-                            unsafe_allow_html=True)
-                if st.button("Otvori →", key="dir_open_syx", use_container_width=True):
-                    st.session_state["dir_view"] = "syx"; st.rerun()
-        with _cd2:
-            with st.container(border=True):
-                st.markdown('<div style="font-size:32px;">💳</div>'
-                            '<div style="font-size:16px;font-weight:800;margin:6px 0 4px;">Izveštaj potraživanja</div>'
-                            '<div style="font-size:13px;color:#8b8fa0;line-height:1.5;margin-bottom:12px;">Potraživanja po mesecu koja je administracija dopunila — pregled i izvoz u Excel.</div>',
-                            unsafe_allow_html=True)
-                if st.button("Otvori →", key="dir_open_potraz", use_container_width=True):
-                    st.session_state["dir_view"] = "potraz"; st.rerun()
-        with _cd3:
-            with st.container(border=True):
-                st.markdown('<div style="font-size:32px;">📅</div>'
-                            '<div style="font-size:16px;font-weight:800;margin:6px 0 4px;">Rokovi</div>'
-                            '<div style="font-size:13px;color:#8b8fa0;line-height:1.5;margin-bottom:12px;">Postavi rokove po mesecu: administracija, izveštaj po sistemu i osvežavanje izveštaja prodaje.</div>',
-                            unsafe_allow_html=True)
-                if st.button("Otvori →", key="dir_open_rok", use_container_width=True):
-                    st.session_state["dir_view"] = "rokovi"; st.rerun()
-        _ce1, _ce2, _ce3 = st.columns(3)
-        with _ce1:
-            with st.container(border=True):
-                st.markdown('<div style="font-size:32px;">👥</div>'
-                            '<div style="font-size:16px;font-weight:800;margin:6px 0 4px;">Statistika — ko je šta uradio</div>'
-                            '<div style="font-size:13px;color:#8b8fa0;line-height:1.5;margin-bottom:12px;">Pregled rada administracije po osobi: pozivi, mejlovi, prosleđivanja i prijave, po mesecu.</div>',
-                            unsafe_allow_html=True)
-                if st.button("Otvori →", key="dir_open_stat", use_container_width=True):
-                    st.session_state["dir_view"] = "statistika"; st.rerun()
-        with _ce2:
-            with st.container(border=True):
-                st.markdown('<div style="font-size:32px;">🗂️</div>'
-                            '<div style="font-size:16px;font-weight:800;margin:6px 0 4px;">Administracija porudžbina</div>'
-                            '<div style="font-size:13px;color:#8b8fa0;line-height:1.5;margin-bottom:12px;">Ekran administracije, onakav kakav one vide: porudžbine, potraživanja, Knez Petrol i prikupljanje izveštaja. Samo za gledanje.</div>',
-                            unsafe_allow_html=True)
-                if st.button("Otvori →", key="dir_open_admpr", use_container_width=True):
-                    st.session_state["dir_view"] = "admin_pregled"; st.rerun()
+        _KARTICE = [
+            ("🗂️", "Administracija porudžbina",
+             "Ekran administracije, onakav kakav one vide: porudžbine, potraživanja, "
+             "Knez Petrol i prikupljanje izveštaja. Samo za gledanje.",
+             "dir_open_admpr", "admin_pregled"),
+            ("👥", "Statistika call centra",
+             "Izveštaj o radu administracije: aktivno vreme rada, po sistemima i po osobi, "
+             "stanje po sistemu — na ekranu i za preuzimanje u PDF-u.",
+             "dir_open_stat", "statistika"),
+            ("💹", "Izveštaj prodaje",
+             "Kompletan dashboard: prodaja, uspešnost akcije, profitabilnost, zalihe — "
+             "plus izvoz u Excel.",
+             "dir_open_prod", "prodaja"),
+            ("📊", "Izveštaj efikasnosti administracije",
+             "PDF izveštaj administracije i upozorenja koja je administracija prosledila "
+             "komercijali.",
+             "dir_open_efik", "efikasnost"),
+            ("📈", "Detaljan izveštaj po sistemima",
+             "Prodaja, grupe, out-of-stock i preuzimanje analitike — po sistemu i mesecu.",
+             "dir_open_sist", "sistemi"),
+            ("🧊", "Izveštaj SYX",
+             "Word izveštaji za SYX nikotinske vrećice, izlistani po mesecima za preuzimanje.",
+             "dir_open_syx", "syx"),
+            ("💳", "Izveštaj potraživanja",
+             "Potraživanja po mesecu koja je administracija dopunila — pregled i izvoz u Excel.",
+             "dir_open_potraz", "potraz"),
+            ("📅", "Rokovi",
+             "Postavi rokove po mesecu: administracija, izveštaj po sistemu i osvežavanje "
+             "izveštaja prodaje.",
+             "dir_open_rok", "rokovi"),
+        ]
+        for _i0 in range(0, len(_KARTICE), 3):
+            _kol = st.columns(3)
+            for _k0, (_ik, _nas, _opis, _key, _vw) in zip(_kol, _KARTICE[_i0:_i0 + 3]):
+                with _k0:
+                    with st.container(border=True):
+                        st.markdown('<div style="font-size:32px;">' + _ik + '</div>'
+                                    '<div style="font-size:16px;font-weight:800;'
+                                    'margin:6px 0 4px;">' + _h_escape(_nas) + '</div>'
+                                    '<div style="font-size:13px;color:#8b8fa0;line-height:1.5;'
+                                    'margin-bottom:12px;">' + _h_escape(_opis) + '</div>',
+                                    unsafe_allow_html=True)
+                        if st.button("Otvori →", key=_key, use_container_width=True):
+                            st.session_state["dir_view"] = _vw
+                            st.rerun()
         return
 
     if st.button("← Nazad na kartice", key="dir_back"):
@@ -14812,9 +14855,9 @@ def prikazi_direktore():
         prikazi_administraciju(ugradjeno=True)
         return
 
-    # ---------- KARTICA: STATISTIKA (ko je šta uradio) ----------
+    # ---------- KARTICA: STATISTIKA CALL CENTRA (izveštaj o radu administracije) ----------
     if _view == "statistika":
-        st.markdown('<div style="font-size:20px;font-weight:800;margin:6px 0 12px;">👥 Statistika — ko je šta uradio</div>', unsafe_allow_html=True)
+        st.markdown('<div style="font-size:20px;font-weight:800;margin:6px 0 12px;">👥 Statistika call centra</div>', unsafe_allow_html=True)
         if not _mes_keys:
             st.info("Još nema objavljenih podataka.")
             return
