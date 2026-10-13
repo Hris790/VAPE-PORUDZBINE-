@@ -1730,8 +1730,8 @@ def knez_admin_ui():
     # se pamti dokle je pročitano (u bazi), pa se čita SAMO razlika.
     _scan_db = sb_knez_scan_get(mesec_key)
     _od_def = _now().date().replace(day=1)
+    _prvi_mejl = None
     try:
-        _prvi_mejl = None
         for r in _pumpe:
             for _m0 in (((_obr.get(int(r["idk"])) or {}).get("dnevnik") or {}).get("mejlovi") or []):
                 _d0 = str(_m0.get("at", ""))[:10]
@@ -1744,6 +1744,9 @@ def knez_admin_ui():
     except Exception:
         pass
     _od_pun = _od_def          # datum za čitanje CELOG meseca (kad trebaju svi prilozi)
+    _od_pun_zasto = ("to je dan kada je poslat prvi mejl pumpama za ovaj izveštaj"
+                     if _prvi_mejl and str(_prvi_mejl) == _od_pun.isoformat()
+                     else "to je 1. u mesecu")
     # Ako je sanduče već čitano za ovaj mesec — kreni od tog dana (samo razlika)
     try:
         if _scan_db.get("do_dana"):
@@ -2706,6 +2709,9 @@ def knez_admin_ui():
             st.markdown('<div style="font-size:12.5px;color:#6b7280;padding-top:7px;">'
                         'Pročita sanduče i nove lager liste <b>samo za pumpe koje nisu '
                         'završene</b> — završene se ne diraju.'
+                        '<br>Čita <b>od ' + _od_pun.strftime("%d.%m.%Y") + '</b> ('
+                        + _od_pun_zasto + ') — <b>ne</b> od datuma „Čitaj poruke OD“ '
+                        'gore, da ne bi promakao nijedan prilog.'
                         + (('<br><span style="color:#9ca3af;">Pročitano: <b>'
                             + str(len(_fajlovi_db)) + '</b> lager listi  ·  poslednji put '
                             + _h_escape(_dt_kratko(_pdf_db.get("at")))
@@ -2722,7 +2728,8 @@ def knez_admin_ui():
             _po_p, _nep_p, _err_p = ({}, [], "")
             if _adr_p:
                 with st.spinner("🔄 Čitam sanduče od " + _od_pun.strftime("%d.%m.%Y")
-                                + " za " + str(len(_nezav)) + " nezavršenih pumpi…"):
+                                + " (" + _od_pun_zasto + ") za " + str(len(_nezav))
+                                + " nezavršenih pumpi…"):
                     _po_p, _nep_p, _err_p = knez_odgovori(_adr_p, od_datum=_od_pun)
             if _err_p and not _po_p:
                 st.error("Čitanje sandučeta nije uspelo: " + str(_err_p))
