@@ -4854,7 +4854,7 @@ def direktor_blok(engine, res):
     trend = []
     for lb in ml:
         cp = _col(lb, "_Prodaja")
-        cr = _col(lb, "_Promet")
+        cr = _col(lb, "_Promet") if getattr(engine, "has_promet", True) else None
         if cp:
             try:
                 trend.append({"mesec": lb, "kom": int(res[cp].sum()),
@@ -15118,6 +15118,40 @@ class PredictionEngine:
             key=(r['ID KOMITENTA'],r['id artikla'],r['Godina'],r['Mesec'])
             pm = r['PROMET KA NJIMA'] if self.has_promet else 0
             self.prodaja_dict[key] = (r.get('Prodata Kolicina',r.get('Kolicina',0)), r.get('Lager',0), pm if not pd.isna(pm) else 0)
+        # --- Sistem BEZ kolone „PROMET KA NJIMA": ulaz se izvodi iz podataka ---
+        # ulaz = prodaja + lager(kraj) - lager(pocetak).  Ako ispadne negativno, to je
+        # neobjasnjena razlika (povrat ili greska u izvestaju): ulaz se racuna kao 0,
+        # a razlika se pamti i prijavljuje. Bez ovoga bi svaki mesec sa pocetnim
+        # stanjem 0 bio proglasen za OOS, pa bi stvarna prodaja bila zamenjena prosekom.
+        self.razlika_dict = {}
+        if not self.has_promet:
+            _n_der = 0
+            for _,k in self.all_keys.iterrows():
+                idk,ida = k['ID KOMITENTA'],k['id artikla']
+                poc = self.startni_dict.get((idk,ida),0)
+                poc = 0 if pd.isna(poc) else poc
+                for god,mes in self.meseci_order:
+                    key=(idk,ida,god,mes)
+                    if key not in self.prodaja_dict:
+                        poc = 0                      # nema reda za taj mesec — kao i do sada
+                        continue
+                    pv,lv,_ = self.prodaja_dict[key]
+                    pv = 0 if pd.isna(pv) else pv
+                    lv = 0 if pd.isna(lv) else lv
+                    tv = pv + lv - poc
+                    if tv < 0:
+                        self.razlika_dict[key] = tv
+                        tv = 0
+                    else:
+                        _n_der += 1
+                    self.prodaja_dict[key] = (pv, lv, tv)
+                    poc = lv
+            self.log("Fajl NEMA kolonu 'PROMET KA NJIMA' — jednostavna analiza: ulaz je "
+                     f"izracunat (prodaja + lager na kraju - lager na pocetku) za {_n_der} "
+                     "kombinacija; povrat i korekcija se ne racunaju.")
+            if self.razlika_dict:
+                self.log(f"Neobjasnjena razlika (prodaja+lager manji od pocetnog stanja): "
+                         f"{len(self.razlika_dict)} kombinacija — proveri lager liste.")
         self.hist_dict={}; self.hist_total_dict={}; self.hist_months_per_art={}
         if self.has_history:
             ha = self.hist_df.groupby(['ID KOMITENTA','id artikla'])['Prodata Kolicina'].agg(['sum','mean']).reset_index()
@@ -15636,7 +15670,10 @@ def create_excel(engine, ukljuci_model=True):
     sf_p2=PatternFill('solid',fgColor='00B050'); pred_hdr=PatternFill('solid',fgColor='7030A0')
     ord_hdr=PatternFill('solid',fgColor='375623'); sf_hist=PatternFill('solid',fgColor='E2D5F1')
     nf_money='#,##0'
-    SC=5; sub_h=['Pocetno stanje','Promet (ulaz)','Prodaja','Povrat','Korekcija']
+    _bez_prom = not getattr(engine, 'has_promet', True)
+    SC=5; sub_h=['Pocetno stanje',
+                 ('Ulaz (izracunat)' if _bez_prom else 'Promet (ulaz)'),
+                 'Prodaja', 'Povrat', 'Korekcija']
     sub_f=[sf_poc,sf_prom,sf_prod,sf_pov,sf_kor]; col_suf=['_Pocetno','_Promet','_Prodaja','_Povrat','_Korekcija']
     ws1=wb.active; ws1.title="Pregled po objektima"
     for c,t in enumerate(['ID Komitenta','ID Artikla','Naziv Artikla','Grupa'],1):
@@ -15707,7 +15744,10 @@ def create_excel(engine, ukljuci_model=True):
     ws1.freeze_panes=f'{get_column_letter(month_start)}3'
     ws1.auto_filter.ref=f"A2:{get_column_letter(ws1.max_column)}{ws1.max_row}"
     ws2=wb.create_sheet("Totali po mesecima")
-    for c,h in enumerate(['Mesec','Promet (ulaz)','Prodaja','Stvarni povrat','Korekcija','Neto (Promet-Povrat)'],1):
+    for c,h in enumerate(['Mesec',
+                         ('Ulaz (izracunat)' if _bez_prom else 'Promet (ulaz)'),
+                         'Prodaja', 'Stvarni povrat', 'Korekcija',
+                         ('Neto (Ulaz-Povrat)' if _bez_prom else 'Neto (Promet-Povrat)')],1):
         cell=ws2.cell(1,c,h); cell.font=hfn; cell.fill=hf; cell.alignment=caw; cell.border=tb
     ro=2
     if engine.has_history:
@@ -15735,6 +15775,22 @@ def create_excel(engine, ukljuci_model=True):
         cell=ws2.cell(i,2,val); cell.font=Font(bold=True,name='Arial',size=11); cell.fill=fill; cell.alignment=ca; cell.border=tb; cell.number_format=nf_money
     ws2.column_dimensions['A'].width=32; ws2.column_dimensions['B'].width=18
     for c in 'CDEF': ws2.column_dimensions[c].width=18
+    if _bez_prom:
+        _nr = fr + len(ir) + 2
+        _nz = len(getattr(engine, 'razlika_dict', {}) or {})
+        ws2.cell(_nr, 1, 'NAPOMENA — jednostavna analiza (fajl nema kolonu PROMET KA NJIMA)'
+                 ).font = Font(bold=True, name='Arial', size=10, color='B45309')
+        ws2.cell(_nr + 1, 1,
+                 'Ulaz je izracunat: prodaja + lager na kraju meseca - lager na pocetku. '
+                 'Predikcija, prosek i predlog porudzbine racunaju se normalno. '
+                 'Povrat se ne raspodeljuje po objektima (za to je potrebna kolona PROMET) '
+                 '- ako sistem nema povrate, nula je tacan podatak.'
+                 ).font = Font(name='Arial', size=9, color='6B7280')
+        if _nz:
+            ws2.cell(_nr + 2, 1,
+                     'Neobjasnjena razlika (prodaja + lager su manji od pocetnog stanja): '
+                     + str(_nz) + ' kombinacija artikal/objekat/mesec — proveri te lager liste.'
+                     ).font = Font(name='Arial', size=9, color='B45309')
     if engine.has_prices and len(engine.df_oos) > 0:
         ws_oos = wb.create_sheet("OOS Izgubljeni profit")
         oos_hdr = PatternFill('solid', fgColor='C00000')
@@ -16836,6 +16892,17 @@ with tab_obj:
                         _eng = PredictionEngine(_obytes, _o_excluded, alpha, beta, _o_min_lager, _o_min_order, _o_tr, None, _o_min_pa, meseci=float(_o_mes), max_per_artikal=_o_max_pa, syx_objekti=_o_syx_obj)
                         _res = _eng.run(_pb)
                         _pb.empty()
+                        if not getattr(_eng, "has_promet", True):
+                            _nz_r = len(getattr(_eng, "razlika_dict", {}) or {})
+                            st.info(
+                                "ℹ️ Ovaj fajl **nema kolonu PROMET KA NJIMA** — radi se "
+                                "**jednostavna analiza**: ulaz se računa kao *prodaja + lager na "
+                                "kraju − lager na početku*, pa predikcija, prosek i predlog "
+                                "porudžbine rade normalno. Povrat se ne raspodeljuje po objektima "
+                                "— za sisteme bez povrata to i ne treba."
+                                + (("  ⚠️ Neobjašnjena razlika kod **" + str(_nz_r)
+                                    + "** kombinacija (prodaja + lager manji od početnog stanja) "
+                                    "— proveri te lager liste.") if _nz_r else ""))
                         # mesec pod kojim se objavljuje = izabrani mesec (podrazumevano auto)
                         _mk2 = _o_mes_key
                         _mlbl2 = mesec_label(_mk2)
@@ -16850,7 +16917,7 @@ with tab_obj:
                         except Exception:
                             _presek_iso = None
                         _stavke = stavke_iz_rezultata(_res, _eng)
-                        _payload = {"mesec_label": _mlbl2, "meta": {"pred_label": _eng.pred_label, "order_label": _eng.order_label, "min_lager": _eng.min_lager, "meseci": round(float(_o_mes), 1), "presek": _presek_iso, "nedeljni": bool(_o_nedeljni), "nedeljni_dani": int(_o_sist_dani), "nedeljni_min": int(_o_sist_min or 0), "mesec_nazivi": list(getattr(_eng, "mesec_labels", []) or []), "generisano": _now().strftime("%d.%m.%Y %H:%M"), "n_objekata": int(len({_s2['idk'] for _s2 in _stavke})), "n_sistem_ukupno": int(getattr(_eng, "num_komitenti", 0)), "ukupno_kom": int(sum(_s2['kol'] for _s2 in _stavke))}, "stavke": _stavke}
+                        _payload = {"mesec_label": _mlbl2, "meta": {"pred_label": _eng.pred_label, "order_label": _eng.order_label, "min_lager": _eng.min_lager, "meseci": round(float(_o_mes), 1), "presek": _presek_iso, "nedeljni": bool(_o_nedeljni), "nedeljni_dani": int(_o_sist_dani), "nedeljni_min": int(_o_sist_min or 0), "bez_prometa": bool(not getattr(_eng, "has_promet", True)), "mesec_nazivi": list(getattr(_eng, "mesec_labels", []) or []), "generisano": _now().strftime("%d.%m.%Y %H:%M"), "n_objekata": int(len({_s2['idk'] for _s2 in _stavke})), "n_sistem_ukupno": int(getattr(_eng, "num_komitenti", 0)), "ukupno_kom": int(sum(_s2['kol'] for _s2 in _stavke))}, "stavke": _stavke}
                         # Napomena + zaključan mejl koje zadaje analitika
                         _nap_an = (st.session_state.get("obj_napomena", "") or "").strip()
                         _mf_an = (st.session_state.get("obj_mail_fix", "") or "").strip()
