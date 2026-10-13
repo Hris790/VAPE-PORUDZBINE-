@@ -13874,6 +13874,329 @@ def prikazi_komercijalu():
                                 st.error("Greška: " + str(_e))
 
 
+def izvestaj_admin_sistemi(mesec_key):
+    """Brojevi po sistemu za izveštaj administracije — isti račun kao u PDF-u."""
+    _out = []
+    for _sis in (sb_sisteme(mesec_key) or []):
+        podaci = sb_ucitaj(mesec_key, _sis)
+        if not podaci or not podaci.get("stavke"):
+            continue
+        _meta = podaci.get("meta") or {}
+        po = {}
+        for s in podaci["stavke"]:
+            po.setdefault(int(s["idk"]), []).append(s)
+        _cut = _admin_presek(_meta, mesec_key)
+        _ah = (_meta.get("admin_hist") or {}) if isinstance(_meta, dict) else {}
+
+        if _meta.get("nedeljni"):
+            _dani = int(_meta.get("nedeljni_dani", 7) or 7)
+            _minT = int(_meta.get("nedeljni_min", 0) or 0)
+            _prob = 0
+            for _idk, _lst in po.items():
+                _pm = (_treb_posle_preseka(_ah.get(str(int(_idk)), []) or [], _cut)
+                       if _cut else {})
+                if ned_problem_objekat(_lst, _pm, _dani, _minT)[2]:
+                    _prob += 1
+            _out.append({"sistem": _sis, "nedeljni": True, "dani": _dani, "n": len(po),
+                         "problem": _prob, "min_treb": _minT,
+                         "prijave": len(dict(_meta.get("nedeljni_prijave") or {})),
+                         "trebovanje": dict(_meta.get("nedeljni_trebovanje") or {}),
+                         "start": dict(_meta.get("nedeljni_start") or {})})
+            continue
+
+        obrada = sb_load_obrada(mesec_key, _sis)
+        objekti = [{"idk": _idk, "nivo": hitnost_objekta(_lst)[0], "lst": _lst}
+                   for _idk, _lst in po.items()]
+
+        def _kom_predlog(o):
+            _pm = (_treb_posle_preseka(_ah.get(str(int(o["idk"])), []) or [], _cut)
+                   if _cut else {})
+            return sum(max(int(a.get("kol", 0) or 0)
+                           - int(_pm.get(int(a.get("ida", -1)), 0) or 0), 0)
+                       for a in (o.get("lst") or []))
+
+        def _ima(o, naz):
+            return naz in (obrada.get(o["idk"], {}).get("reakcije") or [])
+
+        _sz = _meta.get("start_zone") if isinstance(_meta, dict) else None
+        if _sz:
+            _nred = int(_sz.get("crveno", 0)); _norg = int(_sz.get("zuto", 0))
+            _ngrn = int(_sz.get("zeleno", 0))
+        else:
+            _nred = sum(1 for o in objekti if o["nivo"] == "crveno")
+            _norg = sum(1 for o in objekti if o["nivo"] == "zuto")
+            _ngrn = sum(1 for o in objekti if o["nivo"] == "zeleno")
+        _rev = [o for o in objekti if obrada.get(o["idk"], {}).get("reakcije")]
+        _nas_o = [o for o in _rev if obrada.get(o["idk"], {}).get("trebovali_tip") == "nas"]
+        _nj_o = [o for o in _rev if obrada.get(o["idk"], {}).get("trebovali_tip") == "njihov"]
+        _ko_stat = {}
+        for o in objekti:
+            _ov = obrada.get(o["idk"], {})
+            _rk = _ov.get("reakcije_ko") or {}
+            for _rr in (_ov.get("reakcije") or []):
+                _u = _rk.get(_rr)
+                if _u:
+                    _ko_stat.setdefault(_u, {})
+                    _ko_stat[_u][_rr] = _ko_stat[_u].get(_rr, 0) + 1
+        _kom_nas = sum(_kom_predlog(o) for o in _nas_o)
+        _kom_nj = sum(int(x or 0) for o in _nj_o
+                      for x in (obrada.get(o["idk"], {}).get("njihova") or {}).values())
+        _out.append({
+            "sistem": _sis, "nedeljni": False, "n": len(objekti),
+            "crveno": _nred, "zuto": _norg, "zeleno": _ngrn,
+            "obradjeno": len(_rev), "neobradjeno": len(objekti) - len(_rev),
+            "pozvano": sum(1 for o in objekti if _ima(o, "Pozvala sam")),
+            "mejlova": sum(1 for o in objekti if _ima(o, "Poslala sam mejl")),
+            "komercijali": sum(1 for o in objekti if _ima(o, "Obavestila direktorku")),
+            "nas": len(_nas_o), "njihov": len(_nj_o),
+            "bez": sum(1 for o in _rev if not obrada.get(o["idk"], {}).get("trebovali_tip")),
+            "kom_nas": _kom_nas, "kom_njihov": _kom_nj, "kom_ukupno": _kom_nas + _kom_nj,
+            "kom_predlozeno": sum(_kom_predlog(o) for o in objekti),
+            "po_osobi": _ko_stat})
+    return _out
+
+
+def render_izvestaj_admin(mesec_key, sel_lbl):
+    """Isti izveštaj koji ide u PDF, samo prikazan na kartici."""
+    _rs = lambda n: format(int(n or 0), ",").replace(",", ".")
+    render_aktivno_vreme(mesec_key)
+    _sis_lst = izvestaj_admin_sistemi(mesec_key)
+    st.markdown('<div style="margin:20px 0 4px;font-size:12px;text-transform:uppercase;'
+                'letter-spacing:.6px;color:#9aa0ad;font-weight:700;">📦 Po sistemima — '
+                + _h_escape(str(sel_lbl)) + '</div>', unsafe_allow_html=True)
+    if not _sis_lst:
+        st.caption("Za ovaj mesec nema objavljenih sistema.")
+        return
+    _obicni = [x for x in _sis_lst if not x["nedeljni"]]
+    _sistemski = [x for x in _sis_lst if x["nedeljni"]]
+    if _obicni:
+        _tr = []
+        for x in _obicni:
+            _pct = int(round(100.0 * x["obradjeno"] / max(x["n"], 1)))
+            _tr.append(
+                '<tr><td class="nz">' + _h_escape(x["sistem"]) + '</td>'
+                '<td class="br">' + str(x["n"]) + '</td>'
+                '<td class="br" style="color:#dc2626;font-weight:700;">' + str(x["crveno"]) + '</td>'
+                '<td class="br" style="color:#b45309;">' + str(x["zuto"]) + '</td>'
+                '<td class="br" style="color:#15803d;">' + str(x["zeleno"]) + '</td>'
+                '<td class="br">' + str(x["obradjeno"]) + ' (' + str(_pct) + '%)</td>'
+                '<td class="br">' + str(x["pozvano"]) + '</td>'
+                '<td class="br">' + str(x["mejlova"]) + '</td>'
+                '<td class="br">' + str(x["komercijali"]) + '</td>'
+                '<td class="br" style="color:#15803d;font-weight:700;">' + str(x["nas"])
+                + '  <span style="color:#9ca3af;font-weight:400;">(' + _rs(x["kom_nas"])
+                + ' kom)</span></td>'
+                '<td class="br" style="color:#b45309;">' + str(x["njihov"])
+                + '  <span style="color:#9ca3af;">(' + _rs(x["kom_njihov"]) + ' kom)</span></td>'
+                '<td class="br">' + str(x["bez"]) + '</td>'
+                '<td class="br">' + str(x["neobradjeno"]) + '</td></tr>')
+        st.markdown('<div class="knez-tab-wrap"><table class="knez-tab"><thead><tr>'
+                    '<th>Sistem</th><th style="text-align:right;">Objekata</th>'
+                    '<th style="text-align:right;">Hitno</th>'
+                    '<th style="text-align:right;">Kontrola</th>'
+                    '<th style="text-align:right;">Dobra</th>'
+                    '<th style="text-align:right;">Obrađeno</th>'
+                    '<th style="text-align:right;">Pozvano</th>'
+                    '<th style="text-align:right;">Mejlova</th>'
+                    '<th style="text-align:right;">Komercijali</th>'
+                    '<th style="text-align:right;">Naš predlog</th>'
+                    '<th style="text-align:right;">Po njihovom</th>'
+                    '<th style="text-align:right;">Bez por.</th>'
+                    '<th style="text-align:right;">Neobrađeno</th></tr></thead><tbody>'
+                    + "".join(_tr) + '</tbody></table></div>', unsafe_allow_html=True)
+        _uk_kom = sum(x["kom_ukupno"] for x in _obicni)
+        _uk_pred = sum(x["kom_predlozeno"] for x in _obicni)
+        st.caption("Ukupno trebovano: " + _rs(_uk_kom) + " kom (predloženo "
+                   + _rs(_uk_pred) + " kom).")
+        with st.expander("👤 Ko je šta uradio — po sistemu", expanded=False):
+            _rr = []
+            for x in _obicni:
+                for _ko, _d in sorted((x["po_osobi"] or {}).items()):
+                    _rr.append('<tr><td class="nz">' + _h_escape(x["sistem"]) + '</td>'
+                               '<td>' + _h_escape(str(_ko)) + '</td>'
+                               '<td class="br">' + str(_d.get("Pozvala sam", 0)) + '</td>'
+                               '<td class="br">' + str(_d.get("Poslala sam mejl", 0)) + '</td>'
+                               '<td class="br">' + str(_d.get("Obavestila direktorku", 0))
+                               + '</td></tr>')
+            if _rr:
+                st.markdown('<div class="knez-tab-wrap"><table class="knez-tab"><thead><tr>'
+                            '<th>Sistem</th><th>Ko</th>'
+                            '<th style="text-align:right;">Pozvano</th>'
+                            '<th style="text-align:right;">Mejlova</th>'
+                            '<th style="text-align:right;">Komercijali</th></tr></thead>'
+                            '<tbody>' + "".join(_rr) + '</tbody></table></div>',
+                            unsafe_allow_html=True)
+            else:
+                st.caption("Nema upisanih poteza po osobi za ovaj mesec.")
+    for x in _sistemski:
+        _t = x["trebovanje"] or {}
+        _tl = ""
+        if _t.get("at"):
+            if _t.get("poslali"):
+                _tl = "Sistem JE poslao svoje trebovanje"
+                if _t.get("prosledjen") is True:
+                    _tl += "; prosleđen im je i naš predlog."
+                elif _t.get("prosledjen") is False:
+                    _tl += "; naš predlog im NIJE prosleđen"
+                    _tl += (" — ali su upozoreni na objekte sa slabim lagerom."
+                            if _t.get("upozoreni") is True else
+                            (" i nisu upozoreni." if _t.get("upozoreni") is False else "."))
+            else:
+                _tl = "Sistem NIJE poslao svoje trebovanje za ovaj period."
+            _tl += "  <span style='color:#9ca3af;'>(" + _h_escape(str(_t.get("ko", ""))) \
+                   + ", " + _h_escape(str(_t.get("at", ""))) + ")</span>"
+        st.markdown('<div style="border:1px solid #e9e3fb;border-radius:12px;padding:12px 16px;'
+                    'margin-top:10px;background:#fcfbff;">'
+                    '<div style="font-weight:800;color:#4c1d95;">' + _h_escape(x["sistem"])
+                    + '  <span style="font-weight:600;color:#8b7fa8;font-size:12.5px;">'
+                    '(sistemski · period ' + str(x["dani"]) + ' dana)</span></div>'
+                    '<div style="font-size:13px;color:#374151;margin-top:4px;">'
+                    + (('Na startu (' + _h_escape(str(x["start"].get("kada", ""))) + '): <b>'
+                        + str(x["start"].get("problem", 0)) + '</b> objekata sa problemom.  ')
+                       if x["start"] else "")
+                    + 'Trenutno sa problemom: <b>' + str(x["problem"]) + '</b> od '
+                    + str(x["n"]) + '.  Prijavljeno komercijali: <b>' + str(x["prijave"])
+                    + '</b>.'
+                    + ('  Objekti kojima ukupno fali ' + str(x["min_treb"])
+                       + ' kom ili manje se ne računaju.' if x["min_treb"] else "")
+                    + '</div>'
+                    + ('<div style="font-size:13px;color:#374151;margin-top:4px;">'
+                       '<b>Trebovanje:</b> ' + _tl + '</div>' if _tl else "")
+                    + '</div>', unsafe_allow_html=True)
+
+
+KNEZ_TAB_CSS = """/* ===== Naše tabele (Knez): obojeno zaglavlje, čiste linije ===== */
+.knez-tab-wrap { border: 1px solid #e9e3fb; border-radius: 12px; overflow: hidden;
+                 box-shadow: 0 1px 3px rgba(76,29,149,.06); margin: 2px 0 10px; }
+table.knez-tab { width: 100%; border-collapse: collapse; font-size: 13px; background: #fff; }
+table.knez-tab thead th {
+    background: linear-gradient(180deg,#7c3aed 0%,#6d28d9 100%); color: #fff;
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px;
+    text-align: left; padding: 9px 12px; white-space: nowrap;
+}
+table.knez-tab tbody td { padding: 9px 12px; border-top: 1px solid #f1eefb; color: #1f2937;
+                          vertical-align: middle; }
+table.knez-tab tbody tr:nth-child(even) td { background: #faf8ff; }
+table.knez-tab tbody tr:hover td { background: #f3eeff; }
+table.knez-tab td.nz { font-weight: 700; color: #312e81; }
+table.knez-tab td.id { color: #6b7280; font-variant-numeric: tabular-nums; }
+table.knez-tab td.fj { color: #6b7280; font-size: 12px; }
+table.knez-tab td.br { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+table.knez-tab td.st { font-size: 12.5px; font-weight: 600; }
+table.knez-tab td.ik { text-align: center; }
+table.knez-tab .chip { display: inline-block; min-width: 24px; padding: 2px 7px;
+                       border-radius: 20px; font-weight: 800; font-size: 12px; }"""
+
+
+def render_aktivno_vreme(mesec_key):
+    """Aktivno vreme rada administracije na ekranu (isto što stoji i u PDF-u)."""
+    # ===== Aktivno vreme rada (procena) =====
+    st.markdown('<div style="margin:18px 0 4px;font-size:12px;text-transform:uppercase;'
+                'letter-spacing:.6px;color:#9aa0ad;font-weight:700;">'
+                '⏱ Aktivno vreme rada (procena)</div>', unsafe_allow_html=True)
+    _dog = _efik_dogadjaji(mesec_key)
+    if not _dog:
+        st.caption("Za ovaj mesec još nema zabeleženih poteza administracije.")
+    else:
+        _vr = _efik_vreme(_dog)
+        _obj_sis, _pot_sis = {}, {}
+        for _t, _ko, _sis, _vrsta, _idk in _dog:
+            _obj_sis.setdefault(_sis, set()).add(_idk)
+            _pot_sis[_sis] = _pot_sis.get(_sis, 0) + 1
+        _dana = len(_vr["po_danu"])
+        _ses = _vr["sesije"]
+        _k1, _k2, _k3, _k4 = st.columns(4)
+        for _kol, _br, _opis in (
+                (_k1, _efik_hm(_vr["ukupno"]), "Ukupno aktivno"),
+                (_k2, str(_dana), "Radnih dana"),
+                (_k3, _efik_hm(_vr["ukupno"] / max(_dana, 1)), "Prosečno dnevno"),
+                (_k4, str(len(_ses)), "Sesija rada")):
+            with _kol:
+                st.markdown('<div style="background:#faf7ff;border:1px solid #e9d5ff;'
+                            'border-radius:12px;padding:13px 16px;">'
+                            '<div style="font-size:21px;font-weight:800;color:#6d28d9;">'
+                            + _h_escape(str(_br)) + '</div>'
+                            '<div style="font-size:11.5px;color:#8b7fa8;margin-top:2px;">'
+                            + _opis + '</div></div>', unsafe_allow_html=True)
+        _red_s = []
+        for _sis in sorted(_vr["po_sistemu"], key=lambda s: -_vr["po_sistemu"][s]):
+            _m = _vr["po_sistemu"][_sis]
+            _n_obj = len(_obj_sis.get(_sis, set()))
+            _tempo = (_n_obj / (_m / 60.0)) if _m > 0 else 0
+            _red_s.append('<tr><td class="nz">' + _h_escape(_sis) + '</td>'
+                          '<td class="br">' + _efik_hm(_m) + '</td>'
+                          '<td class="br">' + str(_n_obj) + '</td>'
+                          '<td class="br">' + str(_pot_sis.get(_sis, 0)) + '</td>'
+                          '<td class="br">' + (("%.0f" % _tempo) if _tempo else "—")
+                          + '</td>'
+                          '<td class="br">' + (_efik_hm(_m / _n_obj) if _n_obj else "—")
+                          + '</td></tr>')
+        st.markdown('<div class="knez-tab-wrap" style="margin-top:10px;">'
+                    '<table class="knez-tab"><thead><tr><th>Sistem</th>'
+                    '<th style="text-align:right;width:110px;">Aktivno vreme</th>'
+                    '<th style="text-align:right;width:90px;">Objekata</th>'
+                    '<th style="text-align:right;width:80px;">Poteza</th>'
+                    '<th style="text-align:right;width:110px;">Objekata/sat</th>'
+                    '<th style="text-align:right;width:110px;">Po objektu</th></tr></thead>'
+                    '<tbody>' + "".join(_red_s) + '</tbody></table></div>',
+                    unsafe_allow_html=True)
+        _red_o = []
+        for _ko in sorted(_vr["po_osobi"], key=lambda k: -_vr["po_osobi"][k]):
+            _sis_ko = sorted([(_s, _m) for (_k2x, _s), _m in _vr["po_osobi_sistem"].items()
+                              if _k2x == _ko], key=lambda x: -x[1])
+            _dn_ko = len({_s["od"].date() for _s in _ses if _s["ko"] == _ko})
+            _red_o.append('<tr><td class="nz">' + _h_escape(_ko) + '</td>'
+                          '<td class="br">' + _efik_hm(_vr["po_osobi"][_ko]) + '</td>'
+                          '<td class="br">' + str(_dn_ko) + '</td>'
+                          '<td class="fj">'
+                          + _h_escape(", ".join(_s + " (" + _efik_hm(_m) + ")"
+                                                for _s, _m in _sis_ko[:4]))
+                          + '</td></tr>')
+        st.markdown('<div class="knez-tab-wrap" style="margin-top:10px;">'
+                    '<table class="knez-tab"><thead><tr><th>Ko je radio</th>'
+                    '<th style="text-align:right;width:110px;">Aktivno vreme</th>'
+                    '<th style="text-align:right;width:90px;">Dana</th>'
+                    '<th>Na kojim sistemima</th></tr></thead><tbody>'
+                    + "".join(_red_o) + '</tbody></table></div>', unsafe_allow_html=True)
+        st.caption("Procena, ne štoperica: potezi jedne osobe u razmaku do "
+                   + str(EFIK_PAUZA_MIN) + " minuta broje se kao jedna sesija rada; veći "
+                   "razmak je pauza. Meri se samo rad KROZ APLIKACIJU — ne i vreme u "
+                   "adminu, ni dužina samog telefonskog razgovora. Zato je ovo donja "
+                   "granica stvarnog rada.")
+        with st.expander("📅 Po danima i pojedinačne sesije", expanded=False):
+            _dn_sort = sorted(_vr["po_danu"].items())
+            _maxd = max([_m for _, _m in _dn_sort] or [1])
+            _red_d = []
+            for _d, _m in _dn_sort:
+                _sir = int(_m / _maxd * 100)
+                _red_d.append(
+                    '<tr><td class="nz">' + _dt_kratko(_d)[:10] + '</td>'
+                    '<td class="br">' + _efik_hm(_m) + '</td>'
+                    '<td><div style="background:#ede9fe;border-radius:6px;height:12px;'
+                    'width:' + str(max(_sir, 2)) + '%;"></div></td></tr>')
+            st.markdown('<div class="knez-tab-wrap"><table class="knez-tab"><thead><tr>'
+                        '<th style="width:120px;">Dan</th>'
+                        '<th style="text-align:right;width:110px;">Vreme</th>'
+                        '<th></th></tr></thead><tbody>' + "".join(_red_d)
+                        + '</tbody></table></div>', unsafe_allow_html=True)
+            _red_x = []
+            for _s in sorted(_ses, key=lambda s: s["od"], reverse=True)[:40]:
+                _red_x.append('<tr><td class="nz">' + _s["od"].strftime("%d.%m. %H:%M")
+                              + ' – ' + _s["do"].strftime("%H:%M") + '</td>'
+                              '<td class="br">' + _efik_hm(_s["minuta"]) + '</td>'
+                              '<td>' + _h_escape(_s["ko"]) + '</td>'
+                              '<td class="br">' + str(_s["objekata"]) + '</td>'
+                              '<td class="fj">' + _h_escape(", ".join(_s["sistemi"])[:60])
+                              + '</td></tr>')
+            st.markdown('<div class="knez-tab-wrap" style="margin-top:10px;">'
+                        '<table class="knez-tab"><thead><tr><th>Sesija</th>'
+                        '<th style="text-align:right;width:90px;">Trajanje</th>'
+                        '<th style="width:140px;">Ko</th>'
+                        '<th style="text-align:right;width:90px;">Objekata</th>'
+                        '<th>Sistemi</th></tr></thead><tbody>' + "".join(_red_x)
+                        + '</tbody></table></div>', unsafe_allow_html=True)
+
+
 def prikazi_direktore():
     st.set_page_config(page_title="VAPE — Direktori", page_icon="📈",
                        layout="wide", initial_sidebar_state="collapsed")
@@ -13886,6 +14209,7 @@ def prikazi_direktore():
     [class*="st-key-dir_odjava"] button{font-size:11px !important;padding:4px 9px !important;border-radius:7px !important;
         min-height:0 !important;background:#fff !important;border:1px solid #e5e7eb !important;color:#6b7280 !important;font-weight:600 !important;}
     </style>""", unsafe_allow_html=True)
+    st.markdown("<style>" + KNEZ_TAB_CSS + "</style>", unsafe_allow_html=True)
 
     def _fmt(n):
         try:
@@ -14495,7 +14819,37 @@ def prikazi_direktore():
             st.info("Još nema objavljenih podataka.")
             return
         _sl = st.selectbox("Mesec", _mlbls, index=_prev_idx if 0 <= _prev_idx < len(_mlbls) else 0, key="stat_mes_dir")
-        render_statistika(_mes_keys[_mlbls.index(_sl)], _sl)
+        _mk_st = _mes_keys[_mlbls.index(_sl)]
+
+        # Isti PDF izveštaj administracije koji se pravi i kod administracije
+        _rok_st = sb_rokovi_get(_mk_st).get("rok_admin")
+        if _rok_st and not _rok_je_prosao(_rok_st):
+            st.info("PDF izveštaj administracije za " + _sl + " biće dostupan posle roka "
+                    "administracije: " + _rok_fmt(_rok_st) + ".")
+        else:
+            _sp1, _sp2, _sp3 = st.columns([1.7, 1.3, 2.4])
+            with _sp1:
+                if st.button("📄 Napravi PDF izveštaj", key="stat_pdf_make",
+                             use_container_width=True):
+                    try:
+                        with st.spinner("Pravim PDF…"):
+                            st.session_state["stat_pdf"] = napravi_pdf_izvestaj(_mk_st, _sl)
+                            st.session_state["stat_pdf_for"] = _mk_st
+                    except Exception as _pe:
+                        st.session_state["stat_pdf"] = None
+                        st.error("Greška pri pravljenju PDF-a: " + str(_pe))
+            with _sp2:
+                if (st.session_state.get("stat_pdf")
+                        and st.session_state.get("stat_pdf_for") == _mk_st):
+                    st.download_button("⬇️ Preuzmi PDF", st.session_state["stat_pdf"],
+                                       file_name="Izvestaj_administracije_" + _mk_st + ".pdf",
+                                       mime="application/pdf", key="stat_pdf_dl",
+                                       use_container_width=True)
+            with _sp3:
+                st.caption("Isti izveštaj koji administracija pravi kod sebe: aktivno vreme "
+                           "rada, po sistemima i po osobi, pa stanje po sistemu.")
+        st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+        render_izvestaj_admin(_mk_st, _sl)
         return
 
     # ---------- KARTICA: IZVEŠTAJ POTRAŽIVANJA ----------
@@ -14660,111 +15014,7 @@ def prikazi_direktore():
                     file_name="Izvestaj_administracije_" + mesec_key + ".pdf", mime="application/pdf",
                     key="dir_pdf_dl", use_container_width=True)
 
-        # ===== Aktivno vreme rada (procena) =====
-        st.markdown('<div style="margin:18px 0 4px;font-size:12px;text-transform:uppercase;'
-                    'letter-spacing:.6px;color:#9aa0ad;font-weight:700;">'
-                    '⏱ Aktivno vreme rada (procena)</div>', unsafe_allow_html=True)
-        _dog = _efik_dogadjaji(mesec_key)
-        if not _dog:
-            st.caption("Za ovaj mesec još nema zabeleženih poteza administracije.")
-        else:
-            _vr = _efik_vreme(_dog)
-            _obj_sis, _pot_sis = {}, {}
-            for _t, _ko, _sis, _vrsta, _idk in _dog:
-                _obj_sis.setdefault(_sis, set()).add(_idk)
-                _pot_sis[_sis] = _pot_sis.get(_sis, 0) + 1
-            _dana = len(_vr["po_danu"])
-            _ses = _vr["sesije"]
-            _k1, _k2, _k3, _k4 = st.columns(4)
-            for _kol, _br, _opis in (
-                    (_k1, _efik_hm(_vr["ukupno"]), "Ukupno aktivno"),
-                    (_k2, str(_dana), "Radnih dana"),
-                    (_k3, _efik_hm(_vr["ukupno"] / max(_dana, 1)), "Prosečno dnevno"),
-                    (_k4, str(len(_ses)), "Sesija rada")):
-                with _kol:
-                    st.markdown('<div style="background:#faf7ff;border:1px solid #e9d5ff;'
-                                'border-radius:12px;padding:13px 16px;">'
-                                '<div style="font-size:21px;font-weight:800;color:#6d28d9;">'
-                                + _h_escape(str(_br)) + '</div>'
-                                '<div style="font-size:11.5px;color:#8b7fa8;margin-top:2px;">'
-                                + _opis + '</div></div>', unsafe_allow_html=True)
-            _red_s = []
-            for _sis in sorted(_vr["po_sistemu"], key=lambda s: -_vr["po_sistemu"][s]):
-                _m = _vr["po_sistemu"][_sis]
-                _n_obj = len(_obj_sis.get(_sis, set()))
-                _tempo = (_n_obj / (_m / 60.0)) if _m > 0 else 0
-                _red_s.append('<tr><td class="nz">' + _h_escape(_sis) + '</td>'
-                              '<td class="br">' + _efik_hm(_m) + '</td>'
-                              '<td class="br">' + str(_n_obj) + '</td>'
-                              '<td class="br">' + str(_pot_sis.get(_sis, 0)) + '</td>'
-                              '<td class="br">' + (("%.0f" % _tempo) if _tempo else "—")
-                              + '</td>'
-                              '<td class="br">' + (_efik_hm(_m / _n_obj) if _n_obj else "—")
-                              + '</td></tr>')
-            st.markdown('<div class="knez-tab-wrap" style="margin-top:10px;">'
-                        '<table class="knez-tab"><thead><tr><th>Sistem</th>'
-                        '<th style="text-align:right;width:110px;">Aktivno vreme</th>'
-                        '<th style="text-align:right;width:90px;">Objekata</th>'
-                        '<th style="text-align:right;width:80px;">Poteza</th>'
-                        '<th style="text-align:right;width:110px;">Objekata/sat</th>'
-                        '<th style="text-align:right;width:110px;">Po objektu</th></tr></thead>'
-                        '<tbody>' + "".join(_red_s) + '</tbody></table></div>',
-                        unsafe_allow_html=True)
-            _red_o = []
-            for _ko in sorted(_vr["po_osobi"], key=lambda k: -_vr["po_osobi"][k]):
-                _sis_ko = sorted([(_s, _m) for (_k2x, _s), _m in _vr["po_osobi_sistem"].items()
-                                  if _k2x == _ko], key=lambda x: -x[1])
-                _dn_ko = len({_s["od"].date() for _s in _ses if _s["ko"] == _ko})
-                _red_o.append('<tr><td class="nz">' + _h_escape(_ko) + '</td>'
-                              '<td class="br">' + _efik_hm(_vr["po_osobi"][_ko]) + '</td>'
-                              '<td class="br">' + str(_dn_ko) + '</td>'
-                              '<td class="fj">'
-                              + _h_escape(", ".join(_s + " (" + _efik_hm(_m) + ")"
-                                                    for _s, _m in _sis_ko[:4]))
-                              + '</td></tr>')
-            st.markdown('<div class="knez-tab-wrap" style="margin-top:10px;">'
-                        '<table class="knez-tab"><thead><tr><th>Ko je radio</th>'
-                        '<th style="text-align:right;width:110px;">Aktivno vreme</th>'
-                        '<th style="text-align:right;width:90px;">Dana</th>'
-                        '<th>Na kojim sistemima</th></tr></thead><tbody>'
-                        + "".join(_red_o) + '</tbody></table></div>', unsafe_allow_html=True)
-            st.caption("Procena, ne štoperica: potezi jedne osobe u razmaku do "
-                       + str(EFIK_PAUZA_MIN) + " minuta broje se kao jedna sesija rada; veći "
-                       "razmak je pauza. Meri se samo rad KROZ APLIKACIJU — ne i vreme u "
-                       "adminu, ni dužina samog telefonskog razgovora. Zato je ovo donja "
-                       "granica stvarnog rada.")
-            with st.expander("📅 Po danima i pojedinačne sesije", expanded=False):
-                _dn_sort = sorted(_vr["po_danu"].items())
-                _maxd = max([_m for _, _m in _dn_sort] or [1])
-                _red_d = []
-                for _d, _m in _dn_sort:
-                    _sir = int(_m / _maxd * 100)
-                    _red_d.append(
-                        '<tr><td class="nz">' + _dt_kratko(_d)[:10] + '</td>'
-                        '<td class="br">' + _efik_hm(_m) + '</td>'
-                        '<td><div style="background:#ede9fe;border-radius:6px;height:12px;'
-                        'width:' + str(max(_sir, 2)) + '%;"></div></td></tr>')
-                st.markdown('<div class="knez-tab-wrap"><table class="knez-tab"><thead><tr>'
-                            '<th style="width:120px;">Dan</th>'
-                            '<th style="text-align:right;width:110px;">Vreme</th>'
-                            '<th></th></tr></thead><tbody>' + "".join(_red_d)
-                            + '</tbody></table></div>', unsafe_allow_html=True)
-                _red_x = []
-                for _s in sorted(_ses, key=lambda s: s["od"], reverse=True)[:40]:
-                    _red_x.append('<tr><td class="nz">' + _s["od"].strftime("%d.%m. %H:%M")
-                                  + ' – ' + _s["do"].strftime("%H:%M") + '</td>'
-                                  '<td class="br">' + _efik_hm(_s["minuta"]) + '</td>'
-                                  '<td>' + _h_escape(_s["ko"]) + '</td>'
-                                  '<td class="br">' + str(_s["objekata"]) + '</td>'
-                                  '<td class="fj">' + _h_escape(", ".join(_s["sistemi"])[:60])
-                                  + '</td></tr>')
-                st.markdown('<div class="knez-tab-wrap" style="margin-top:10px;">'
-                            '<table class="knez-tab"><thead><tr><th>Sesija</th>'
-                            '<th style="text-align:right;width:90px;">Trajanje</th>'
-                            '<th style="width:140px;">Ko</th>'
-                            '<th style="text-align:right;width:90px;">Objekata</th>'
-                            '<th>Sistemi</th></tr></thead><tbody>' + "".join(_red_x)
-                            + '</tbody></table></div>', unsafe_allow_html=True)
+        render_aktivno_vreme(mesec_key)
 
         st.markdown('<div style="margin:18px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;'
                     'color:#9aa0ad;font-weight:700;">⚠️ Upozorenja prosleđena od administracije</div>', unsafe_allow_html=True)
