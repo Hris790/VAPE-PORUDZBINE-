@@ -5390,17 +5390,13 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
             _perl_s = str(_dani_s) + " dana"
             _cut_s = _admin_presek(_meta_s, mesec_key)
             _ahist_s = (_meta_s.get("admin_hist") or {}) if isinstance(_meta_s, dict) else {}
+            # prag iz objave: objekat kome ukupno fali toliko ili manje se „prašta"
+            _min_treb_s = int(_meta_s.get("nedeljni_min", 0) or 0)
+
             def _pa_pdf(lst, idk):
                 _pm = _treb_posle_preseka(_ahist_s.get(str(int(idk)), []) or [], _cut_s) if _cut_s else {}
-                _o = []
-                for s in lst:
-                    _por = int(_pm.get(int(s.get('ida', -1)), 0) or 0)
-                    _lg = int(s.get('lager', 0) or 0) + _por   # realni lager
-                    _pr = int(s.get('pred', 0) or 0)
-                    _prag = _pr * _dani_s / 30.0
-                    if _pr > 0 and _lg < _prag:
-                        _o.append({"naziv": str(s.get('naziv', '')), "lager": _lg, "prag": int(round(_prag))})
-                return _o
+                _a, _u, _p = ned_problem_objekat(lst, _pm, _dani_s, _min_treb_s)
+                return _a if _p else []
             _prob_pdf = {idk: _pa_pdf(lst, idk) for idk, lst in po.items()}
             _prob_pdf = {k: v for k, v in _prob_pdf.items() if v}
             _npb = len(_prob_pdf)
@@ -5415,7 +5411,10 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
             _flow = [Paragraph(str(_sis) + "  (sistemski · period " + _perl_s + ")", Hsys),
                      Paragraph(_start_line + "Trenutno sa problemom (realni lager ispod prodaje za " + _perl_s + "): <b>"
                                + str(_npb) + "</b> od " + str(len(po)) + ".  Prijavljeno komercijali: <b>"
-                               + str(len(_prijave)) + "</b>.", Nar),
+                               + str(len(_prijave)) + "</b>."
+                               + ("  Objekti kojima ukupno fali " + str(_min_treb_s)
+                                  + " kom ili manje se ne računaju."
+                                  if _min_treb_s > 0 else ""), Nar),
                      Spacer(1, 3)]
             # Prijavljeni komitenti — naziv, kontakt, artikli u problemu, napomena
             _any_prij = False
@@ -7679,6 +7678,23 @@ def knez_status_pumpi(mesec_key, pumpe, obr, fajlovi, odb_map):
             _prob = "više fajlova sa podacima — treba iksirati one koji nisu izveštaj"
         else:
             _prob = ""
+        # Da li je pumpa stvarno poslala IZVEŠTAJ? Odgovor u kome je samo tekst,
+        # ili prilog koji je iksiran („nije izveštaj" — otpremnica, cenovnik…),
+        # NE računa se kao odgovor sa izveštajem.
+        _odg = ((obr.get(_ik) or {}).get("dnevnik") or {}).get("odgovori") or []
+        _imena_ok = {str(_f.get("ime") or "").strip().lower() for _f in _sa_red}
+        _odg_izv_at = ""
+        for _o in _odg:
+            for _pr in (_o.get("prilozi") or []):
+                if str(_pr.get("ime") or "").strip().lower() in _imena_ok:
+                    _odg_izv_at = str(_o.get("at") or "")
+                    break
+            if _odg_izv_at:
+                break
+        if not _odg_izv_at and _sa_red and _odg:
+            # fajl postoji (pročitan je), ali ime priloga se ne poklapa — uzmi
+            # poslednji odgovor kao datum kada je izveštaj stigao
+            _odg_izv_at = str(_odg[-1].get("at") or "")
         if _rl:
             _res = ("✅ količine unete ručno"
                     + (" (nema ničega — sve nule)" if _rl.get("prazno") else ""))
@@ -7692,6 +7708,9 @@ def knez_status_pumpi(mesec_key, pumpe, obr, fajlovi, odb_map):
             "status": ("ZAVRŠENO" if _res else "NIJE ZAVRŠENO"),
             "rucno_ko": str(_rl.get("ko", "")), "rucno_at": _rl.get("at", ""),
             "fajl": (_kand[0]["ime"] if _kand else (_fs[0]["ime"] if _fs else "")),
+            "odg_izv_at": _odg_izv_at,          # kada je stigao PRAVI izveštaj
+            "odg_bez_izv": bool(_odg and not _odg_izv_at),   # javila se, ali bez izveštaja
+            "odg_ima": bool(_odg),
         }
     return _out
 
@@ -7709,7 +7728,7 @@ def knez_rad_xlsx(mesec_key, mesec_lbl, pumpe, obr, status_map):
     _kol = [("ID komitenta", 13), ("Pumpa", 42), ("Mesto", 16), ("Email", 30),
             ("Mejl poslat ×", 12), ("Datumi slanja mejlova", 34), ("Poslednji mejl", 17),
             ("Ko je slao", 16), ("Pozvana ×", 10), ("Datumi poziva", 30),
-            ("Odgovorila", 11), ("Odgovor stigao", 17), ("Fajlova", 9),
+            ("Poslala izveštaj", 22), ("Izveštaj stigao", 17), ("Fajlova", 9),
             ("Iksirano (nije izveštaj)", 12), ("Problem", 50), ("Rešeno", 30),
             ("Status", 15), ("Preduzeto", 34)]
     ws["A1"] = "Knez Petrol — rad po pumpama  ·  " + str(mesec_lbl or mesec_key)
@@ -7747,8 +7766,9 @@ def knez_rad_xlsx(mesec_key, mesec_lbl, pumpe, obr, status_map):
             (_ko_kratko(str(_mj[-1].get("ko", ""))) if _mj else ""),
             len(_pz),
             "  ·  ".join(_dt_kratko(_p.get("at", "")) for _p in _pz[:12]),
-            ("DA" if _odg else "NE"),
-            (str(_odg[-1].get("at", "")) if _odg else ""),
+            ("DA" if _st.get("odg_izv_at") else
+             ("NE — javila se bez izveštaja" if _st.get("odg_bez_izv") else "NE")),
+            str(_st.get("odg_izv_at") or ""),
             int(_st.get("fajlova", 0)), int(_st.get("iksirano", 0)),
             str(_st.get("problem", "")), str(_st.get("reseno", "")),
             str(_st.get("status", "")),
@@ -7761,7 +7781,7 @@ def knez_rad_xlsx(mesec_key, mesec_lbl, pumpe, obr, status_map):
         _red = ws.max_row
         for _c in ws[_red]:
             _c.font = Font(name="Arial", size=10)
-            _c.alignment = Alignment(vertical="center", wrap_text=(_c.column in (2, 6, 10, 15, 16)))
+            _c.alignment = Alignment(vertical="center", wrap_text=(_c.column in (2, 6, 10, 11, 15, 16)))
             _c.border = Border(bottom=_tanka)
         _zav = str(_st.get("status", "")).startswith("ZAVR")
         ws.cell(row=_red, column=17).fill = _zelena if _zav else _crvena
@@ -7769,6 +7789,8 @@ def knez_rad_xlsx(mesec_key, mesec_lbl, pumpe, obr, status_map):
                                                  color="14532D" if _zav else "991B1B")
         if _st.get("problem") not in ("—", "", None):
             ws.cell(row=_red, column=15).fill = _zuta
+        if _st.get("odg_bez_izv"):
+            ws.cell(row=_red, column=11).fill = _zuta
         if str(_st.get("reseno", "")).startswith("✅"):
             ws.cell(row=_red, column=16).fill = _zelena
     for _i, (_, _w) in enumerate(_kol, 1):
@@ -7999,7 +8021,7 @@ def napravi_pdf_prikup(mesec_key, mesec_lbl):
         _odb_m = sb_knez_odb_get(_mesec_baza)
         _stat = knez_status_pumpi(_mesec_baza, _pumpe, _obr, _fdb, _odb_m)
         _uk_mejl = _uk_poz = _n_odg = _n_rucno = _n_zav = 0
-        _n_zvano = _n_bez_kont = _n_bez_mejla = 0
+        _n_zvano = _n_bez_kont = _n_bez_mejla = _n_bez_izv = 0
         _raspodela = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}      # 4 = „4 i više"
         _dani = []
         _red_p = []
@@ -8018,13 +8040,15 @@ def napravi_pdf_prikup(mesec_key, mesec_lbl):
                 _n_bez_kont += 1
             if not str(_r.get("email", "") or "").strip():
                 _n_bez_mejla += 1
-            if _od:
+            if _st.get("odg_bez_izv"):
+                _n_bez_izv += 1
+            if _st.get("odg_izv_at"):
                 _n_odg += 1
-                # za koliko dana su odgovorili posle PRVOG mejla
+                # za koliko dana su poslali izveštaj posle PRVOG mejla
                 try:
                     _d1 = datetime.datetime.fromisoformat(str(_mj[0].get("at"))).date()
                     _d2 = datetime.datetime.strptime(
-                        str(_od[-1].get("at", ""))[:10].strip(". "), "%d.%m.%Y").date()
+                        str(_st.get("odg_izv_at", ""))[:10].strip(". "), "%d.%m.%Y").date()
                     if 0 <= (_d2 - _d1).days <= 90:
                         _dani.append((_d2 - _d1).days)
                 except Exception:
@@ -8049,14 +8073,15 @@ def napravi_pdf_prikup(mesec_key, mesec_lbl):
                     _pcel(str(_r["naziv"]).replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,")[:40]),
                     _pcel("  ·  ".join(_dt_kratko(_m.get("at", "")) for _m in _mj) or "—"),
                     _pcel("  ·  ".join(_dt_kratko(_z.get("at", "")) for _z in _pz) or "—"),
-                    ("DA" if _od else "NE"),
+                    ("DA" if _st.get("odg_izv_at") else
+                     (_pcel("javila se, bez izveštaja") if _st.get("odg_bez_izv") else "NE")),
                     _pcel(str(_st.get("problem", "")).replace("✅", "").strip()[:70]),
                     _pcel(_pre)])
         _pct = (lambda _a: str(int(round(100.0 * _a / max(len(_pumpe), 1)))) + "%")
         el.append(Paragraph(
             "Pumpi <b>" + str(len(_pumpe)) + "</b>  ·  poslato mejlova ukupno <b>"
             + str(_uk_mejl) + "</b>  ·  telefonskih poziva <b>" + str(_uk_poz)
-            + "</b>  ·  odgovorilo <b>" + str(_n_odg) + "</b> (" + _pct(_n_odg)
+            + "</b>  ·  poslalo izveštaj <b>" + str(_n_odg) + "</b> (" + _pct(_n_odg)
             + ")  ·  ručno upisano <b>" + str(_n_rucno) + "</b>  ·  <b>završeno "
             + str(_n_zav) + " od " + str(len(_pumpe)) + "</b>.", Nar))
         el.append(Spacer(1, 6))
@@ -8084,8 +8109,10 @@ def napravi_pdf_prikup(mesec_key, mesec_lbl):
             ["Četiri i više", str(_raspodela.get(4, 0)), "uporno slanje"],
             ["Pozvano telefonom", str(_n_zvano) + " (" + _pct(_n_zvano) + ")",
              "ukupno " + str(_uk_poz) + " poziva"],
-            ["Odgovorilo na zahtev", str(_n_odg) + " (" + _pct(_n_odg) + ")",
+            ["Poslalo izveštaj", str(_n_odg) + " (" + _pct(_n_odg) + ")",
              ("prosečno za " + _sr_dana + " dana od prvog mejla") if _dani else ""],
+            ["Javilo se, ali bez izveštaja", str(_n_bez_izv),
+             "odgovor bez priloga ili prilog koji nije izveštaj (otpremnica i sl.)"],
             ["Nije ni kontaktirano", str(_n_bez_kont),
              "ni mejl ni poziv — ovo ne sme da ostane tako"],
             ["Bez mejla u šifarniku", str(_n_bez_mejla),
@@ -8101,10 +8128,10 @@ def napravi_pdf_prikup(mesec_key, mesec_lbl):
                                 "SVAKOG poziva — da se vidi da li je urađeno sve što treba "
                                 "(najmanje dva mejla i jedan poziv).", Sit))
             el.append(Spacer(1, 4))
-            el.append(_tab(["ID", "Pumpa", "Datumi mejlova", "Datumi poziva", "Odg.",
-                            "Problem", "Preduzeto"],
-                           _red_p, [12 * mm, 30 * mm, 36 * mm, 28 * mm, 10 * mm,
-                                    32 * mm, 32 * mm]))
+            el.append(_tab(["ID", "Pumpa", "Datumi mejlova", "Datumi poziva",
+                            "Izveštaj", "Problem", "Preduzeto"],
+                           _red_p, [11 * mm, 28 * mm, 33 * mm, 25 * mm, 18 * mm,
+                                    33 * mm, 32 * mm]))
         else:
             el.append(Paragraph("Sve pumpe su završene — svaka ima izveštaj ili ručno "
                                 "upisane količine.", Nar))
@@ -9852,6 +9879,31 @@ def _stat_cell(lbl, val):
             '<div style="font-size:10.5px;color:#8b8fa0;margin-top:1px;">' + lbl + '</div></div>')
 
 
+def ned_problem_objekat(stavke, por_map, dani, prag_min=0):
+    """Sistemski sistem: šta objektu fali da pokrije prodaju za `dani` dana.
+
+    `stavke`  = redovi objekta iz objave ({ida, naziv, lager, pred, ...})
+    `por_map` = {ida: količina} iz porudžbina posle preseka (realni lager)
+    `prag_min`= prag iz objave: ako objektu UKUPNO fali toliko komada ili manje,
+                prašta mu se — vraća se u_problemu = False.
+
+    Vraća (artikli, ukupan_manjak, u_problemu)."""
+    _out, _uk = [], 0
+    for _s in (stavke or []):
+        _por = int((por_map or {}).get(int(_s.get("ida", -1)), 0) or 0)
+        _lg = int(_s.get("lager", 0) or 0) + _por          # REALNI lager
+        _pr = int(_s.get("pred", 0) or 0)
+        _prag = _pr * float(dani) / 30.0
+        if _pr > 0 and _lg < _prag:
+            _mj = max(int(round(_prag)) - _lg, 0)
+            _uk += _mj
+            _out.append({"ida": int(_s.get("ida", -1)), "naziv": str(_s.get("naziv", "")),
+                         "lager": _lg, "pred": _pr, "prag": int(round(_prag)),
+                         "manjak": _mj, "manjak7": _mj})
+    _u_prob = bool(_out) and not (int(prag_min or 0) > 0 and _uk <= int(prag_min or 0))
+    return (_out, _uk, _u_prob)
+
+
 def prikazi_administraciju():
     st.set_page_config(page_title="VAPE — Porudžbine", page_icon="📦",
                        layout="wide", initial_sidebar_state="collapsed")
@@ -10319,6 +10371,8 @@ div[data-stale="true"] { opacity: 1 !important; }
     # ===== Nedeljni/sistemski sistem: pojednostavljen prikaz =====
     if isinstance(meta, dict) and meta.get("nedeljni"):
         _dani = int(meta.get("nedeljni_dani", 7) or 7)   # period pokrivenosti (7 = nedeljni, 45 = mesec i po...)
+        # prag iz objave: objekat kome UKUPNO fali toliko kom ili manje — prašta se
+        _min_treb = int(meta.get("nedeljni_min", 0) or 0)
         _per_lbl = (str(_dani) + " dana")
         st.markdown('<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:9px 14px;'
                     'font-size:12.5px;color:#1e40af;margin:2px 0 14px;">📅 Sistemski sistem (period: ' + _per_lbl
@@ -10445,13 +10499,7 @@ div[data-stale="true"] { opacity: 1 !important; }
                         _start_ids_n[str(int(o["idk"]))] = [str(_x.get("id") or "")
                                                             for _x in _lz0 if _x.get("id")]
                         _pm0 = _treb_posle_preseka(_lz0, _cut_hit) if _cut_hit else {}
-                        _has = False
-                        for s in o["lst"]:
-                            _lg0 = int(s.get('lager', 0) or 0) + int(_pm0.get(int(s.get('ida', -1)), 0) or 0)
-                            _pr0 = int(s.get('pred', 0) or 0)
-                            if _pr0 > 0 and _lg0 < _pr0 * _dani / 30.0:
-                                _has = True; break
-                        if _has:
+                        if ned_problem_objekat(o["lst"], _pm0, _dani, _min_treb)[2]:
                             _cnt_prob += 1
                     try:
                         sb_nedeljni_start_set(mesec_key, sistem, {"kada": _now().strftime("%d.%m.%Y %H:%M"),
@@ -10538,23 +10586,13 @@ div[data-stale="true"] { opacity: 1 !important; }
                 pass
             return False
 
-        def _prob_arts(lst, por_map):
-            out = []
-            for s in lst:
-                _por = int(por_map.get(int(s.get('ida', -1)), 0) or 0)
-                _lg = int(s.get('lager', 0) or 0) + _por      # REALNI lager
-                _pr = int(s.get('pred', 0) or 0)
-                _prag = _pr * _dani / 30.0
-                if _pr > 0 and _lg < _prag:   # artikal koji se prodaje, a realni lager ispod perioda (uklj. 0)
-                    out.append({"ida": int(s.get('ida', -1)), "naziv": str(s.get('naziv', '')),
-                                "lager": _lg, "pred": _pr, "prag": int(round(_prag)),
-                                "manjak7": max(int(round(_prag)) - _lg, 0)})
-            return out
-        _prob = []
+        _prob, _n_oprosteno = [], 0
         for o in objekti:
             _pm = _por_map_for(o["idk"])
-            _pa = _prob_arts(o["lst"], _pm)
-            if _pa:
+            _pa, _uk_mj, _u_prob = ned_problem_objekat(o["lst"], _pm, _dani, _min_treb)
+            if _pa and not _u_prob:
+                _n_oprosteno += 1          # fali mu manje od praga — prašta se
+            elif _u_prob:
                 _prob.append({"idk": o["idk"], "arts": _pa, "lst": o["lst"],
                               "zav": _zavrsen_ned(o["idk"])})
         _n_zav_lst = sum(1 for p in _prob if p.get("zav"))
@@ -10582,6 +10620,11 @@ div[data-stale="true"] { opacity: 1 !important; }
                     '<div style="font-size:22px;font-weight:800;color:#7c3aed;">' + str(_uk_val) + '</div>'
                     '<div style="font-size:12px;color:#8b7fa8;margin-top:3px;">' + _uk_lbl + '</div></div></div>',
                     unsafe_allow_html=True)
+        if _min_treb > 0:
+            st.caption("⚖️ Prag iz objave: objekti kojima ukupno fali " + str(_min_treb)
+                       + " kom ili manje se ne prikazuju kao problem"
+                       + (" — tako je prošlo " + str(_n_oprosteno) + " objekata."
+                          if _n_oprosteno else "."))
         if _ned_start:
             st.caption("🔒 Predlog je zamrznut na startu (" + str(_ned_start.get("kada", ""))
                        + ") — količine se više ne menjaju. Objekat koji posle toga poruči prelazi u "
@@ -16587,6 +16630,7 @@ with tab_obj:
             _o_nedeljni = st.checkbox("Sistemski sistem (trebuju u fiksnom periodu) — pojednostavljen prikaz", value=False, key="obj_nedeljni",
                                       help="Za sisteme koji trebuju sami u fiksnom ritmu i ne možemo da utičemo. Administracija vidi samo objekte sa problemom (realni lager ispod prodaje za zadati period) i jedno polje Napomena.")
             _o_sist_dani = 7
+            _o_sist_min = 0
             if _o_nedeljni:
                 _cpd = st.columns([1, 2])
                 with _cpd[0]:
@@ -16596,8 +16640,17 @@ with tab_obj:
                                                    help="Npr. 7 = nedeljni, 14 = na dve nedelje, 30 = mesečni, 45 = mesec i po. "
                                                         "Ne trebuju svi isto — ovde upiši koliko dana taj sistem pokriva jednim trebovanjem.")
                 with _cpd[1]:
-                    st.caption("Objekat je u problemu ako mu realni lager (lager + naknadne porudžbine) ne pokriva "
-                               "prodaju za " + str(int(_o_sist_dani)) + " dana. Prag = predikcija × (" + str(int(_o_sist_dani)) + " ÷ 30).")
+                    _o_sist_min = st.number_input(
+                        "Oprosti manjak do (kom po objektu)", min_value=0, max_value=100000,
+                        value=0, step=1, key="obj_sist_min",
+                        help="Ako objektu ukupno fali toliko komada ili manje, broji se kao da "
+                             "mu ništa ne fali — ne prikazuje se administraciji kao objekat sa "
+                             "problemom i ne ulazi u predlog sistemu. 0 = ne prašta se ništa.")
+                st.caption("Objekat je u problemu ako mu realni lager (lager + naknadne porudžbine) ne pokriva "
+                           "prodaju za " + str(int(_o_sist_dani)) + " dana. Prag = predikcija × ("
+                           + str(int(_o_sist_dani)) + " ÷ 30)."
+                           + ("  Objekti kojima ukupno fali " + str(int(_o_sist_min))
+                              + " kom ili manje se preskaču." if int(_o_sist_min or 0) > 0 else ""))
             # --- Napomena i mejl koje zadaje analitika (administracija ih samo vidi) ---
             # Ako za ovaj sistem/mesec već postoji objava, popuni postojeće vrednosti
             # (jednom), da se ponovnom objavom slučajno ne obrišu.
@@ -16676,7 +16729,7 @@ with tab_obj:
                         except Exception:
                             _presek_iso = None
                         _stavke = stavke_iz_rezultata(_res, _eng)
-                        _payload = {"mesec_label": _mlbl2, "meta": {"pred_label": _eng.pred_label, "order_label": _eng.order_label, "min_lager": _eng.min_lager, "meseci": round(float(_o_mes), 1), "presek": _presek_iso, "nedeljni": bool(_o_nedeljni), "nedeljni_dani": int(_o_sist_dani), "mesec_nazivi": list(getattr(_eng, "mesec_labels", []) or []), "generisano": _now().strftime("%d.%m.%Y %H:%M"), "n_objekata": int(len({_s2['idk'] for _s2 in _stavke})), "n_sistem_ukupno": int(getattr(_eng, "num_komitenti", 0)), "ukupno_kom": int(sum(_s2['kol'] for _s2 in _stavke))}, "stavke": _stavke}
+                        _payload = {"mesec_label": _mlbl2, "meta": {"pred_label": _eng.pred_label, "order_label": _eng.order_label, "min_lager": _eng.min_lager, "meseci": round(float(_o_mes), 1), "presek": _presek_iso, "nedeljni": bool(_o_nedeljni), "nedeljni_dani": int(_o_sist_dani), "nedeljni_min": int(_o_sist_min or 0), "mesec_nazivi": list(getattr(_eng, "mesec_labels", []) or []), "generisano": _now().strftime("%d.%m.%Y %H:%M"), "n_objekata": int(len({_s2['idk'] for _s2 in _stavke})), "n_sistem_ukupno": int(getattr(_eng, "num_komitenti", 0)), "ukupno_kom": int(sum(_s2['kol'] for _s2 in _stavke))}, "stavke": _stavke}
                         # Napomena + zaključan mejl koje zadaje analitika
                         _nap_an = (st.session_state.get("obj_napomena", "") or "").strip()
                         _mf_an = (st.session_state.get("obj_mail_fix", "") or "").strip()
