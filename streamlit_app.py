@@ -310,6 +310,37 @@ def sb_nedeljni_mail_set(mesec_key, sistem, to_email, ko="", poslato=False):
         pass
 
 
+def sb_nedeljni_treb_set(mesec_key, sistem, podaci_treb, ko=""):
+    """Za sistemske sisteme: da li je sistem poslao svoje trebovanje za taj period
+    i šta je administracija uradila povodom toga.
+
+    Čuva se u meta.nedeljni_trebovanje = {poslali, prosledjen, upozoreni, ko, at}.
+      poslali     — True/False: sistem je poslao svoje trebovanje
+      prosledjen  — True: prosleđen im je i naš predlog; False: nije
+      upozoreni   — kad naš predlog NIJE prosleđen: True = upozoreni su da neki
+                    objekti nemaju zadovoljavajući lager, False = nisu upozoreni
+    """
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    res = cli.table("porudzbine").select("podaci").eq("mesec", mesec_key).eq("sistem", sistem.strip()).limit(1).execute()
+    if not res.data:
+        raise RuntimeError("Nema objavljenog izveštaja za taj mesec/sistem.")
+    podaci = res.data[0].get("podaci") or {}
+    meta = podaci.get("meta") or {}
+    _t = dict(podaci_treb or {})
+    _t["ko"] = ko or ""
+    _t["at"] = _now().strftime("%d.%m.%Y %H:%M")
+    meta["nedeljni_trebovanje"] = _t
+    podaci["meta"] = meta
+    cli.table("porudzbine").update({"podaci": podaci}).eq("mesec", mesec_key).eq("sistem", sistem.strip()).execute()
+    try:
+        sb_ucitaj.clear()
+    except Exception:
+        pass
+    return True
+
+
 def sb_nedeljni_start_set(mesec_key, sistem, snap):
     """Za sistemske sisteme: zabeleži STARTNO stanje izveštaja (broj objekata sa
     problemom u trenutku pokretanja) u meta.nedeljni_start = {kada, n, problem}.
@@ -5416,6 +5447,29 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
                                   + " kom ili manje se ne računaju."
                                   if _min_treb_s > 0 else ""), Nar),
                      Spacer(1, 3)]
+            # Trebovanje sistema za ovaj period (štiklirala administracija)
+            _trb = _meta_s.get("nedeljni_trebovanje") or {}
+            if _trb.get("at"):
+                if _trb.get("poslali"):
+                    _tl = "Sistem JE poslao svoje trebovanje za ovaj period"
+                    if _trb.get("prosledjen") is True:
+                        _tl += "; prosleđen im je i naš predlog."
+                    elif _trb.get("prosledjen") is False:
+                        _tl += "; naš predlog im NIJE prosleđen"
+                        if _trb.get("upozoreni") is True:
+                            _tl += " — ali su upozoreni da neki objekti nemaju zadovoljavajući lager."
+                        elif _trb.get("upozoreni") is False:
+                            _tl += " i nisu upozoreni na objekte sa slabim lagerom."
+                        else:
+                            _tl += "."
+                    else:
+                        _tl += "."
+                else:
+                    _tl = "Sistem NIJE poslao svoje trebovanje za ovaj period."
+                _flow.append(Paragraph("<b>Trebovanje:</b> " + _h_escape(_tl)
+                                       + "  <font color='#8b8fa3'>(" + _h_escape(str(_trb.get("ko", "")))
+                                       + ", " + _h_escape(str(_trb.get("at", ""))) + ")</font>", Nar))
+                _flow.append(Spacer(1, 3))
             # Prijavljeni komitenti — naziv, kontakt, artikli u problemu, napomena
             _any_prij = False
             for _idk, _info in _prijave.items():
@@ -10637,6 +10691,73 @@ div[data-stale="true"] { opacity: 1 !important; }
             st.caption("Napomena: prikazani broj su objekti kojima je generisana porudžbina. Objekti koji su imali "
                        "dovoljno zaliha u svemu se ne čuvaju u izveštaju. Za tačan ukupan broj objekata u sistemu, "
                        "ponovo objavi ovaj sistem (novi podatak se tada beleži).")
+
+        # ===== Trebovanje sistema za ovaj period (štiklira administracija) =====
+        _tr_db = dict((meta.get("nedeljni_trebovanje") or {})) if isinstance(meta, dict) else {}
+        _kk_tr = str(mesec_key) + "_" + str(sistem)
+        with st.container(border=True):
+            st.markdown('<div style="font-weight:800;font-size:14px;color:#3b0764;'
+                        'margin-bottom:2px;">📬 Trebovanje sistema za ovaj period</div>'
+                        '<div style="font-size:12px;color:#6b7280;margin-bottom:6px;">'
+                        'Štikliraj kada sistem pošalje svoje trebovanje — ostaje zapamćeno '
+                        'i vidi se u izveštaju o radu.</div>', unsafe_allow_html=True)
+            _tr_ch = st.checkbox("Poslali su svoje trebovanje za ovaj period",
+                                 value=bool(_tr_db.get("poslali")),
+                                 key="ned_treb_ch_" + _kk_tr)
+            _TO1 = ["Prosledila sam i naš predlog trebovanja",
+                    "Nisam prosledila naš predlog"]
+            _TO2 = ["Upozorila sam ih da neki objekti nemaju zadovoljavajući lager",
+                    "Nisam ih upozorila"]
+            _tr_pros, _tr_upoz = None, None
+            if _tr_ch:
+                _i1 = (0 if _tr_db.get("prosledjen") is True
+                       else (1 if _tr_db.get("prosledjen") is False else None))
+                _izb1 = st.radio("Šta je urađeno sa našim predlogom", _TO1, index=_i1,
+                                 key="ned_treb_r1_" + _kk_tr)
+                _tr_pros = (_izb1 == _TO1[0]) if _izb1 else None
+                if _tr_pros is False:
+                    _i2 = (0 if _tr_db.get("upozoreni") is True
+                           else (1 if _tr_db.get("upozoreni") is False else None))
+                    _izb2 = st.radio("Da li su upozoreni", _TO2, index=_i2,
+                                     key="ned_treb_r2_" + _kk_tr)
+                    _tr_upoz = (_izb2 == _TO2[0]) if _izb2 else None
+            _tc1, _tc2 = st.columns([1.2, 3])
+            with _tc1:
+                _tr_save = st.button("💾 Sačuvaj", key="ned_treb_b_" + _kk_tr,
+                                     use_container_width=True)
+            with _tc2:
+                if _tr_db.get("at"):
+                    _t_txt = ("✅ poslali su trebovanje" if _tr_db.get("poslali")
+                              else "nisu poslali trebovanje")
+                    if _tr_db.get("poslali"):
+                        if _tr_db.get("prosledjen") is True:
+                            _t_txt += "  ·  prosleđen im je i naš predlog"
+                        elif _tr_db.get("prosledjen") is False:
+                            _t_txt += "  ·  naš predlog NIJE prosleđen"
+                            if _tr_db.get("upozoreni") is True:
+                                _t_txt += " (upozoreni su na objekte sa slabim lagerom)"
+                            elif _tr_db.get("upozoreni") is False:
+                                _t_txt += " (nisu upozoreni)"
+                    st.caption(_t_txt + "  ·  " + str(_tr_db.get("ko", "")) + "  ·  "
+                               + str(_tr_db.get("at", "")))
+                else:
+                    st.caption("Još nije označeno za ovaj period.")
+            if _tr_save:
+                if _tr_ch and _tr_pros is None:
+                    st.warning("Izaberi šta je urađeno sa našim predlogom, pa sačuvaj.")
+                elif _tr_ch and _tr_pros is False and _tr_upoz is None:
+                    st.warning("Izaberi da li su upozoreni, pa sačuvaj.")
+                else:
+                    try:
+                        sb_nedeljni_treb_set(mesec_key, sistem,
+                                             {"poslali": bool(_tr_ch),
+                                              "prosledjen": _tr_pros,
+                                              "upozoreni": _tr_upoz},
+                                             ko=st.session_state.get("admin_user", ""))
+                        st.success("Sačuvano.")
+                        st.rerun()
+                    except Exception as _te:
+                        st.error("Nije sačuvano: " + str(_te))
 
         if not _prob:
             st.success("Nema objekata sa problemom — svi imaju dovoljno zaliha za " + _per_lbl + ".")
