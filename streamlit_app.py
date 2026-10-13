@@ -2561,8 +2561,13 @@ def knez_admin_ui():
         _nije_nase = sb_knez_nije_nase_get()
 
         # šta ulazi u Excel (bez pogrešnog perioda i bez nerešenih duplih fajlova)
+        # pumpa je „loša" samo ako NEMA nijedan ispravan fajl — ako je uz pogrešan
+        # poslala i ispravan, važi ispravan i pumpa normalno ulazi u Excel
+        _ima_dobar = {int(_x["idk"]) for _x in _izv
+                      if _x.get("idk") and _x.get("redova") and _x.get("per_ok")}
         _lose_idk = {int(_x["idk"]) for _x in _izv
-                     if _x.get("idk") and not _x.get("per_ok") and _x.get("redova")}
+                     if _x.get("idk") and not _x.get("per_ok") and _x.get("redova")
+                     and int(_x["idk"]) not in _ima_dobar}
         _lose_idk |= set(_dupli_razl.keys())
         _spremno = [s for s in _stavke
                     if s.get("idk") and int(s["idk"]) not in _lose_idk
@@ -2585,7 +2590,6 @@ def knez_admin_ui():
                                   "fajl": "RUČNO (" + str(_rl.get("ko", "")) + ")"})
         # ručno upisano ima prednost nad fajlom
         _spremno = [s for s in _spremno if int(s["idk"]) not in _rucni_idk] + _rucne_st
-        _auto_idk = {int(s["idk"]) for s in _spremno if int(s["idk"]) not in _rucni_idk}
         # pumpe koje IMAJU ispravno pročitanu lager listu (i kad su posle toga
         # ručno ispravljene) — za filter „završene automatski (iz fajla)"
         _ima_fajl_ok = {int(_x["idk"]) for _x in _izv
@@ -2593,6 +2597,11 @@ def knez_admin_ui():
                         and int(_x["idk"]) not in _dupli_razl
                         and (int(_x["idk"]) not in _uzmi
                              or str(_x.get("ime")) == _uzmi[int(_x["idk"])])}
+        # pumpe čiji su redovi stvarno ušli u Excel
+        _u_excelu = {int(s["idk"]) for s in _spremno if s.get("idk")}
+        # ZAVRŠENA je svaka pumpa koja ima ispravno pročitan fajl (makar nijedan
+        # artikal iz njega ne bio prepoznat) ili ručno upisane količine.
+        _auto_idk = (_u_excelu | _ima_fajl_ok) - _rucni_idk
         _zav_idk = _auto_idk | _rucni_idk                 # ZAVRŠENE pumpe
 
         # status po pumpi (za tabelu, filter i ručni unos)
@@ -2621,10 +2630,13 @@ def knez_admin_ui():
             elif not _fs:
                 _p_vrsta, _p_ikona = "nema", "✗"
                 _stat_txt = "nije poslala izveštaj"
-            elif _ik in _ima_fajl_ok and _ik not in _lose_idk:
+            elif _ik in _ima_fajl_ok or _ik in _u_excelu:
                 _p_vrsta, _p_ikona = "zav_auto", "✓"
-                _stat_txt = ("izveštaj pročitan" + ("  ·  pumpa je poslala i druge fajlove"
-                                                    if _ik in _uzmi else ""))
+                _stat_txt = ("izveštaj pročitan"
+                             + ("  ·  pumpa je poslala i druge fajlove"
+                                if _ik in _uzmi else "")
+                             + ("  ·  ali nijedan artikal iz njega nije ušao u Excel "
+                                "(proveri artikle)" if _ik not in _u_excelu else ""))
             elif not any(_f.get("redova") for _f in _fs):
                 _p_vrsta, _p_ikona = "ne_cita", "✗"
                 _stat_txt = ("fajl se ne čita — "
@@ -2832,12 +2844,24 @@ def knez_admin_ui():
             _f_q = st.text_input("Pretraga (naziv ili ID)", value="", key="knez_f_pumpa",
                                  placeholder="npr. ADA ili 308")
         with _t3:
+            _razlozi = {}
+            for _z in _red_pumpe:
+                if not str(_z["vrsta"]).startswith("zav_"):
+                    _razlozi[_z["vrsta"]] = _razlozi.get(_z["vrsta"], 0) + 1
+            _NAZ_R = {"nema": "nije poslala izveštaj", "ne_cita": "fajl se ne čita",
+                      "period": "parametri nisu kako treba",
+                      "vise": "više fajlova sa podacima", "drugo": "ostalo"}
+            _raz_txt = "  ·  ".join(_NAZ_R.get(_k, _k) + " <b>" + str(_v) + "</b>"
+                                    for _k, _v in sorted(_razlozi.items(),
+                                                         key=lambda x: -x[1]))
             st.markdown('<div style="font-size:12.5px;color:#6b7280;padding-top:30px;">'
                         '<b style="color:#15803d;">✅ ' + str(_n_zav) + '</b> završeno '
-                        '<span style="color:#9ca3af;">(iz fajla ' + str(len(_ima_fajl_ok))
+                        '<span style="color:#9ca3af;">(iz fajla ' + str(len(_auto_idk))
                         + ', ručno ' + str(len(_rucni_idk)) + ')</span>  ·  '
                         '<b style="color:#b45309;">⚠ ' + str(len(_pumpe) - _n_zav)
                         + '</b> nezavršeno  ·  ukupno ' + str(len(_pumpe)) + ' pumpi'
+                        + ('<br><span style="color:#9ca3af;">Nezavršene: ' + _raz_txt
+                           + '</span>' if _raz_txt else "")
                         + '</div>', unsafe_allow_html=True)
         _vidi = _red_pumpe
         if _f_vrsta == _F_NEZ:
