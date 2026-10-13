@@ -25,6 +25,8 @@ APP_PASSWORD   = _cfg("APP_PASSWORD", "vape2024")     # analiticar (pun pristup)
 ADMIN_PASSWORD = _cfg("ADMIN_PASSWORD", "aman2024")   # administracija 1 (koleginica 1)
 ADMIN_PASSWORD_2 = _cfg("ADMIN_PASSWORD_2", "aman2025")  # administracija 2 (koleginica 2)
 DIREKTOR_PASSWORD = _cfg("DIREKTOR_PASSWORD", "2026vape")  # direktori (pregled izveštaja)
+DIREKTOR_PASSWORD_2 = _cfg("DIREKTOR_PASSWORD_2", "vukasin123")    # direktor 2
+DIREKTOR_PASSWORD_3 = _cfg("DIREKTOR_PASSWORD_3", "slobodan321")   # direktor 3
 KOMERCIJALA_PASSWORD = _cfg("KOMERCIJALA_PASSWORD", "komerc2026")     # komercijala 1
 KOMERCIJALA_PASSWORD_2 = _cfg("KOMERCIJALA_PASSWORD_2", "komerc2027")  # komercijala 2
 
@@ -33,6 +35,8 @@ APP_KORISNIK          = _cfg("APP_KORISNIK", "analitika")
 ADMIN_KORISNIK        = _cfg("ADMIN_KORISNIK", "aleksandraapatovic")
 ADMIN_KORISNIK_2      = _cfg("ADMIN_KORISNIK_2", "zoranahromis")
 DIREKTOR_KORISNIK     = _cfg("DIREKTOR_KORISNIK", "direktor")
+DIREKTOR_KORISNIK_2   = _cfg("DIREKTOR_KORISNIK_2", "vukasinkatic")
+DIREKTOR_KORISNIK_3   = _cfg("DIREKTOR_KORISNIK_3", "slobodangajic")
 KOMERCIJALA_KORISNIK  = _cfg("KOMERCIJALA_KORISNIK", "komercijala1")
 KOMERCIJALA_KORISNIK_2 = _cfg("KOMERCIJALA_KORISNIK_2", "komercijala2")
 
@@ -41,6 +45,9 @@ ADMIN_IME        = _cfg("ADMIN_IME", "Aleksandra Apatović")
 ADMIN_IME_2      = _cfg("ADMIN_IME_2", "Zorana Hromiš")
 KOMERCIJALA_IME  = _cfg("KOMERCIJALA_IME", "Komercijala 1")
 KOMERCIJALA_IME_2 = _cfg("KOMERCIJALA_IME_2", "Komercijala 2")
+DIREKTOR_IME      = _cfg("DIREKTOR_IME", "Direktor")
+DIREKTOR_IME_2    = _cfg("DIREKTOR_IME_2", "Vukašin Katić")
+DIREKTOR_IME_3    = _cfg("DIREKTOR_IME_3", "Slobodan Gajić")
 
 
 def _norm_korisnik(s):
@@ -5230,7 +5237,11 @@ def check_password():
              ADMIN_PASSWORD, "administracija", ADMIN_IME, "1"),
             (_aliasi(ADMIN_KORISNIK_2, ADMIN_IME_2, _cfg("SMTP_USER_2", "")),
              ADMIN_PASSWORD_2, "administracija", ADMIN_IME_2, "2"),
-            (_aliasi(DIREKTOR_KORISNIK), DIREKTOR_PASSWORD, "direktori", None, ""),
+            (_aliasi(DIREKTOR_KORISNIK), DIREKTOR_PASSWORD, "direktori", DIREKTOR_IME, ""),
+            (_aliasi(DIREKTOR_KORISNIK_2, DIREKTOR_IME_2), DIREKTOR_PASSWORD_2,
+             "direktori", DIREKTOR_IME_2, ""),
+            (_aliasi(DIREKTOR_KORISNIK_3, DIREKTOR_IME_3), DIREKTOR_PASSWORD_3,
+             "direktori", DIREKTOR_IME_3, ""),
             (_aliasi(KOMERCIJALA_KORISNIK, KOMERCIJALA_IME), KOMERCIJALA_PASSWORD,
              "komercijala", KOMERCIJALA_IME, ""),
             (_aliasi(KOMERCIJALA_KORISNIK_2, KOMERCIJALA_IME_2), KOMERCIJALA_PASSWORD_2,
@@ -5251,6 +5262,8 @@ def check_password():
                 st.session_state.admin_user = _ime
             elif _rola == "komercijala":
                 st.session_state.komerc_user = _ime
+            elif _rola == "direktori":
+                st.session_state.dir_user = _ime or "Direktor"
             st.rerun()
         else:
             st.error("Pogrešno korisničko ime ili šifra")
@@ -13885,12 +13898,14 @@ def prikazi_direktore():
         st.markdown('<div style="display:flex;align-items:center;gap:12px;padding:4px 0 2px;">'
                     '<div style="width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,#a855f7,#ec4899);"></div>'
                     '<div><span style="font-size:19px;font-weight:800;color:#1f2430;">VAPE Porudžbine</span>'
-                    '<span style="font-size:13px;color:#8b8fa0;margin-left:6px;">· Direktori</span></div></div>',
+                    '<span style="font-size:13px;color:#8b8fa0;margin-left:6px;">· '
+                    + _h_escape(str(st.session_state.get("dir_user", "Direktori")))
+                    + '</span></div></div>',
                     unsafe_allow_html=True)
     with _h2:
         st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
         if st.button("Odjava", key="dir_odjava", use_container_width=True):
-            for _k in ("authenticated", "role", "admin_user", "mail_nalog"):
+            for _k in ("authenticated", "role", "admin_user", "mail_nalog", "dir_user"):
                 st.session_state.pop(_k, None)
             st.rerun()
 
