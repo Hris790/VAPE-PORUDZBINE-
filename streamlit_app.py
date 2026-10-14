@@ -677,13 +677,54 @@ def sb_start_snapshot(mesec_key, sistem, snap):
         pass
 
 
-def sb_admin_hist_set(mesec_key, sistem, hist_map, kada=None, svi_idk=None):
+def _hist_spoji(stara, nova):
+    """Spoji dve liste porudžbina istog objekta (dedupe po ID, zadrži verziju sa
+    stavkama) i baci sve starije od ~8 meseci, da zapis ne raste bez kraja."""
+    _by = {}
+    for _o in list(stara or []) + list(nova or []):
+        _oid = str((_o or {}).get("id") or "")
+        if not _oid:
+            continue
+        if _oid not in _by:
+            _by[_oid] = _o
+        elif (not (_by[_oid].get("stavke"))) and _o.get("stavke"):
+            _by[_oid] = _o
+    try:
+        _danas = _now().date()
+        _g = _danas.year; _m = _danas.month - 8
+        while _m <= 0:
+            _m += 12; _g -= 1
+        _granica = datetime.date(_g, _m, 1)
+    except Exception:
+        _granica = None
+    _out = []
+    for _o in _by.values():
+        if _granica:
+            try:
+                _d = datetime.datetime.strptime(str(_o.get("datum") or "").split(" ")[0],
+                                                "%d.%m.%Y").date()
+                if _d < _granica:
+                    continue
+            except Exception:
+                pass            # datum se ne čita — radije zadrži nego izgubi
+        _out.append(_o)
+    try:
+        return sorted(_out, key=_datum_sort_key, reverse=True)
+    except Exception:
+        return _out
+
+
+def sb_admin_hist_set(mesec_key, sistem, hist_map, kada=None, svi_idk=None, od=None):
     """Zapamti (trajno) povučene prethodne porudžbine iz admina za ceo sistem.
     hist_map: {idk: [ {id,datum,status,cena,stavke} ]}. Upisuje se u meta.admin_hist
     (ključevi kao stringovi) + meta.admin_hist_at (vreme poslednjeg ažuriranja).
     svi_idk: SVI objekti koji su obuhvaćeni ovim povlačenjem (i oni bez ijedne
     porudžbine) — upisuje se u meta.admin_hist_idk, da bi aplikacija znala da su
     i ti objekti već provereni i da za njih NE traži ponovo ažuriranje.
+    od: od kog datuma je ovo povlačenje gledalo porudžbine — pamti se najstariji
+    datum koji je ikad povučen (meta.admin_hist_od), da kraće povlačenje (npr.
+    „zabeleži start", koje gleda samo od 01.) ne bi obrisalo punih ~6 meseci.
+    VAŽNO: novo se DODAJE na staro (po ID porudžbine), ništa se ne briše.
     Tako se posle osvežavanja stranice zadržavaju „posle 01." i sortiranje po zonama."""
     cli = _sb()
     if cli is None:
@@ -693,8 +734,24 @@ def sb_admin_hist_set(mesec_key, sistem, hist_map, kada=None, svi_idk=None):
         raise RuntimeError("Nema objavljenog izveštaja za taj mesec/sistem.")
     podaci = res.data[0].get("podaci") or {}
     meta = podaci.get("meta") or {}
-    meta["admin_hist"] = {str(k): (v or []) for k, v in (hist_map or {}).items() if v}
+    _stara = (meta.get("admin_hist") or {}) if isinstance(meta.get("admin_hist"), dict) else {}
+    _nova = dict(_stara)
+    for _k, _v in (hist_map or {}).items():
+        _kk = str(_k)
+        _sp = _hist_spoji(_stara.get(_kk) or [], _v or [])
+        if _sp:
+            _nova[_kk] = _sp
+        elif _kk in _nova and not (_v or []):
+            pass                      # nema novog — ostaje staro
+    meta["admin_hist"] = {_k: _v for _k, _v in _nova.items() if _v}
     meta["admin_hist_at"] = kada or _now().isoformat()
+    if od:
+        try:
+            _od_s = od.isoformat() if hasattr(od, "isoformat") else str(od)[:10]
+            _st_od = str(meta.get("admin_hist_od") or "")[:10]
+            meta["admin_hist_od"] = min(_st_od, _od_s) if _st_od else _od_s
+        except Exception:
+            pass
     if svi_idk:
         _prev_cov = meta.get("admin_hist_idk") or []
         _cov = set(str(x) for x in _prev_cov) | set(str(x) for x in svi_idk)
@@ -10658,7 +10715,14 @@ div[data-stale="true"] { opacity: 1 !important; }
                 _cov_n = set(str(x) for x in (meta.get("admin_hist_idk") or []))
                 _cov_n |= set(str(x) for x in ((meta.get("admin_hist") or {}).keys()))
                 _cut_n = None
-                if _ned_pull_mode != "start" and _ah_at_n and _cov_n:
+                _od_n = meta.get("admin_hist_od") if isinstance(meta, dict) else None
+                _pun_n = False
+                try:
+                    _pun_n = bool(_od_n) and bool(_cut6) \
+                        and datetime.date.fromisoformat(str(_od_n)[:10]) <= _cut6
+                except Exception:
+                    _pun_n = False
+                if _ned_pull_mode != "start" and _ah_at_n and _cov_n and _pun_n:
                     try:
                         _cut_n = datetime.date.fromisoformat(str(_ah_at_n)[:10]) - datetime.timedelta(days=5)
                         if _cut6 and _cut_n < _cut6:
@@ -10702,7 +10766,8 @@ div[data-stale="true"] { opacity: 1 !important; }
                         _hsave[int(o["idk"])] = _lst
                 try:
                     sb_admin_hist_set(mesec_key, sistem, _hsave, _now().isoformat(),
-                                      svi_idk=[int(o["idk"]) for o in objekti])
+                                      svi_idk=[int(o["idk"]) for o in objekti],
+                                      od=(_cut_n or _cut6))
                 except Exception as _e:
                     st.warning("Povučeno, ali nije trajno sačuvano: " + str(_e))
                 if _ned_pull_mode == "start":
@@ -11575,8 +11640,20 @@ div[data-stale="true"] { opacity: 1 !important; }
         _cov_r = set(str(x) for x in (meta.get("admin_hist_idk") or []))
         _cov_r |= set(str(x) for x in ((meta.get("admin_hist") or {}).keys()))
         _last_at_r = meta.get("admin_hist_at") if isinstance(meta, dict) else None
+        # Dopuna sme SAMO ako je zapamćeno već pokriveno punih ~6 meseci. Ako je
+        # ranije povučen kraći period (npr. „zabeleži start" gleda samo od 01.) ili
+        # se uopšte ne zna dokle seže — povlači se ceo period ispočetka.
+        _od_r = meta.get("admin_hist_od") if isinstance(meta, dict) else None
+        _pun_r = False
+        try:
+            _pun_r = bool(_od_r) and bool(_cut_all) \
+                and datetime.date.fromisoformat(str(_od_r)[:10]) <= _cut_all
+        except Exception:
+            _pun_r = False
+        if st.session_state.pop("_req_refresh_full", False):
+            _pun_r = False              # izričito traženo: povuci sve ispočetka
         _cut_inc = None
-        if _last_at_r and _cov_r:
+        if _last_at_r and _cov_r and _pun_r:
             try:
                 _d_last = datetime.date.fromisoformat(str(_last_at_r)[:10])
                 _cut_inc = _d_last          # tačno od dana poslednjeg povlačenja
@@ -11635,7 +11712,8 @@ div[data-stale="true"] { opacity: 1 !important; }
             _kada_now = _now().isoformat()
             try:
                 sb_admin_hist_set(mesec_key, sistem, _hist_save, _kada_now,
-                                  svi_idk=[int(o["idk"]) for o in objekti])
+                                  svi_idk=[int(o["idk"]) for o in objekti],
+                                  od=(_cut_inc if (_cut_inc and not _cut_all) else _cut_all))
             except Exception as _es:
                 st.warning("Podaci su ažurirani, ali nisu trajno sačuvani (osvežiće se ponovo pri sledećem ažuriranju): " + str(_es))
             # Ko je poručio POSLE starta — zabeleži trajno u bazu, da status ostane
@@ -11732,10 +11810,16 @@ div[data-stale="true"] { opacity: 1 !important; }
             _start_ids = {}
             for o in objekti:
                 _lst_s = sorted(_bulk_s.get(o["idk"], []), key=_datum_sort_key, reverse=True)
-                st.session_state["hist_" + str(sistem) + "_" + str(o["idk"])] = {"lst": _lst_s, "err": ""}
+                # ranije povučeno (punih ~6 meseci) se NE gubi — spaja se sa ovim
+                _hs_old = (st.session_state.get("hist_" + str(sistem) + "_" + str(o["idk"])) or {}).get("lst") or []
+                _lst_sve = _hist_spoji(_hs_old, _lst_s)
+                st.session_state["hist_" + str(sistem) + "_" + str(o["idk"])] = {
+                    "lst": _lst_sve, "err": ""}
                 # zapamti KOJE porudžbine objekat ima u trenutku starta — sve što se
-                # kasnije pojavi znači da je objekat poručio i prelazi u „Završeno“
-                _start_ids[str(int(o["idk"]))] = [str(_x.get("id") or "") for _x in _lst_s if _x.get("id")]
+                # kasnije pojavi znači da je objekat poručio i prelazi u „Završeno“.
+                # Upisuju se SVE poznate (i starije od preseka), da neka ranije povučena
+                # stara porudžbina kasnije ne bi bila pročitana kao „nova posle starta".
+                _start_ids[str(int(o["idk"]))] = [str(_x.get("id") or "") for _x in _lst_sve if _x.get("id")]
                 if _lst_s:
                     _nh += 1
                     _hist_save_s[int(o["idk"])] = _lst_s
@@ -11748,8 +11832,11 @@ div[data-stale="true"] { opacity: 1 !important; }
                 else:
                     _ze += 1
             try:
+                # od=_pk_s: ovo povlačenje je gledalo SAMO od preseka (01.), pa se ne
+                # sme proglasiti da je pokriveno punih ~6 meseci — inače bi „Ažuriraj"
+                # posle toga dopunjavao samo razliku i prethodne porudžbine bi nestale.
                 sb_admin_hist_set(mesec_key, sistem, _hist_save_s, _now().isoformat(),
-                                  svi_idk=[int(o["idk"]) for o in objekti])
+                                  svi_idk=[int(o["idk"]) for o in objekti], od=_pk_s)
             except Exception:
                 pass
             try:
@@ -12539,8 +12626,22 @@ div[data-stale="true"] { opacity: 1 !important; }
                 elif _hist.get("err"):
                     st.error(_hist["err"])
                 elif not _hist.get("lst"):
-                    st.caption("Nema porudžbina za ovaj objekat u poslednjih ~6 meseci."
-                               + (" (podaci iz admina od " + _dt_fmt(_ah_at_d) + ")" if _ah_at_d else ""))
+                    _od_d = str((meta.get("admin_hist_od") or "") if isinstance(meta, dict) else "")[:10]
+                    _od_txt = ""
+                    try:
+                        if _od_d:
+                            _od_txt = (" · povučeno je od "
+                                       + datetime.date.fromisoformat(_od_d).strftime("%d.%m.%Y"))
+                    except Exception:
+                        _od_txt = ""
+                    st.caption("Nema porudžbina za ovaj objekat u povučenom periodu."
+                               + ((" (podaci iz admina od " + _dt_fmt(_ah_at_d) + _od_txt + ")")
+                                  if _ah_at_d else ""))
+                    if st.button("⟳ Povuci celih ~6 meseci iz admina (ispočetka)",
+                                 key="hist_full_" + str(sel_id)):
+                        st.session_state["_req_refresh_admin"] = True
+                        st.session_state["_req_refresh_full"] = True
+                        st.rerun()
                 else:
                     st.caption("Pronađeno " + str(len(_hist["lst"])) + " porudžbina — klikni na datum za sadržaj.")
                     for _o in _hist["lst"]:
@@ -14328,6 +14429,9 @@ def prikazi_direktore():
     _view = st.session_state.get("dir_view", "dash")
     # Kartica „Administracija porudžbina" = pregled bez prava izmene
     st.session_state["_dir_pregled_admin"] = (_view == "admin_pregled")
+    if _view in ("efikasnost", "sistemi"):      # privremeno sklonjene kartice
+        _view = "dash"
+        st.session_state["dir_view"] = "dash"
 
     # ---- Render izveštaja po sistemu (isti prikaz za pune i delimične podatke) ----
     def _render_sistem_report(dd, puno):
@@ -14811,13 +14915,8 @@ def prikazi_direktore():
              "Kompletan dashboard: prodaja, uspešnost akcije, profitabilnost, zalihe — "
              "plus izvoz u Excel.",
              "dir_open_prod", "prodaja"),
-            ("📊", "Izveštaj efikasnosti administracije",
-             "PDF izveštaj administracije i upozorenja koja je administracija prosledila "
-             "komercijali.",
-             "dir_open_efik", "efikasnost"),
-            ("📈", "Detaljan izveštaj po sistemima",
-             "Prodaja, grupe, out-of-stock i preuzimanje analitike — po sistemu i mesecu.",
-             "dir_open_sist", "sistemi"),
+            # „Izveštaj efikasnosti administracije" i „Detaljan izveštaj po sistemima"
+            # su privremeno sklonjeni sa table (kod je ostao, lako se vraća).
             ("🧊", "Izveštaj SYX",
              "Word izveštaji za SYX nikotinske vrećice, izlistani po mesecima za preuzimanje.",
              "dir_open_syx", "syx"),
@@ -17197,6 +17296,64 @@ with tab_obj:
                 _ip_q2 = st.radio("Poslednji mesec u profitabilnosti?", ["Uključi", "Isključi"],
                                   key="izp_iskljuci", horizontal=True)
                 _iskljuci = (_ip_q2 == "Isključi")
+            _promene_izp = []
+            if _up_sis is not None:
+                # spisak sistema, grupa i meseci iz samog fajla — za unos promena cene
+                try:
+                    import io as _io3
+                    _dfp = pd.read_excel(_io3.BytesIO(_up_sis.getvalue()), sheet_name="tabela")
+                    _dfp.columns = _dfp.columns.astype(str).str.strip()
+                    _dfp["Mesec"] = pd.to_numeric(_dfp["Mesec"], errors="coerce").fillna(0).astype(int)
+                    _dfp["Godina"] = pd.to_numeric(_dfp["Godina"], errors="coerce").fillna(0).astype(int)
+                    _dfp = _dfp[(_dfp["Godina"] >= 2025) & (_dfp["Mesec"] >= 1)]
+                    _sis_opt = sorted(_dfp["SISTEM"].dropna().astype(str).str.strip().unique())
+                    _gr_opt = sorted(_dfp["Grupa artikla"].dropna().astype(str).str.strip().unique())
+                    _per_opt = (_dfp[["Godina", "Mesec"]].drop_duplicates()
+                                .sort_values(["Godina", "Mesec"]).values.tolist())
+                except Exception:
+                    _sis_opt, _gr_opt, _per_opt = [], [], []
+                if _sis_opt and _gr_opt and _per_opt:
+                    _MES_PUN = {1: "Januar", 2: "Februar", 3: "Mart", 4: "April", 5: "Maj",
+                                6: "Jun", 7: "Jul", 8: "Avgust", 9: "Septembar",
+                                10: "Oktobar", 11: "Novembar", 12: "Decembar"}
+                    _mes_lbl = [_MES_PUN[int(m)] + " " + str(int(g)) for g, m in _per_opt]
+                    with st.expander("⇄ Da li je negde cena menjana u toku meseca? (opciono)",
+                                     expanded=False):
+                        st.caption("Jedan red = jedna promena. Ćelija tog meseca se u tabeli "
+                                   "PRODAJA boji dvema bojama, podeljena na dan promene.")
+                        _pc_df = st.data_editor(
+                            pd.DataFrame(columns=["Sistem", "Grupa", "Mesec", "Dan",
+                                                  "Stara cena", "Nova cena"]),
+                            num_rows="dynamic", use_container_width=True, key="izp_promene",
+                            column_config={
+                                "Sistem": st.column_config.SelectboxColumn(options=_sis_opt,
+                                                                           width="medium"),
+                                "Grupa": st.column_config.SelectboxColumn(options=_gr_opt,
+                                                                          width="medium"),
+                                "Mesec": st.column_config.SelectboxColumn(options=_mes_lbl,
+                                                                          width="medium"),
+                                "Dan": st.column_config.NumberColumn(min_value=1, max_value=31,
+                                                                     step=1, format="%d"),
+                                "Stara cena": st.column_config.NumberColumn(min_value=0, step=10),
+                                "Nova cena": st.column_config.NumberColumn(min_value=0, step=10)})
+                        for _, _rp in _pc_df.iterrows():
+                            try:
+                                _mi = _mes_lbl.index(str(_rp["Mesec"]))
+                            except Exception:
+                                continue
+                            if not str(_rp.get("Sistem") or "").strip():
+                                continue
+                            try:
+                                _promene_izp.append({
+                                    "sistem": str(_rp["Sistem"]).strip(),
+                                    "grupa": str(_rp["Grupa"]).strip(),
+                                    "godina": int(_per_opt[_mi][0]), "mesec": int(_per_opt[_mi][1]),
+                                    "dan": int(_rp["Dan"]), "stara": float(_rp["Stara cena"]),
+                                    "nova": float(_rp["Nova cena"])})
+                            except Exception:
+                                continue
+                        if _promene_izp:
+                            st.caption("✓ Uneto promena: " + str(len(_promene_izp)))
             if _up_sis is not None and _up_tro is not None:
                 if st.button("📊 Generiši i objavi izveštaj prodaje", key="izp_gen", use_container_width=True):
                     try:
@@ -17205,7 +17362,8 @@ with tab_obj:
                         with st.spinner("Generišem izveštaj prodaje (može par sekundi)..."):
                             _html, _xlsx, _mes, _spr = _izp.generisi_izvestaj_prodaje(
                                 _io2.BytesIO(_up_sis.getvalue()), _io2.BytesIO(_up_tro.getvalue()),
-                                potpun=_potpun, iskljuci_poslednji=_iskljuci)
+                                potpun=_potpun, iskljuci_poslednji=_iskljuci,
+                                promene=_promene_izp)
                             _xb64 = _b64i.b64encode(_xlsx).decode("ascii") if _xlsx else ""
                             _pj = json.dumps(_spr, ensure_ascii=False) if _spr else ""
                             sb_objavi_izvestaj_prodaje(_html, _xb64, _mes, prodaja_json=_pj)
