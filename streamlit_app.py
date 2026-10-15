@@ -10598,6 +10598,12 @@ div[class*="st-key-cenered_"] div[data-baseweb="input"],
 div[class*="st-key-cenered_"] div[data-baseweb="select"] > div{min-height:34px !important;}
 div[class*="st-key-cenered_"] [data-testid="stNumberInputStepUp"],
 div[class*="st-key-cenered_"] [data-testid="stNumberInputStepDown"]{display:none;}
+/* datum: ceo se vidi (dd.mm.gggg) i kalendar ostaje */
+div[class*="st-key-cenered_"] [data-testid="stDateInput"] input{font-size:12px !important;
+    padding:0 2px 0 6px !important;letter-spacing:-.2px;}
+div[class*="st-key-cenered_"] [data-testid="stDateInput"] div[data-baseweb="input"]{
+    padding-right:2px !important;}
+div[class*="st-key-cenered_"] [data-testid="stDateInput"] svg{width:14px;height:14px;}
 """
 
 
@@ -10760,27 +10766,6 @@ def cene_ui(uloga, ugradjeno=False):
 
     _KOL_STATUS = {"": "— čeka —", "potvrdjeno": "POTVRĐENO", "nije": "NISU POTVRDILI"}
     # ---- tabela: menja se direktno u njoj, čuva se dugmetom ispod ----
-    _n_pot0 = sum(1 for _r in _redovi if cene_status_prikaz(_r, _danas)[0] == "POTVRĐENO")
-    _n_cek0 = sum(1 for _r in _redovi if cene_status_prikaz(_r, _danas)[0] == "ČEKA POTVRDU")
-    _n_odb0 = sum(1 for _r in _redovi
-                  if "ODBIJENO" in cene_status_prikaz(_r, _danas)[0]
-                  or cene_status_prikaz(_r, _danas)[0] == "NISU POTVRDILI")
-    _n_akc0 = sum(1 for _r in _redovi if str(_r.get("akcijska") or "").strip())
-    st.markdown(
-        '<div class="cene-sum">'
-        '<div class="b" style="border-color:#c7d2fe;"><b style="color:#4338ca;">'
-        + str(len(_redovi)) + '</b>redova · ' + str(len({r.get("sistem") for r in _redovi}))
-        + ' sistema</div>'
-        '<div class="b" style="border-color:#fde68a;"><b style="color:#b45309;">'
-        + str(_n_akc0) + '</b>sa akcijskom cenom</div>'
-        '<div class="b" style="border-color:#bbf7d0;"><b style="color:#15803d;">'
-        + str(_n_pot0) + '</b>potvrđeno</div>'
-        '<div class="b" style="border-color:#fed7aa;"><b style="color:#92400e;">'
-        + str(_n_cek0) + '</b>čeka potvrdu</div>'
-        '<div class="b" style="border-color:#fecaca;"><b style="color:#b91c1c;">'
-        + str(_n_odb0) + '</b>odbijeno / nisu potvrdili</div>'
-        '</div>', unsafe_allow_html=True)
-
     # Zaključan mesec (ili direktorski pregled) — samo lep prikaz, bez izmena
     if not _moze_menjati:
         st.markdown(cene_html(_redovi, _danas), unsafe_allow_html=True)
@@ -10807,8 +10792,8 @@ def cene_ui(uloga, ugradjeno=False):
         return
 
     # ---- izmena direktno u tabeli ----
-    _SIR = [1.45, 1.35, 0.95, 1.45, 1.15, 1.15, 1.3, 1.6, 1.8]
-    _NASLOVI = ["Kupac", "Artikal", "Redovna cena", "Akcijska cena", "Početak", "Kraj",
+    _SIR = [1.2, 1.25, 0.8, 1.2, 1.45, 1.45, 1.1, 1.45, 1.45]
+    _NASLOVI = ["Kupac", "Artikal", "Redovna", "Akcijska cena", "Početak", "Kraj",
                 "Status", "Odgovoran", "Napomena"]
     _je_admin = (uloga == "admin")
     with st.form("cene_form_" + _mk, border=False):
@@ -10895,6 +10880,17 @@ def cene_ui(uloga, ugradjeno=False):
                           "do": _do_v, "status": _st_v, "odgovoran": _odg_v,
                           "napomena": _nap_v, "obrisi": False})
 
+        _n_akc0 = sum(1 for _r in _redovi if str(_r.get("akcijska") or "").strip())
+        _n_pot0 = sum(1 for _r in _redovi if cene_status_prikaz(_r, _danas)[0] == "POTVRĐENO")
+        _n_cek0 = sum(1 for _r in _redovi if cene_status_prikaz(_r, _danas)[0] == "ČEKA POTVRDU")
+        _n_odb0 = sum(1 for _r in _redovi
+                      if "ODBIJENO" in cene_status_prikaz(_r, _danas)[0]
+                      or cene_status_prikaz(_r, _danas)[0] == "NISU POTVRDILI")
+        st.markdown('<div class="cene-note">' + str(len(_redovi)) + ' redova · '
+                    + str(len({_r.get("sistem") for _r in _redovi})) + ' sistema  ·  '
+                    + str(_n_akc0) + ' sa akcijskom cenom  ·  ' + str(_n_pot0) + ' potvrđeno  ·  '
+                    + str(_n_cek0) + ' čeka potvrdu  ·  ' + str(_n_odb0)
+                    + ' odbijeno / nisu potvrdili</div>', unsafe_allow_html=True)
         st.markdown('<div class="cene-note">Akcijska cena se kuca ručno (može i tekst, npr. '
                     '„490 + 1 din drugi artikal“), period se bira iz kalendara, odgovoran iz '
                     'spiska. Ako administracija ne potvrdi do početka akcije, red se vodi kao '
