@@ -10501,6 +10501,175 @@ def cene_xlsx(redovi, mesec_lbl, cenovnik=None):
     _buf = _io.BytesIO(); _wb.save(_buf); return _buf.getvalue()
 
 
+CENE_CSS = """
+.cene-wrap{border:1px solid #e3dcf7;border-radius:14px;overflow:hidden;
+           box-shadow:0 1px 4px rgba(76,29,149,.08);margin:6px 0 12px;background:#fff;}
+table.cene-tab{width:100%;border-collapse:collapse;font-size:13px;background:#fff;}
+table.cene-tab thead th{background:linear-gradient(180deg,#7c3aed 0%,#5b21b6 100%);color:#fff;
+    font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.7px;
+    padding:10px 10px;text-align:center;white-space:nowrap;}
+table.cene-tab thead th.l{text-align:left;}
+table.cene-tab tbody td{padding:8px 10px;border-top:1px solid #efeafb;color:#1f2937;
+    vertical-align:middle;text-align:center;}
+table.cene-tab td.sis{font-weight:800;color:#312e81;font-size:13.5px;text-align:left;
+    background:#f7f4ff;border-left:4px solid #7c3aed;white-space:nowrap;}
+table.cene-tab td.grp{text-align:left;font-weight:600;color:#4b5563;white-space:nowrap;}
+table.cene-tab td.red{font-variant-numeric:tabular-nums;color:#6b7280;}
+table.cene-tab td.akc{font-weight:800;font-variant-numeric:tabular-nums;color:#78350f;
+    background:#fff6c2;}
+table.cene-tab td.akc.prazno{background:transparent;color:#cbd5e1;font-weight:500;}
+table.cene-tab td.per{font-size:12px;color:#475569;white-space:nowrap;}
+table.cene-tab td.odg{text-align:left;font-size:12px;color:#334155;}
+table.cene-tab td.nap{text-align:left;font-size:12px;color:#6b7280;font-style:italic;}
+table.cene-tab tr.sep td{border-top:2px solid #e9e3fb;}
+.cene-chip{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;
+           font-weight:800;letter-spacing:.2px;white-space:nowrap;}
+.cene-sum{display:flex;gap:10px;flex-wrap:wrap;margin:2px 0 10px;}
+.cene-sum .b{border:1px solid #e5e7eb;border-radius:12px;padding:7px 14px;background:#fff;
+             font-size:12.5px;font-weight:700;color:#374151;}
+.cene-sum .b b{font-size:16px;display:block;line-height:1.1;}
+"""
+
+
+def cene_html(redovi, danas=None, cenovnik=None):
+    """Lep pregled cena — isti raspored kao tabela u Excelu, sa bojama."""
+    danas = danas or _now().date()
+    _red = _cene_sort(redovi or [])
+    if not _red:
+        return ""
+    _po_sis = []
+    for _r in _red:
+        _s = str(_r.get("sistem") or "")
+        if not _po_sis or _po_sis[-1][0] != _s:
+            _po_sis.append((_s, []))
+        _po_sis[-1][1].append(_r)
+    _h = ['<div class="cene-wrap"><table class="cene-tab"><thead><tr>'
+          '<th class="l">Kupac</th><th class="l">Artikal</th><th>Redovna</th>'
+          '<th>Akcijska</th><th>Period akcije</th><th>Status</th>'
+          '<th class="l">Odgovoran</th><th class="l">Napomena</th></tr></thead><tbody>']
+    for _si, (_s, _lst) in enumerate(_po_sis):
+        for _i, _r in enumerate(_lst):
+            _lbl, _bg, _fg = cene_status_prikaz(_r, danas)
+            _od = _cene_d(_r.get("od")); _do = _cene_d(_r.get("do"))
+            _per = ((_od.strftime("%d.%m.") + " – " + _do.strftime("%d.%m.%Y."))
+                    if (_od and _do) else "—")
+            _akc = str(_r.get("akcijska") or "").strip()
+            _h.append('<tr' + (' class="sep"' if (_i == 0 and _si > 0) else '') + '>')
+            if _i == 0:
+                _h.append('<td class="sis" rowspan="' + str(len(_lst)) + '">'
+                          + _h_escape(_s) + '</td>')
+            _h.append('<td class="grp">' + _h_escape(str(_r.get("grupa") or "")) + '</td>'
+                      '<td class="red">' + (format(int(_r.get("redovna") or 0), ",")
+                                            .replace(",", ".") if _r.get("redovna") else "—")
+                      + '</td>'
+                      '<td class="akc' + ('' if _akc else ' prazno') + '">'
+                      + (_h_escape(_akc) if _akc else "—") + '</td>'
+                      '<td class="per">' + _h_escape(_per) + '</td>'
+                      '<td><span class="cene-chip" style="background:' + _bg + ';color:' + _fg
+                      + ';">' + _h_escape(_lbl) + '</span></td>'
+                      '<td class="odg">' + _h_escape(str(_r.get("odgovoran") or "")) + '</td>'
+                      '<td class="nap">' + _h_escape(str(_r.get("napomena") or "")) + '</td></tr>')
+    _h.append('</tbody></table></div>')
+    return "".join(_h)
+
+
+def cene_uvoz_xlsx(fajl, mesec_key):
+    """Pročitaj cene iz Excel tabele koju administracija već koristi.
+
+    Prepoznaje kolone: KUPAC, ARTIKAL, REDOVNA CENA, AKCIJSKA CENA, PERIOD AKCIJE,
+    STATUS, ODGOVORAN i (ako postoji) napomenu u poslednjoj koloni. Spojene ćelije
+    (jedan kupac preko više redova) se popunjavaju nadole. Vrati (redovi, greska)."""
+    import pandas as _pd
+    _p1, _p2 = _cene_prvi_poslednji(mesec_key)
+    _MAPA_GRUPA = {"HQD 1000": "HQD stari ukusi", "HQD1000": "HQD stari ukusi",
+                   "HQD STARI": "HQD stari ukusi", "HQD NOVI": "HQD novi ukusi",
+                   "NERD 2000": "NERD 2000", "NERD2000": "NERD 2000", "SYX": "SYX"}
+    try:
+        _xl = _pd.ExcelFile(fajl)
+    except Exception as _e:
+        return ([], "Ne mogu da otvorim fajl: " + str(_e))
+    _redovi = []
+    for _sh in _xl.sheet_names:
+        try:
+            _df = _pd.read_excel(_xl, sheet_name=_sh)
+        except Exception:
+            continue
+        _kol = {str(c).strip().upper(): c for c in _df.columns}
+        _kupac = next((_kol[k] for k in _kol if k.startswith("KUPAC")), None)
+        _art = next((_kol[k] for k in _kol if k.startswith("ARTIK")), None)
+        if _kupac is None or _art is None:
+            continue
+        _redovna = next((_kol[k] for k in _kol if "REDOVNA" in k), None)
+        _akcija = next((_kol[k] for k in _kol if "AKCIJSKA" in k), None)
+        _period = next((_kol[k] for k in _kol if "PERIOD" in k), None)
+        _status = next((_kol[k] for k in _kol if "STATUS" in k), None)
+        _odg = next((_kol[k] for k in _kol if "ODGOVOR" in k), None)
+        _nap = next((_kol[k] for k in _kol if "NAPOMEN" in k), None)
+        if _nap is None:
+            _ostale = [c for c in _df.columns
+                       if c not in (_kupac, _art, _redovna, _akcija, _period, _status, _odg)]
+            _nap = _ostale[0] if _ostale else None
+        _df[_kupac] = _df[_kupac].ffill()                   # spojene ćelije kupca
+        # status i odgovoran se popunjavaju nadole SAMO unutar istog kupca,
+        # da se vrednost ne prelije na sledeći sistem
+        for _c in (_status, _odg):
+            if _c is not None:
+                _df[_c] = _df.groupby(_kupac, sort=False)[_c].ffill()
+        for _, _r in _df.iterrows():
+            _s = str(_r.get(_kupac) or "").strip()
+            _g0 = str(_r.get(_art) or "").strip()
+            if not _s or not _g0 or _s.lower() == "nan" or _g0.lower() == "nan":
+                continue
+            _g = _MAPA_GRUPA.get(_g0.upper(), _MAPA_GRUPA.get(
+                " ".join(_g0.upper().split()), _g0))
+            def _txt(_c):
+                if _c is None:
+                    return ""
+                _v = _r.get(_c)
+                try:
+                    if _pd.isna(_v):
+                        return ""
+                except Exception:
+                    pass
+                if isinstance(_v, float) and float(_v).is_integer():
+                    return str(int(_v))
+                return str(_v).strip()
+            _st_txt = _txt(_status).upper()
+            _st = ("potvrdjeno" if "POTVR" in _st_txt and "NISU" not in _st_txt
+                   else ("nije" if ("NISU" in _st_txt or "ODBIJ" in _st_txt) else ""))
+            try:
+                _rc = int(float(_r.get(_redovna))) if _redovna is not None else 0
+            except Exception:
+                _rc = 0
+            # period iz teksta „01.09.-30.09." ako postoji; inače ceo mesec
+            _od, _do = _p1, _p2
+            _pt = _txt(_period)
+            if _pt:
+                import re as _re
+                _dd = _re.findall(r"(\d{1,2})\.(\d{1,2})\.", _pt)
+                if len(_dd) >= 2:
+                    try:
+                        _od = datetime.date(_p1.year, int(_dd[0][1]), int(_dd[0][0]))
+                        _do = datetime.date(_p1.year, int(_dd[1][1]), int(_dd[1][0]))
+                    except Exception:
+                        _od, _do = _p1, _p2
+            _redovi.append({"sistem": _s.upper(), "grupa": _g, "redovna": _rc,
+                            "akcijska": _txt(_akcija), "od": _od.isoformat(),
+                            "do": _do.isoformat(), "status": _st,
+                            "odgovoran": _txt(_odg), "napomena": _txt(_nap)})
+    if not _redovi:
+        return ([], "U fajlu nema tabele sa kolonama KUPAC i ARTIKAL.")
+    # ista kombinacija kupac+grupa se ne ponavlja
+    _vid, _out = set(), []
+    for _r in _redovi:
+        _k = (_r["sistem"], _r["grupa"])
+        if _k in _vid:
+            continue
+        _vid.add(_k)
+        _out.append(_r)
+    return (_cene_sort(_out), "")
+
+
 def cene_ui(uloga, ugradjeno=False):
     """Kartica „Cene i akcije".
 
@@ -10520,6 +10689,7 @@ def cene_ui(uloga, ugradjeno=False):
     if not _ok:
         st.warning(_por)
         return
+    st.markdown("<style>" + CENE_CSS + "</style>", unsafe_allow_html=True)
     _svi = sb_cene_svi()
     _danas = _now().date()
     _tek = _danas.strftime("%Y-%m")
@@ -10548,6 +10718,7 @@ def cene_ui(uloga, ugradjeno=False):
                     st.rerun()
                 except Exception as _e:
                     st.error("Greška: " + str(_e))
+            _cene_uvoz_blok(_mk, _sel, {}, uloga, _ro)
         else:
             st.caption("Spisak pravi analitičar ili direktor.")
         return
@@ -10597,8 +10768,74 @@ def cene_ui(uloga, ugradjeno=False):
                 except Exception as _e:
                     st.error("Greška: " + str(_e))
 
-    # ---- tabela ----
+    # ---- lep pregled (podrazumevano) ili režim izmene ----
     _KOL_STATUS = {"": "— čeka —", "potvrdjeno": "POTVRĐENO", "nije": "NISU POTVRDILI"}
+    _ek = "cene_edit_" + _mk
+    _u_izmeni = bool(st.session_state.get(_ek)) and _moze_menjati
+    if not _u_izmeni:
+        _n_pot0 = sum(1 for _r in _redovi if cene_status_prikaz(_r, _danas)[0] == "POTVRĐENO")
+        _n_cek0 = sum(1 for _r in _redovi if cene_status_prikaz(_r, _danas)[0] == "ČEKA POTVRDU")
+        _n_odb0 = sum(1 for _r in _redovi
+                      if "ODBIJENO" in cene_status_prikaz(_r, _danas)[0]
+                      or cene_status_prikaz(_r, _danas)[0] == "NISU POTVRDILI")
+        _n_akc0 = sum(1 for _r in _redovi if str(_r.get("akcijska") or "").strip())
+        st.markdown(
+            '<div class="cene-sum">'
+            '<div class="b" style="border-color:#c7d2fe;"><b style="color:#4338ca;">'
+            + str(len(_redovi)) + '</b>redova · ' + str(len({r.get("sistem") for r in _redovi}))
+            + ' sistema</div>'
+            '<div class="b" style="border-color:#fde68a;"><b style="color:#b45309;">'
+            + str(_n_akc0) + '</b>sa akcijskom cenom</div>'
+            '<div class="b" style="border-color:#bbf7d0;"><b style="color:#15803d;">'
+            + str(_n_pot0) + '</b>potvrđeno</div>'
+            '<div class="b" style="border-color:#fed7aa;"><b style="color:#92400e;">'
+            + str(_n_cek0) + '</b>čeka potvrdu</div>'
+            '<div class="b" style="border-color:#fecaca;"><b style="color:#b91c1c;">'
+            + str(_n_odb0) + '</b>odbijeno / nisu potvrdili</div>'
+            '</div>', unsafe_allow_html=True)
+        st.markdown(cene_html(_redovi, _danas), unsafe_allow_html=True)
+        _d1, _d2, _d3 = st.columns([1.3, 1.5, 2.4])
+        with _d1:
+            if _moze_menjati:
+                if st.button("✏️ Izmeni tabelu", key="cene_edit_b_" + _mk, type="primary",
+                             use_container_width=True):
+                    st.session_state[_ek] = True
+                    st.rerun()
+            elif _zakljucan and uloga in ("analitika", "direktor") and not _ro:
+                if st.button("🔓 Otključaj mesec", key="cene_unlock_" + _mk,
+                             use_container_width=True):
+                    _pod["zakljucan"] = False
+                    try:
+                        sb_cene_set(_mk, _pod)
+                        st.rerun()
+                    except Exception as _e:
+                        st.error("Greška: " + str(_e))
+        with _d2:
+            try:
+                st.download_button("⬇️ Izvezi u Excel", cene_xlsx(_redovi, _sel, _cen),
+                                   file_name="Cene_" + str(_mk) + ".xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument."
+                                        "spreadsheetml.sheet",
+                                   key="cene_xlsx_" + _mk, use_container_width=True)
+            except Exception as _e:
+                st.caption("Izvoz nije moguć: " + str(_e))
+        with _d3:
+            if _moze_menjati and uloga in ("analitika", "direktor"):
+                if st.button("🔒 Zaključaj mesec (posle toga nema izmena)",
+                             key="cene_lock_" + _mk, use_container_width=True):
+                    _pod["zakljucan"] = True
+                    _pod["zakljucao"] = {"ko": (st.session_state.get("dir_user") or "Analitika"),
+                                         "at": _now().isoformat()}
+                    try:
+                        sb_cene_set(_mk, _pod)
+                        st.rerun()
+                    except Exception as _e:
+                        st.error("Greška: " + str(_e))
+        st.caption("Ako administracija ne potvrdi do početka akcije, red se vodi kao odbijen.")
+        if _moze_menjati and uloga in ("analitika", "direktor"):
+            _cene_uvoz_blok(_mk, _sel, _pod, uloga, _ro)
+        return
+
     _rows = []
     for _r in _redovi:
         _lbl, _bg, _fg = cene_status_prikaz(_r, _danas)
@@ -10648,53 +10885,64 @@ def cene_ui(uloga, ugradjeno=False):
         })
 
     if _moze_menjati:
+        def _prikupi():
+            """Redovi iz tabele u oblik za bazu (zadrži trag o predlogu i potvrdi)."""
+            _novi = []
+            _obrni = {v: k for k, v in _KOL_STATUS.items()}
+            for _, _row in _izmene.iterrows():
+                _s = str(_row.get("KUPAC") or "").strip()
+                _g = str(_row.get("ARTIKAL") or "").strip()
+                if not _s or not _g:
+                    continue
+                _od = _cene_d(_row.get("OD"), _p1)
+                _do = _cene_d(_row.get("DO"), _p2)
+                _stari = next((x for x in _redovi
+                               if str(x.get("sistem")) == _s and str(x.get("grupa")) == _g), {})
+                _nr = {"sistem": _s, "grupa": _g,
+                       "redovna": int(_row.get("REDOVNA CENA") or 0),
+                       "akcijska": str(_row.get("AKCIJSKA CENA") or "").strip(),
+                       "od": _od.isoformat() if _od else "",
+                       "do": _do.isoformat() if _do else "",
+                       "status": _obrni.get(str(_row.get("STATUS") or ""), ""),
+                       "odgovoran": str(_row.get("ODGOVORAN") or "").strip(),
+                       "napomena": str(_row.get("NAPOMENA") or "").strip()}
+                # ko je i kada potvrdio / promenio cenu u odnosu na predlog
+                _ko = (st.session_state.get("admin_user")
+                       or st.session_state.get("dir_user") or "Analitika")
+                if _nr["status"] == "potvrdjeno" and str(_stari.get("status") or "") != "potvrdjeno":
+                    _nr["potvrda"] = {"ko": _ko, "at": _now().isoformat(),
+                                      "cena": _nr["akcijska"]}
+                elif _stari.get("potvrda"):
+                    _nr["potvrda"] = _stari.get("potvrda")
+                if _stari.get("predlog"):
+                    _nr["predlog"] = _stari.get("predlog")
+                _novi.append(_nr)
+            return _cene_sort(_novi)
+
         _b1, _b2, _b3 = st.columns([1.1, 1.3, 2])
         with _b1:
             if st.button("💾 Sačuvaj", key="cene_save_" + _mk, type="primary",
                          use_container_width=True):
-                _novi = []
-                _obrni = {v: k for k, v in _KOL_STATUS.items()}
-                for _, _row in _izmene.iterrows():
-                    _s = str(_row.get("KUPAC") or "").strip()
-                    _g = str(_row.get("ARTIKAL") or "").strip()
-                    if not _s or not _g:
-                        continue
-                    _od = _cene_d(_row.get("OD"), _p1)
-                    _do = _cene_d(_row.get("DO"), _p2)
-                    _stari = next((x for x in _redovi
-                                   if str(x.get("sistem")) == _s and str(x.get("grupa")) == _g), {})
-                    _nr = {"sistem": _s, "grupa": _g,
-                           "redovna": int(_row.get("REDOVNA CENA") or 0),
-                           "akcijska": str(_row.get("AKCIJSKA CENA") or "").strip(),
-                           "od": _od.isoformat() if _od else "",
-                           "do": _do.isoformat() if _do else "",
-                           "status": _obrni.get(str(_row.get("STATUS") or ""), ""),
-                           "odgovoran": str(_row.get("ODGOVORAN") or "").strip(),
-                           "napomena": str(_row.get("NAPOMENA") or "").strip()}
-                    # ko je i kada potvrdio / promenio cenu u odnosu na predlog
-                    _ko = (st.session_state.get("admin_user")
-                           or st.session_state.get("dir_user") or "Analitika")
-                    if _nr["status"] == "potvrdjeno" and str(_stari.get("status") or "") != "potvrdjeno":
-                        _nr["potvrda"] = {"ko": _ko, "at": _now().isoformat(),
-                                          "cena": _nr["akcijska"]}
-                    elif _stari.get("potvrda"):
-                        _nr["potvrda"] = _stari.get("potvrda")
-                    if _stari.get("predlog"):
-                        _nr["predlog"] = _stari.get("predlog")
-                    _novi.append(_nr)
-                _pod["redovi"] = _cene_sort(_novi)
+                _pod["redovi"] = _prikupi()
                 _pod["cenovnik"] = _cen
+                _pod["zakljucan"] = _zakljucan
                 try:
                     sb_cene_set(_mk, _pod)
-                    st.success("Sačuvano ✓")
+                    st.session_state.pop(_ek, None)
                     st.rerun()
                 except Exception as _e:
                     st.error("Greška pri čuvanju: " + str(_e))
         with _b2:
+            if st.button("✖️ Otkaži izmene", key="cene_cancel_" + _mk, use_container_width=True):
+                st.session_state.pop(_ek, None)
+                st.rerun()
+        with _b3:
             if uloga in ("analitika", "direktor"):
-                if st.button("📤 Pošalji predlog administraciji", key="cene_posalji_" + _mk,
-                             use_container_width=True):
+                if st.button("📤 Sačuvaj i pošalji predlog administraciji",
+                             key="cene_posalji_" + _mk, use_container_width=True):
                     _ko = st.session_state.get("dir_user") or "Analitika"
+                    _pod["redovi"] = _prikupi()
+                    _pod["cenovnik"] = _cen
                     for _r in _pod.get("redovi") or []:
                         if str(_r.get("akcijska") or "").strip() and not _r.get("predlog"):
                             _r["predlog"] = {"akcijska": _r.get("akcijska"), "ko": _ko,
@@ -10702,6 +10950,7 @@ def cene_ui(uloga, ugradjeno=False):
                     _pod["predlog_poslat"] = {"ko": _ko, "at": _now().isoformat()}
                     try:
                         sb_cene_set(_mk, _pod)
+                        st.session_state.pop(_ek, None)
                         st.success("Predlog je poslat administraciji.")
                         st.rerun()
                     except Exception as _e:
@@ -10709,44 +10958,40 @@ def cene_ui(uloga, ugradjeno=False):
             else:
                 st.caption("Status i napomenu upisuje administracija; cenu može da izmeni "
                            "ako se dogovori drugačije.")
-        with _b3:
-            if uloga in ("analitika", "direktor"):
-                if st.button("🔒 Zaključaj mesec (samo pregled)", key="cene_lock_" + _mk):
-                    _pod["zakljucan"] = True
-                    try:
-                        sb_cene_set(_mk, _pod)
-                        st.rerun()
-                    except Exception as _e:
-                        st.error("Greška: " + str(_e))
-    elif _zakljucan and uloga in ("analitika", "direktor") and not _ro:
-        if st.button("🔓 Otključaj mesec", key="cene_unlock_" + _mk):
-            _pod["zakljucan"] = False
-            try:
-                sb_cene_set(_mk, _pod)
-                st.rerun()
-            except Exception as _e:
-                st.error("Greška: " + str(_e))
+    st.caption("Promene se upisuju tek na „Sačuvaj“. Ako administracija ne potvrdi do početka "
+               "akcije, red se vodi kao odbijen.")
 
-    # ---- pregled stanja + Excel ----
-    _n_pot = sum(1 for _r in _redovi if cene_status_prikaz(_r, _danas)[0] == "POTVRĐENO")
-    _n_cek = sum(1 for _r in _redovi if cene_status_prikaz(_r, _danas)[0] == "ČEKA POTVRDU")
-    _n_odb = sum(1 for _r in _redovi if "ODBIJENO" in cene_status_prikaz(_r, _danas)[0]
-                 or cene_status_prikaz(_r, _danas)[0] == "NISU POTVRDILI")
-    _s1, _s2 = st.columns([3, 1.2])
-    with _s1:
-        st.caption("✅ potvrđeno: " + str(_n_pot) + "   ·   ⏳ čeka potvrdu: " + str(_n_cek)
-                   + "   ·   ⛔ odbijeno / nisu potvrdili: " + str(_n_odb)
-                   + "   ·   ukupno redova: " + str(len(_redovi))
-                   + ".  Ako administracija ne potvrdi do početka akcije, red se vodi kao odbijen.")
-    with _s2:
-        try:
-            st.download_button("⬇️ Izvezi u Excel", cene_xlsx(_redovi, _sel, _cen),
-                               file_name="Cene_" + str(_mk) + ".xlsx",
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                               key="cene_xlsx_" + _mk, use_container_width=True)
-        except Exception as _e:
-            st.caption("Izvoz nije moguć: " + str(_e))
 
+def _cene_uvoz_blok(mesec_key, sel_lbl, podaci, uloga, ro):
+    """Uvoz cena iz postojeće Excel tabele (sheet po mesecu) — za septembar/oktobar
+    i svaki drugi mesec koji je već vođen u Excelu."""
+    if ro or uloga not in ("analitika", "direktor"):
+        return
+    with st.expander("📥 Prepiši cene iz Excel tabele (sheet za " + str(sel_lbl) + ")"):
+        st.caption("Ubaci tabelu koju administracija već koristi — kolone KUPAC, ARTIKAL, "
+                   "REDOVNA CENA, AKCIJSKA CENA, PERIOD AKCIJE, STATUS, ODGOVORAN. "
+                   "Spojene ćelije kupca se same popunjavaju nadole, a „HQD 1000“ se "
+                   "prepisuje u „HQD stari ukusi“.")
+        _up = st.file_uploader("Excel (.xlsx)", type=["xlsx"], key="cene_up_" + str(mesec_key))
+        _zak = st.checkbox("Zaključaj mesec posle prepisivanja (samo pregled)", value=True,
+                           key="cene_up_zak_" + str(mesec_key))
+        if _up is not None and st.button("📥 Prepiši u " + str(sel_lbl),
+                                         key="cene_up_b_" + str(mesec_key), type="primary"):
+            import io as _io9
+            _red, _gr = cene_uvoz_xlsx(_io9.BytesIO(_up.getvalue()), mesec_key)
+            if _gr:
+                st.error(_gr)
+            else:
+                _np = dict(podaci or {})
+                _np["redovi"] = _red
+                _np["zakljucan"] = bool(_zak)
+                _np.setdefault("cenovnik", dict(CENOVNIK_PODRAZUMEVANI))
+                try:
+                    sb_cene_set(mesec_key, _np)
+                    st.success("Prepisano " + str(len(_red)) + " redova u " + str(sel_lbl) + ".")
+                    st.rerun()
+                except Exception as _e:
+                    st.error("Greška pri čuvanju: " + str(_e))
 
 def prikazi_administraciju(ugradjeno=False):
     """ugradjeno=True — isti ekran, ali ubačen u drugu karticu (direktorski pregled):
