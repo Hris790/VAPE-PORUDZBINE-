@@ -10327,6 +10327,8 @@ CENE_SISTEMI = {
     "VX TRADE": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000"],
 }
 
+# Grupe koje se više ne vode — ako su ostale od ranije, same se sklone iz tabele.
+CENE_GRUPE_UKINUTE = {"GOAT", "KILLA", "NERD 1000"}
 CENE_ODG_PRAZNO = "— nije izabran —"
 CENE_ODGOVORNI = [CENE_ODG_PRAZNO, "Zorana - administracija", "Aleksandra - administracija",
                   "Hristina - analitika", "Vukašin - direktor", "Slobodan - direktor",
@@ -10351,7 +10353,7 @@ def sb_cene_ok():
         return (False, "Baza javlja grešku: " + _m)
 
 
-@st.cache_data(ttl=20)
+@st.cache_data(ttl=5)
 def sb_cene_svi():
     """{mesec: podaci} za sve mesece."""
     cli = _sb()
@@ -10690,6 +10692,17 @@ def cene_ui(uloga, ugradjeno=False):
     # --- mesec se sam popunjava: svi sistemi i grupe su odmah tu ---
     # (osim redova koje je neko namerno obrisao i osim zaključanog meseca)
     if (not _ro) and (not _zakljucan):
+        _izbaci = [_r0 for _r0 in _redovi_svi
+                   if str(_r0.get("grupa")) in CENE_GRUPE_UKINUTE]
+        if _izbaci:
+            _redovi_svi = [_r0 for _r0 in _redovi_svi
+                           if str(_r0.get("grupa")) not in CENE_GRUPE_UKINUTE]
+            _pod["redovi"] = _redovi_svi
+            try:
+                sb_cene_set(_mk, _pod)
+                _cene_ocisti_polja(_mk)
+            except Exception:
+                pass
         _obrisani = {(str(_x[0]), str(_x[1])) for _x in (_pod.get("obrisani") or [])
                      if isinstance(_x, (list, tuple)) and len(_x) >= 2}
         _ima0 = {(str(_r0.get("sistem")), str(_r0.get("grupa"))) for _r0 in _redovi_svi}
@@ -10739,6 +10752,12 @@ def cene_ui(uloga, ugradjeno=False):
                     + '</div>', unsafe_allow_html=True)
     else:
         st.caption("Predlog akcijskih cena još nije poslat administraciji.")
+    _izm = _pod.get("izmenio") or {}
+    if _izm.get("at"):
+        st.caption("✍️ Poslednja izmena: " + _h_escape(str(_izm.get("ko", ""))) + " · "
+                   + _h_escape(_dt_fmt(_izm.get("at")))
+                   + "  —  cene su zajedničke, svaka sačuvana izmena odmah važi i za "
+                     "administraciju i za direktore.")
 
     # ---- cenovnik (redovne cene) ----
     if uloga in ("analitika", "direktor"):
@@ -10948,6 +10967,7 @@ def cene_ui(uloga, ugradjeno=False):
         _pod["redovi"] = _cene_sort(_novi)
         _pod["cenovnik"] = _cen
         _pod["zakljucan"] = _zakljucan
+        _pod["izmenio"] = {"ko": _ko, "at": _now().isoformat()}
         if _save_send:
             _pod["predlog_poslat"] = {"ko": _ko, "at": _now().isoformat()}
         try:
