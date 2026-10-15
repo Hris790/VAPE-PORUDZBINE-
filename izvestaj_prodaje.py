@@ -16,7 +16,7 @@ Glavna funkcija:
 
 # Oznaka verzije modula — vidi se u aplikaciji (Objava izveštaja → Izveštaj prodaje),
 # da se odmah zna da li je na GitHub-u najnoviji fajl.
-VERZIJA = "3.1 · 15.10.2026 (Excel kao tabela na ekranu, boje cena, legenda iznad tabele)"
+VERZIJA = "3.2 · 15.10.2026 (sažetak nosi i prodaju po artiklu — za knjižno odobrenje)"
 
 import calendar
 import html as html_mod
@@ -1706,6 +1706,31 @@ Meseci: <b id="mesec-count">{num_s}/{num_s}</b> ▾</button>
             for i in range(num_s):
                 total[i] += vals[i]
         summary["po_sistemu"][sistem] = {"total": total, "grupe": grupe}
+
+    # ---------- prodaja po artiklu (za knjižno odobrenje: novi ukusi, parovi…) ----------
+    # {SISTEM: {Artikl: {"grupa": naziv grupe, "kom": [kom po mesecima]}}}
+    po_artiklu = {}
+    try:
+        _art = df_clean[df_clean['Artikl'].notna()].copy()
+        _art['Grupa_clean'] = _art['Grupa artikla'].astype(str).str.strip()
+        _art = _art[_art['Grupa_clean'].isin(TRAZENE_GRUPE)]
+        for _, _rr in _art.iterrows():
+            _sis = str(_rr['SISTEM']).strip()
+            _naz = str(_rr['Artikl']).strip()
+            if not _sis or not _naz or _naz.lower() == 'nan':
+                continue
+            try:
+                _gi = periodi.index([int(_rr['Godina']), int(_rr['Mesec'])])
+            except ValueError:
+                continue
+            _q = _rr.get('Prodata kolicina ka krajnjem kupcu')
+            _q = float(_q) if pd.notna(_q) else 0.0
+            _d = po_artiklu.setdefault(_sis, {}).setdefault(
+                _naz, {"grupa": str(_rr['Grupa_clean']), "kom": [0] * num_s})
+            _d["kom"][_gi] += int(round(_q))
+    except Exception:
+        po_artiklu = {}
+    summary["po_artiklu"] = po_artiklu
     return (html, xlsx_bytes, poslednji_naziv, summary)
 
 
