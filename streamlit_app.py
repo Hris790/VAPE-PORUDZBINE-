@@ -1016,6 +1016,34 @@ def sb_oznaci_trebovao(mesec_key, sistem, idk, kada="", n_por=0,
         return False
 
 
+def sb_ponisti_trebovao(mesec_key, sistem, idk):
+    """Skini AUTOMATSKU oznaku „poručio posle starta" kada se ispostavi da nije
+    tačna (npr. prepoznata je po staroj porudžbini koja je naknadno povučena iz
+    admina). Ručno označeno (administracija je sama birala način) se NE dira.
+    Vrati True ako je nešto poništeno."""
+    cli = _sb()
+    if cli is None:
+        return False
+    try:
+        res = (cli.table("obrada").select("dnevnik,trebovali_tip,njihova")
+               .eq("mesec", mesec_key).eq("sistem", sistem).eq("idk", int(idk)).limit(1).execute())
+        if not res.data:
+            return False
+        _r = res.data[0]
+        _dn = dict(_r.get("dnevnik") or {})
+        _vec = _dn.get("trebovao_posle_starta") or {}
+        if not _vec or not _vec.get("auto"):
+            return False                # nije automatski upisano — ne diramo
+        _dn.pop("trebovao_posle_starta", None)
+        (cli.table("obrada")
+         .update({"dnevnik": _dn, "trebovali": False, "trebovali_tip": "", "njihova": {},
+                  "azurirano": _now().isoformat()})
+         .eq("mesec", mesec_key).eq("sistem", sistem).eq("idk", int(idk)).execute())
+        return True
+    except Exception:
+        return False
+
+
 def sb_mejl_greska(mesec_key, sistem, idk, poruka, ko=""):
     """Zapiši NEUSPELO slanje mejla u dnevnik (dnevnik.greske = lista {ko, at, sta}).
 
@@ -5791,9 +5819,30 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
                 " bez porudžbine; <b>" + str(neob) + "</b> neobrađeno. "
                 "Ukupno trebovano: <b>" + format(_kom_uk, ",").replace(",", ".") + " kom</b> "
                 "(predloženo " + format(_kom_predlozeno, ",").replace(",", ".") + " kom).")
+
+        def _zav_obj(o):
+            """ZAVRŠENO = posle starta je poslao porudžbinu (ili smo mi ubacili)."""
+            _v = obrada.get(o["idk"], {}) or {}
+            if (_v.get("dnevnik") or {}).get("trebovao_posle_starta"):
+                return True
+            if (_v.get("trebovali_tip") or "") in ("nas", "njihov"):
+                return True
+            return "Ubačena porudžbina" in (_v.get("reakcije") or [])
+
+        _zavL = [o for o in objekti if _zav_obj(o)]
+        _zavR = sum(1 for o in _zavL if o["nivo"] == "crveno")
+        _zavZ = sum(1 for o in _zavL if o["nivo"] == "zuto")
+        start_narr = ("Od starta"
+                      + ((" (" + _h_escape(str(_sz.get("kada", ""))) + ")") if (_sz and _sz.get("kada")) else "")
+                      + ": <b>" + str(nred + norg) + "</b> objekata je trebalo da poruči ("
+                      + str(nred) + " hitno, " + str(norg) + " za kontrolu) &rarr; "
+                      "<b><font color='#158a3f'>" + str(len(_zavL)) + "</font></b> objekata je prešlo u "
+                      "ZAVRŠENO (poručili posle starta), od toga " + str(_zavR) + " iz hitne zone i "
+                      + str(_zavZ) + " iz zone za kontrolu.")
         img = Image(_chart(nred, norg, ngrn, n, nnas, nnj, nnije, neob, nrev), width=150 * mm, height=150 * mm * 2.15 / 9.0)
         img.hAlign = 'CENTER'
-        _blk = [Paragraph(str(_sis), Hsys), Paragraph(narr, Nar)]
+        _blk = [Paragraph(str(_sis), Hsys), Paragraph(narr, Nar),
+                Spacer(1, 2), Paragraph(start_narr, Nar)]
         if _osoba_txt:
             _blk.append(Spacer(1, 2))
             _blk.append(Paragraph("Ko je šta uradio — " + _osoba_txt, Nar))
@@ -6011,6 +6060,52 @@ def _zadaci_xlsx(rows, sistem, mesec_lbl):
     # filter u Excelu — da može da se izdvoji npr. samo crvena zona
     _ws.auto_filter.ref = "A3:" + _GL(_n) + str(max(_ws.max_row, 4))
     _buf = _io.BytesIO(); _wb.save(_buf); return _buf.getvalue()
+
+
+def zadaci_rows_sistem(mesec_key, sistem):
+    """Redovi za „Listu zadataka" jednog sistema, direktno iz baze (bez ekrana
+    administracije): ko je kada zvao / slao mejl i da li je objekat završen.
+    Koristi se i kod administracije i u izveštaju (direktorska kartica)."""
+    podaci = sb_ucitaj(mesec_key, sistem)
+    if not podaci or not podaci.get("stavke"):
+        return []
+    obrada = sb_load_obrada(mesec_key, sistem) or {}
+    komfull = sb_komitenti_full() or {}
+    po = {}
+    for s in podaci["stavke"]:
+        po.setdefault(int(s["idk"]), []).append(s)
+    _ZONA = {"crveno": "🔴 Hitno pozvati", "zuto": "🟠 Iskontrolisati", "zeleno": "🟢 Dobra"}
+
+    def _koik(_e):
+        return (str(_e.get("ko", "")) + " · " + _dt_kratko(_e.get("at", ""))) if _e else ""
+
+    _red = []
+    for _idk, _lst in po.items():
+        _niv, _n0, _izg = hitnost_objekta(_lst)
+        _v = obrada.get(int(_idk), {}) or {}
+        _dn = _v.get("dnevnik") or {}
+        _pz = _dn.get("pozivi") or []
+        _mj = _dn.get("mejlovi") or []
+        _zav = bool(_dn.get("trebovao_posle_starta")
+                    or (_v.get("trebovali_tip") or "") in ("nas", "njihov")
+                    or ("Ubačena porudžbina" in (_v.get("reakcije") or [])))
+        _red.append({
+            "idk": int(_idk),
+            "naziv": (komfull.get(int(_idk), {}) or {}).get("naziv", "") or ("ID " + str(_idk)),
+            "zona": _ZONA.get(_niv, _niv), "nivo": _niv,
+            "na_nuli": int(_n0), "izgubljeno": int(round(float(_izg or 0))),
+            "mejl": (len(_mj) > 0) or ("Poslala sam mejl" in (_v.get("reakcije") or [])),
+            "p1": len(_pz) >= 1 or ("Pozvala sam" in (_v.get("reakcije") or [])),
+            "p2": len(_pz) >= 2, "p3": len(_pz) >= 3,
+            "mejl_ko": _koik(_mj[-1] if _mj else None),
+            "p1_ko": _koik(_pz[0] if len(_pz) >= 1 else None),
+            "p2_ko": _koik(_pz[1] if len(_pz) >= 2 else None),
+            "p3_ko": _koik(_pz[2] if len(_pz) >= 3 else None),
+            "zavrseno": _zav,
+        })
+    _rang = {"crveno": 0, "zuto": 1, "zeleno": 2}
+    _red.sort(key=lambda r: (_rang.get(r["nivo"], 3), -r["izgubljeno"], r["idk"]))
+    return _red
 
 
 # Ugrađeni šifarnik barkodova iz tabele ARTIKLI (kolona „Kataloški broj").
@@ -9488,17 +9583,33 @@ def _porucio_posle_starta(idk, hist_lst, snap):
     neoznačen nego da bude pogrešno prikazan kao završen pa da ga niko ne pozove."""
     if not hist_lst or not isinstance(snap, dict):
         return False
+    import datetime as _dt
     _baza = snap.get("narudzbine")
     # ako baš ovaj objekat nije bio u spisku na startu (dodat je kasnije), ne
     # smemo sve njegove porudžbine proglasiti novim — tada idemo na datume
     if isinstance(_baza, dict) and str(int(idk)) in _baza:
         _stare = set(str(_x) for _x in (_baza.get(str(int(idk))) or []))
+        # Dan starta — porudžbina starija od tog dana NIKAD nije „posle starta",
+        # makar je nema u spisku (npr. naknadno povučena stara istorija).
+        _sd0 = None
+        try:
+            _sd0 = _dt.datetime.strptime(str(snap.get("kada") or "").strip().split(" ")[0],
+                                         "%d.%m.%Y").date()
+        except Exception:
+            _sd0 = None
         for _o in hist_lst:
             _oid = str(_o.get("id") or "")
-            if _oid and (_oid not in _stare) and not _porudzbina_otkazana(_o):
-                return True
+            if not _oid or _oid in _stare or _porudzbina_otkazana(_o):
+                continue
+            if _sd0:
+                try:
+                    if _dt.datetime.strptime((_o.get("datum") or "").split(" ")[0],
+                                             "%d.%m.%Y").date() < _sd0:
+                        continue
+                except Exception:
+                    pass
+            return True
         return False
-    import datetime as _dt
     try:
         _sd = _dt.datetime.strptime(str(snap.get("kada") or "").strip().split(" ")[0], "%d.%m.%Y").date()
     except Exception:
@@ -9535,10 +9646,24 @@ def _treb_posle_starta(idk, hist_lst, snap):
     _baza = snap.get("narudzbine")
     if isinstance(_baza, dict) and str(int(idk)) in _baza:
         _stare = set(str(_x) for _x in (_baza.get(str(int(idk))) or []))
+        _sd0 = None
+        try:
+            _sd0 = _dt.datetime.strptime(str(snap.get("kada") or "").strip().split(" ")[0],
+                                         "%d.%m.%Y").date()
+        except Exception:
+            _sd0 = None
         for _o in hist_lst:
             _oid = str(_o.get("id") or "")
-            if _oid and (_oid not in _stare) and not _porudzbina_otkazana(_o):
-                _dodaj(_o)
+            if not _oid or _oid in _stare or _porudzbina_otkazana(_o):
+                continue
+            if _sd0:                    # starije od dana starta se ne računa
+                try:
+                    if _dt.datetime.strptime((_o.get("datum") or "").split(" ")[0],
+                                             "%d.%m.%Y").date() < _sd0:
+                        continue
+                except Exception:
+                    pass
+            _dodaj(_o)
         return out
     try:
         _sd = _dt.datetime.strptime(str(snap.get("kada") or "").strip().split(" ")[0], "%d.%m.%Y").date()
@@ -10325,11 +10450,19 @@ div[data-stale="true"] { opacity: 1 !important; }
 
     _adm_user = st.session_state.get("admin_user", "Administracija")
     if ugradjeno:
-        st.markdown('<div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:10px;'
-                    'padding:9px 14px;font-size:12.5px;color:#4c1d95;margin:2px 0 14px;">'
-                    '👀 <b>Pregled ekrana administracije</b> — vidiš sve isto što i one. '
-                    'Podaci se ovde ne menjaju: upis u bazu i slanje mejlova su isključeni.'
-                    '</div>', unsafe_allow_html=True)
+        _dh1, _dh2 = st.columns([6.2, 1.5])
+        with _dh1:
+            st.markdown('<div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:10px;'
+                        'padding:9px 14px;font-size:12.5px;color:#4c1d95;margin:2px 0 14px;">'
+                        '👀 <b>Pregled ekrana administracije</b> — vidiš sve isto što i one. '
+                        'Podaci se ovde ne menjaju: upis u bazu i slanje mejlova su isključeni. '
+                        'Možeš da povučeš najnovije stanje iz admina — to se prikazuje samo tebi.'
+                        '</div>', unsafe_allow_html=True)
+        with _dh2:
+            st.markdown("<div style='height:4px;'></div>", unsafe_allow_html=True)
+            if st.button("🔄 Ažuriraj iz admina", key="refresh_all_admin_dir",
+                         use_container_width=True, type="primary"):
+                st.session_state["_req_refresh_admin"] = True
     else:
         _hc1, _hc2 = st.columns([7.5, 1.15])
         with _hc1:
@@ -10701,7 +10834,10 @@ div[data-stale="true"] { opacity: 1 !important; }
             _bez_n = [o["idk"] for o in objekti if not ((komfull.get(int(o["idk"]), {}) or {}).get("naziv"))]
             with st.spinner("Povlačim naknadne porudžbine iz admina za ceo sistem... može potrajati par minuta."):
                 if _bez_n:
-                    admin_build_komitenti(only_ids=_bez_n)
+                    try:
+                        admin_build_komitenti(only_ids=_bez_n)
+                    except Exception:
+                        pass    # u direktorskom pregledu se nazivi ne upisuju
                 _kfn = sb_komitenti_full(); st.session_state["_komfull"] = _kfn
                 _idn = {o["idk"]: (_kfn.get(int(o["idk"]), {}) or {}).get("naziv", "") for o in objekti}
                 try:
@@ -10765,9 +10901,10 @@ div[data-stale="true"] { opacity: 1 !important; }
                     if _lst:
                         _hsave[int(o["idk"])] = _lst
                 try:
-                    sb_admin_hist_set(mesec_key, sistem, _hsave, _now().isoformat(),
-                                      svi_idk=[int(o["idk"]) for o in objekti],
-                                      od=(_cut_n or _cut6))
+                    if not _dir_pregled():      # direktorski pregled: ne upisuje se
+                        sb_admin_hist_set(mesec_key, sistem, _hsave, _now().isoformat(),
+                                          svi_idk=[int(o["idk"]) for o in objekti],
+                                          od=(_cut_n or _cut6))
                 except Exception as _e:
                     st.warning("Povučeno, ali nije trajno sačuvano: " + str(_e))
                 if _ned_pull_mode == "start":
@@ -11667,7 +11804,10 @@ div[data-stale="true"] { opacity: 1 !important; }
                                          "nazivi + prethodne porudžbine + dopuna)... može potrajati par minuta.")
         with st.spinner(_spin_txt):
             if _bez_naziva:
-                admin_build_komitenti(only_ids=_bez_naziva)
+                try:
+                    admin_build_komitenti(only_ids=_bez_naziva)
+                except Exception:
+                    pass        # u direktorskom pregledu se nazivi ne upisuju
             _kf = sb_komitenti_full()
             st.session_state["_komfull"] = _kf
             _idk_naziv = {o["idk"]: (_kf.get(int(o["idk"]), {}) or {}).get("naziv", "") for o in objekti}
@@ -11710,20 +11850,40 @@ div[data-stale="true"] { opacity: 1 !important; }
                     _n_hist += 1
                     _hist_save[int(o["idk"])] = _lst
             _kada_now = _now().isoformat()
+            _samo_pregled = False
             try:
-                sb_admin_hist_set(mesec_key, sistem, _hist_save, _kada_now,
-                                  svi_idk=[int(o["idk"]) for o in objekti],
-                                  od=(_cut_inc if (_cut_inc and not _cut_all) else _cut_all))
-            except Exception as _es:
-                st.warning("Podaci su ažurirani, ali nisu trajno sačuvani (osvežiće se ponovo pri sledećem ažuriranju): " + str(_es))
+                _samo_pregled = bool(_dir_pregled())
+            except Exception:
+                _samo_pregled = False
+            if _samo_pregled:
+                pass            # direktorski pregled: povučeno se vidi, ali se ne upisuje
+            else:
+                try:
+                    sb_admin_hist_set(mesec_key, sistem, _hist_save, _kada_now,
+                                      svi_idk=[int(o["idk"]) for o in objekti],
+                                      od=(_cut_inc if (_cut_inc and not _cut_all) else _cut_all))
+                except Exception as _es:
+                    st.warning("Podaci su ažurirani, ali nisu trajno sačuvani (osvežiće se ponovo pri sledećem ažuriranju): " + str(_es))
             # Ko je poručio POSLE starta — zabeleži trajno u bazu, da status ostane
             # i kad se izađe pa ponovo uđe bez novog ažuriranja.
             _snap_r = meta.get("start_zone") if isinstance(meta, dict) else None
             _n_zav = 0
             _n_nas = _n_njih = 0
+            _n_ponist = 0
             for o in objekti:
                 _lz = (_hist_save.get(int(o["idk"])) or [])
                 try:
+                    if not _porucio_posle_starta(o["idk"], _lz, _snap_r):
+                        # Ranije automatski označen, a po ispravnom računu nije poručio
+                        # posle starta (npr. oznaka je nastala od stare porudžbine) —
+                        # oznaka se skida, da statistika ne prikazuje lažno trebovanje.
+                        _vo0 = obrada_map.get(int(o["idk"])) or {}
+                        if ((_vo0.get("dnevnik") or {}).get("trebovao_posle_starta") or {}).get("auto") \
+                                and not _samo_pregled:
+                            if sb_ponisti_trebovao(mesec_key, sistem, o["idk"]):
+                                _n_ponist += 1
+                                st.session_state.pop("treb_" + str(o["idk"]), None)
+                                st.session_state.pop("ed_" + str(o["idk"]), None)
                     if _porucio_posle_starta(o["idk"], _lz, _snap_r):
                         # Ako smo MI ubacili porudžbinu kroz aplikaciju — samo zabeleži
                         # da je završeno, ali NE određuj način automatski (bira se ručno).
@@ -11751,7 +11911,7 @@ div[data-stale="true"] { opacity: 1 !important; }
                             except Exception:
                                 pass
                         _atip, _ainfo = _nacin_trebovanja(_nase_kol, _pos_map, _nase_nz)
-                        _ainfo["pravilo"] = 2
+                        _ainfo["pravilo"] = 3   # 3 = porudžbine starije od dana starta se ne računaju
                         # u tabelu (kolona „Njihova por.") idu samo artikli iz izveštaja
                         _anjih = {str(_ia): int(_pos_map.get(_ia, 0)) for _ia in _nase_kol
                                   if int(_pos_map.get(_ia, 0)) > 0}
@@ -11771,10 +11931,19 @@ div[data-stale="true"] { opacity: 1 !important; }
             st.session_state["_refresh_done"] = {"sis": sistem, "mes": mesec_key,
                                                  "n": _n_hist, "zav": _n_zav,
                                                  "nas": _n_nas, "njih": _n_njih,
+                                                 "pregled": _samo_pregled,
+                                                 "ponist": _n_ponist,
                                                  "inc": (_cut_inc.strftime("%d.%m.%Y") if _cut_inc else "")}
             st.rerun()
     _rf = st.session_state.get("_refresh_done")
-    if _rf and _rf.get("sis") == sistem and _rf.get("mes") == mesec_key:
+    if _rf and _rf.get("sis") == sistem and _rf.get("mes") == mesec_key and _rf.get("pregled"):
+        _pcut0 = _admin_presek(meta, mesec_key)
+        st.success("✅ Povučeno najnovije stanje iz admina — prikazano je šta su objekti sami poručili od "
+                   + (_pcut0.strftime("%d.%m.%Y") if _pcut0 else "01.")
+                   + ". Objekata sa takvim porudžbinama: " + str(_rf.get("n", 0)) + "."
+                   " · 👀 Ovo je samo za tvoj pregled — ne upisuje se u bazu i ne menja rad administracije "
+                   "(ostaje dok si u ovom pregledu).")
+    elif _rf and _rf.get("sis") == sistem and _rf.get("mes") == mesec_key:
         _pcut = _admin_presek(meta, mesec_key)
         _pcs = _pcut.strftime("%d.%m.%Y") if _pcut else "01."
         st.success("✅ Ažurirano iz admina — prethodne porudžbine i dopuna su spremni u svakom objektu. "
@@ -11784,6 +11953,10 @@ div[data-stale="true"] { opacity: 1 !important; }
                    "Objekata sa takvim porudžbinama: " + str(_rf.get("n", 0)) + "."
                    + ((" · ✅ " + str(_rf.get("zav", 0)) + " objekata je poručilo posle starta i "
                        "trajno je označeno kao ZAVRŠENO.") if _rf.get("zav") else ""))
+        if _rf.get("ponist"):
+            st.info("🧹 Ispravljeno: kod **" + str(_rf.get("ponist")) + "** objekata je skinuta "
+                    "automatska oznaka „poručio posle starta“ — bila je prepoznata po porudžbini "
+                    "starijoj od dana starta. Ručno označeni objekti nisu dirani.")
         if _rf.get("nas") or _rf.get("njih"):
             st.info("🔎 Način trebovanja je prepoznat automatski, po količinama: **"
                     + str(_rf.get("nas", 0)) + "** po našem sistemu · **"
@@ -11855,6 +12028,9 @@ div[data-stale="true"] { opacity: 1 !important; }
                     + str(_snap.get("kada", "")) + '): ' + str(_snap.get("crveno", 0)) + ' hitno · '
                     + str(_snap.get("zuto", 0)) + ' srednje · ' + str(_snap.get("zeleno", 0))
                     + ' dobro. Ovo je START u izveštaju.</div>', unsafe_allow_html=True)
+    elif _dir_pregled():
+        st.caption("Startni rezultat za ovaj mesec još nije zabeležen — to radi administracija "
+                   "(dugme „Povuci porudžbine od " + _pk_lbl + "“). U pregledu se ne beleži.")
     elif not _zakljucan:
         _sc1, _sc2 = st.columns([2, 3])
         with _sc1:
@@ -14103,9 +14279,24 @@ def izvestaj_admin_sistemi(mesec_key):
         _kom_nas = sum(_kom_predlog(o) for o in _nas_o)
         _kom_nj = sum(int(x or 0) for o in _nj_o
                       for x in (obrada.get(o["idk"], {}).get("njihova") or {}).values())
+
+        def _je_zav(o):
+            """Objekat je ZAVRŠEN: posle starta je poslao porudžbinu (ili smo mi ubacili)."""
+            _v = obrada.get(o["idk"], {}) or {}
+            if (_v.get("dnevnik") or {}).get("trebovao_posle_starta"):
+                return True
+            if (_v.get("trebovali_tip") or "") in ("nas", "njihov"):
+                return True
+            return "Ubačena porudžbina" in (_v.get("reakcije") or [])
+
+        _zav_o = [o for o in objekti if _je_zav(o)]
+        _zav_red = sum(1 for o in _zav_o if o["nivo"] == "crveno")
+        _zav_zut = sum(1 for o in _zav_o if o["nivo"] == "zuto")
         _out.append({
             "sistem": _sis, "nedeljni": False, "n": len(objekti),
             "crveno": _nred, "zuto": _norg, "zeleno": _ngrn,
+            "start_kada": str((_sz or {}).get("kada") or ""),
+            "zavrseno": len(_zav_o), "zav_crveno": _zav_red, "zav_zuto": _zav_zut,
             "obradjeno": len(_rev), "neobradjeno": len(objekti) - len(_rev),
             "pozvano": sum(1 for o in objekti if _ima(o, "Pozvala sam")),
             "mejlova": sum(1 for o in objekti if _ima(o, "Poslala sam mejl")),
@@ -14116,6 +14307,31 @@ def izvestaj_admin_sistemi(mesec_key):
             "kom_predlozeno": sum(_kom_predlog(o) for o in objekti),
             "po_osobi": _ko_stat})
     return _out
+
+
+def _izv_zadaci_dugme(mesec_key, sistem, sel_lbl):
+    """Dugme za preuzimanje Excela „lista zadataka" za jedan sistem — po objektima:
+    zona, mejl i 1./2./3. poziv (ko i kada) i da li je završeno."""
+    _tag = "".join(ch for ch in str(sistem or "") if ch.isalnum()) or "sis"
+    _kk = "izv_zad_" + str(mesec_key) + "_" + _tag
+    _c1, _c2 = st.columns([1.5, 3])
+    with _c1:
+        if st.session_state.get(_kk) is None:
+            if st.button("📋 Lista zadataka (Excel)", key="mk_" + _kk, use_container_width=True):
+                try:
+                    _rows = zadaci_rows_sistem(mesec_key, sistem)
+                    st.session_state[_kk] = _zadaci_xlsx(_rows, sistem, sel_lbl)
+                except Exception as _e:
+                    st.session_state[_kk] = b""
+                    st.caption("Excel trenutno nije moguć: " + str(_e))
+                st.rerun()
+        elif st.session_state.get(_kk):
+            st.download_button("⬇️ Preuzmi Excel", st.session_state[_kk],
+                               file_name="Zadaci_" + _tag + "_" + str(mesec_key) + ".xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               key="dl_" + _kk, use_container_width=True)
+    with _c2:
+        st.caption("Po objektima: zona, mejl i 1./2./3. poziv — ko je zvao i kada, i da li je završeno.")
 
 
 def render_izvestaj_admin(mesec_key, sel_lbl):
@@ -14158,6 +14374,15 @@ def render_izvestaj_admin(mesec_key, sel_lbl):
                 + ' bez porudžbine; <b>' + str(x["neobradjeno"]) + '</b> neobrađeno. '
                 'Ukupno trebovano: <b>' + _rs(x["kom_ukupno"]) + ' kom</b> (predloženo '
                 + _rs(x["kom_predlozeno"]) + ' kom).</div>'
+                '<div style="font-size:13.5px;color:#374151;line-height:1.6;margin-top:6px;">'
+                '📌 Od starta' + (' (' + _h_escape(x.get("start_kada", "")) + ')'
+                                  if x.get("start_kada") else '')
+                + ': <b>' + str(x["crveno"] + x["zuto"]) + '</b> objekata je trebalo da poruči ('
+                + str(x["crveno"]) + ' hitno, ' + str(x["zuto"]) + ' za kontrolu) → '
+                '<b style="color:#15803d;">' + str(x.get("zavrseno", 0)) + '</b> objekata je '
+                'prešlo u ZAVRŠENO (poručili posle starta), od toga '
+                + str(x.get("zav_crveno", 0)) + ' iz hitne zone i '
+                + str(x.get("zav_zuto", 0)) + ' iz zone za kontrolu.</div>'
                 + ('<div style="font-size:12.5px;color:#6b7280;margin-top:6px;">'
                    'Ko je šta uradio — ' + _osoba + '</div>' if _osoba else ""),
                 unsafe_allow_html=True)
@@ -14170,6 +14395,7 @@ def render_izvestaj_admin(mesec_key, sel_lbl):
                              use_container_width=True)
             except Exception:
                 pass
+            _izv_zadaci_dugme(mesec_key, x["sistem"], sel_lbl)
 
     # ---- sistemski sistemi (trebuju u fiksnom periodu) ----
     for x in _sistemski:
@@ -14221,6 +14447,7 @@ def render_izvestaj_admin(mesec_key, sel_lbl):
                         st.image(_gp, use_container_width=True)
             except Exception:
                 pass
+            _izv_zadaci_dugme(mesec_key, x["sistem"], sel_lbl)
 
 
 KNEZ_TAB_CSS = """/* ===== Naše tabele (Knez): obojeno zaglavlje, čiste linije ===== */
@@ -17288,8 +17515,10 @@ with tab_obj:
                 _up_sis = st.file_uploader("Tabela sistemi (.xlsx)", type=['xlsx'], key="izp_sis")
             with _ip_c2:
                 _up_tro = st.file_uploader("Tabela troškova (.xlsx)", type=['xlsx'], key="izp_tro")
-            _ip_q1 = st.radio("Tip izveštaja", ["Potpun (sve 4 kartice)", "Nepotpun (Prodaja + Uspešnost akcije)"],
-                              key="izp_potpun", horizontal=True)
+            _ip_q1 = st.radio("Tip izveštaja",
+                              ["Potpun (Prodaja, Uspešnost akcije, Profitabilnost, Zalihe)",
+                               "Nepotpun (samo Prodaja — tabela + kompletna analitika ispod nje)"],
+                              key="izp_potpun")
             _potpun = _ip_q1.startswith("Potpun")
             _iskljuci = False
             if _potpun:
@@ -17357,8 +17586,21 @@ with tab_obj:
             if _up_sis is not None and _up_tro is not None:
                 if st.button("📊 Generiši i objavi izveštaj prodaje", key="izp_gen", use_container_width=True):
                     try:
-                        import io as _io2, base64 as _b64i
+                        import io as _io2, base64 as _b64i, inspect as _insp
                         import izvestaj_prodaje as _izp
+                        # Stari izvestaj_prodaje.py (bez „promene") — javi jasno šta fali,
+                        # umesto da pukne sa TypeError.
+                        _ima_prom = True
+                        try:
+                            _ima_prom = "promene" in _insp.signature(
+                                _izp.generisi_izvestaj_prodaje).parameters
+                        except Exception:
+                            _ima_prom = True
+                        if not _ima_prom:
+                            st.error("Fajl **izvestaj_prodaje.py** na GitHub-u je starija verzija "
+                                     "(nema promene cene u toku meseca, ni novi „Nepotpun“ izveštaj). "
+                                     "Zameni ga najnovijim fajlom iz našeg dogovora, pa probaj ponovo.")
+                            st.stop()
                         with st.spinner("Generišem izveštaj prodaje (može par sekundi)..."):
                             _html, _xlsx, _mes, _spr = _izp.generisi_izvestaj_prodaje(
                                 _io2.BytesIO(_up_sis.getvalue()), _io2.BytesIO(_up_tro.getvalue()),
