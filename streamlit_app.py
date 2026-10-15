@@ -15631,6 +15631,23 @@ def prikazi_direktore():
             return
         _mlbl = _izv.get("mesec_label") or ""
         _gen = _izv.get("generisano") or ""
+        # Da li je objavljen POTPUN izveštaj? (upisuje se pri objavi)
+        _pot_ok = True
+        try:
+            _pjs = json.loads(_izv.get("prodaja_json") or "{}")
+            if isinstance(_pjs, dict) and "_potpun" in _pjs:
+                _pot_ok = bool(_pjs.get("_potpun"))
+        except Exception:
+            _pot_ok = True
+        if not _pot_ok:
+            st.markdown('<div style="background:#fff7ed;border:1px solid #fdba74;'
+                        'border-left:5px solid #f97316;border-radius:12px;padding:11px 15px;'
+                        'margin:2px 0 12px;font-size:13.5px;color:#9a3412;">'
+                        '⚠️ <b>Analitičar nije objavio potpun izveštaj</b> — troškovi za ovaj '
+                        'mesec još nisu učitani, pa nema kartica <b>Profitabilnost</b>, '
+                        '<b>Zalihe</b> ni <b>Uspešnost akcije</b>. Prikazana je prodaja sa '
+                        'kompletnom analitikom. Kad troškovi stignu, izveštaj se objavljuje '
+                        'ponovo kao potpun.</div>', unsafe_allow_html=True)
         _tc1, _tc2 = st.columns([4, 1])
         with _tc1:
             st.caption("💹 Izveštaj prodaje · poslednji mesec " + str(_mlbl)
@@ -17607,6 +17624,10 @@ with tab_obj:
                                 potpun=_potpun, iskljuci_poslednji=_iskljuci,
                                 promene=_promene_izp)
                             _xb64 = _b64i.b64encode(_xlsx).decode("ascii") if _xlsx else ""
+                            # zapamti da li je izveštaj POTPUN — direktorima se, ako nije,
+                            # prikazuje obaveštenje zašto nema profitabilnosti i zaliha
+                            _spr = dict(_spr or {})
+                            _spr["_potpun"] = bool(_potpun)
                             _pj = json.dumps(_spr, ensure_ascii=False) if _spr else ""
                             sb_objavi_izvestaj_prodaje(_html, _xb64, _mes, prodaja_json=_pj)
                         st.success("✅ Izveštaj prodaje objavljen (" + str(_mes) + "). Direktori ga vide u trećoj kartici.")
