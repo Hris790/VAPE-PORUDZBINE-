@@ -10474,6 +10474,21 @@ def cene_prazan_mesec(mesec_key, prethodni=None, sistemi=None):
     return {"cenovnik": _cen, "redovi": _redovi, "zakljucan": False}
 
 
+def _cene_kljuc(mesec_key, sistem, grupa):
+    """Stabilan ključ polja u tabeli — vezan za sistem i grupu, ne za redni broj."""
+    import re as _re
+    return (str(mesec_key) + "_"
+            + _re.sub(r"[^A-Za-z0-9]+", "_", str(sistem) + "_" + str(grupa)).strip("_"))
+
+
+def _cene_ocisti_polja(mesec_key):
+    """Zaboravi upisano u poljima tabele (kad se redovi dodaju, obrišu ili se
+    primeni cenovnik), da se vrednosti ne bi prikazale u pogrešnom redu."""
+    for _k in [k for k in list(st.session_state.keys())
+               if str(k).startswith("cn_") and str(mesec_key) in str(k)]:
+        st.session_state.pop(_k, None)
+
+
 def _cene_sort(redovi):
     """Sistemi azbučno, grupe uvek istim redom: HQD stari, HQD novi, NERD 2000, SYX."""
     _rang = {g: i for i, g in enumerate(CENE_GRUPE)}
@@ -10729,6 +10744,7 @@ def cene_ui(uloga, ugradjeno=False):
                 _pod["redovi"] = _redovi
                 try:
                     sb_cene_set(_mk, _pod)
+                    _cene_ocisti_polja(_mk)
                     st.success("Cenovnik je primenjen.")
                     st.rerun()
                 except Exception as _e:
@@ -10782,10 +10798,36 @@ def cene_ui(uloga, ugradjeno=False):
                         st.error("Greška: " + str(_e))
         return
 
+    # ---- fale li sistemi/grupe iz osnovnog spiska? ----
+    _ima = {(str(_r0.get("sistem")), str(_r0.get("grupa"))) for _r0 in _redovi_svi}
+    _fale = [(_s0, _g0) for _s0, _gl0 in CENE_SISTEMI.items() for _g0 in _gl0
+             if (_s0, _g0) not in _ima]
+    if _fale and uloga in ("analitika", "direktor") and not _ro:
+        _fc1, _fc2 = st.columns([2.4, 2.6])
+        with _fc1:
+            if st.button("➕ Dodaj sve sisteme i grupe koji fale (" + str(len(_fale)) + ")",
+                         key="cene_dopuna_" + _mk, use_container_width=True, type="primary"):
+                for _s0, _g0 in _fale:
+                    _redovi_svi.append({"sistem": _s0, "grupa": _g0,
+                                        "redovna": int(_cen.get(_g0, 0) or 0),
+                                        "akcijska": "", "od": _p1.isoformat(),
+                                        "do": _p2.isoformat(), "status": "",
+                                        "odgovoran": "", "napomena": ""})
+                _pod["redovi"] = _cene_sort(_redovi_svi)
+                try:
+                    sb_cene_set(_mk, _pod)
+                    _cene_ocisti_polja(_mk)
+                    st.rerun()
+                except Exception as _e:
+                    st.error("Greška: " + str(_e))
+        with _fc2:
+            st.caption("U ovom mesecu nema svih sistema i grupa iz osnovnog spiska — "
+                       "dugmetom levo se dodaju, a ono što je već upisano ostaje.")
+
     # ---- izmena direktno u tabeli ----
-    _SIR = [1.35, 1.25, 0.8, 1.35, 1.0, 1.0, 1.25, 1.5, 1.7, 0.45]
-    _NASLOVI = ["Kupac", "Artikal", "Redovna", "Akcijska cena", "Početak", "Kraj",
-                "Status", "Odgovoran", "Napomena", "Briši"]
+    _SIR = [1.45, 1.35, 0.95, 1.45, 1.15, 1.15, 1.3, 1.6, 1.8]
+    _NASLOVI = ["Kupac", "Artikal", "Redovna cena", "Akcijska cena", "Početak", "Kraj",
+                "Status", "Odgovoran", "Napomena"]
     _je_admin = (uloga == "admin")
     with st.form("cene_form_" + _mk, border=False):
         _hc = st.columns(_SIR, vertical_alignment="center")
@@ -10800,7 +10842,8 @@ def cene_ui(uloga, ugradjeno=False):
             _nov_sis = (_sis != _pre_sis)
             _pre_sis = _sis
             _lbl, _bg, _fg = cene_status_prikaz(_r, _danas)
-            with st.container(key="cenered_" + _mk + "_" + str(_i)):
+            _kljuc_r = _cene_kljuc(_mk, _sis, _r.get("grupa"))
+            with st.container(key="cenered_" + _kljuc_r):
                 _c = st.columns(_SIR, vertical_alignment="center")
                 with _c[0]:
                     st.markdown('<div class="cene-c sis' + (' nov' if _nov_sis else '') + '">'
@@ -10818,29 +10861,29 @@ def cene_ui(uloga, ugradjeno=False):
                     else:
                         _red_v = st.number_input("redovna", min_value=0, step=10,
                                                  value=int(_r.get("redovna") or 0),
-                                                 key="cn_red_" + _mk + "_" + str(_i),
+                                                 key="cn_red_" + _kljuc_r,
                                                  label_visibility="collapsed")
                 with _c[3]:
                     _akc_v = st.text_input("akcijska", value=str(_r.get("akcijska") or ""),
-                                           key="cn_akc_" + _mk + "_" + str(_i),
+                                           key="cn_akc_" + _kljuc_r,
                                            placeholder="npr. 690",
                                            label_visibility="collapsed")
                 with _c[4]:
                     _od_v = st.date_input("od", value=_cene_d(_r.get("od"), _p1),
                                           format="DD.MM.YYYY",
-                                          key="cn_od_" + _mk + "_" + str(_i),
+                                          key="cn_od_" + _kljuc_r,
                                           label_visibility="collapsed")
                 with _c[5]:
                     _do_v = st.date_input("do", value=_cene_d(_r.get("do"), _p2),
                                           format="DD.MM.YYYY",
-                                          key="cn_do_" + _mk + "_" + str(_i),
+                                          key="cn_do_" + _kljuc_r,
                                           label_visibility="collapsed")
                 with _c[6]:
                     if _je_admin:
                         _opc = list(_KOL_STATUS.values())
                         _tren = _KOL_STATUS.get(str(_r.get("status") or ""), "— čeka —")
                         _st_v = st.selectbox("status", _opc, index=_opc.index(_tren),
-                                             key="cn_st_" + _mk + "_" + str(_i),
+                                             key="cn_st_" + _kljuc_r,
                                              label_visibility="collapsed")
                     else:
                         _st_v = None
@@ -10859,25 +10902,16 @@ def cene_ui(uloga, ugradjeno=False):
                         if _tren_o not in _opc_o:
                             _opc_o = _opc_o + [_tren_o]
                         _odg_v = st.selectbox("odgovoran", _opc_o, index=_opc_o.index(_tren_o),
-                                              key="cn_odg_" + _mk + "_" + str(_i),
+                                              key="cn_odg_" + _kljuc_r,
                                               label_visibility="collapsed")
                 with _c[8]:
                     _nap_v = st.text_input("napomena", value=str(_r.get("napomena") or ""),
-                                           key="cn_nap_" + _mk + "_" + str(_i),
+                                           key="cn_nap_" + _kljuc_r,
                                            placeholder="napomena…",
                                            label_visibility="collapsed")
-                with _c[9]:
-                    if _je_admin:
-                        _bri_v = False
-                        st.markdown('<div class="cene-c"></div>', unsafe_allow_html=True)
-                    else:
-                        _bri_v = st.checkbox("obriši", value=False,
-                                             key="cn_bri_" + _mk + "_" + str(_i),
-                                             label_visibility="collapsed",
-                                             help="Štiklirano — red se briše kad sačuvaš")
             _unos.append({"stari": _r, "redovna": _red_v, "akcijska": _akc_v, "od": _od_v,
                           "do": _do_v, "status": _st_v, "odgovoran": _odg_v,
-                          "napomena": _nap_v, "obrisi": _bri_v})
+                          "napomena": _nap_v, "obrisi": False})
 
         st.markdown('<div class="cene-note">Akcijska cena se kuca ručno (može i tekst, npr. '
                     '„490 + 1 din drugi artikal“), period se bira iz kalendara, odgovoran iz '
@@ -10895,7 +10929,7 @@ def cene_ui(uloga, ugradjeno=False):
             st.markdown('<div class="cene-note" style="margin:6px 0 0;">'
                         + ("Status i napomenu upisuje administracija."
                            if _je_admin else
-                           "Štiklirano „obriši“ uklanja red kad sačuvaš.") + '</div>',
+                           "Red se dodaje ili briše dugmetom ispod tabele.") + '</div>',
                         unsafe_allow_html=True)
 
     if _save or _save_send:
@@ -10946,8 +10980,26 @@ def cene_ui(uloga, ugradjeno=False):
             st.error("Greška pri čuvanju: " + str(_e))
 
     # ---- dodavanje reda, zaključavanje, Excel ----
-    _a1, _a2, _a3 = st.columns([2.2, 1.4, 1.8])
+    _a0, _a1, _a2, _a3 = st.columns([1.5, 1.5, 1.4, 1.9])
     if uloga in ("analitika", "direktor"):
+        with _a0:
+            with st.popover("🗑 Obriši red", use_container_width=True):
+                _izb = [str(r.get("sistem")) + "  ·  " + str(r.get("grupa"))
+                        for r in _redovi_svi]
+                _bri = st.multiselect("Koje redove da obrišem?", _izb,
+                                      key="cene_del_m_" + _mk)
+                if _bri and st.button("Obriši označene", key="cene_del_b_" + _mk,
+                                      type="primary"):
+                    _ost = [r for r in _redovi_svi
+                            if (str(r.get("sistem")) + "  ·  " + str(r.get("grupa")))
+                            not in _bri]
+                    _pod["redovi"] = _cene_sort(_ost)
+                    try:
+                        sb_cene_set(_mk, _pod)
+                        _cene_ocisti_polja(_mk)
+                        st.rerun()
+                    except Exception as _e:
+                        st.error("Greška: " + str(_e))
         with _a1:
             with st.popover("➕ Dodaj red", use_container_width=True):
                 _ns = st.selectbox("Kupac", sorted(set([r.get("sistem") for r in _redovi_svi]
@@ -10967,6 +11019,7 @@ def cene_ui(uloga, ugradjeno=False):
                         _pod["redovi"] = _cene_sort(_redovi_svi)
                         try:
                             sb_cene_set(_mk, _pod)
+                            _cene_ocisti_polja(_mk)
                             st.rerun()
                         except Exception as _e:
                             st.error("Greška: " + str(_e))
