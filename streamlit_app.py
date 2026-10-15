@@ -10303,38 +10303,37 @@ CENE_SQL_PORUKA = ("Tabela „cene“ još nije napravljena u bazi. Analitičar 
                    "iz fajla „SQL_cene.sql“ u Supabase → SQL Editor.")
 
 CENE_GRUPE = ["HQD stari ukusi", "HQD novi ukusi", "HQD GLOW PRO KIT", "HQD GLOW PRO POD",
-              "NERD 1000", "NERD 2000", "SYX", "GOAT", "KILLA", "ZVAKE"]
+              "NERD 2000", "SYX", "ZVAKE"]
 # Koji sistem radi koje grupe (osnovni spisak — red se kasnije dodaje ili briše u tabeli).
 # „HQD 1000" iz starih tabela = „HQD stari ukusi"; uz njega svaki sistem dobija i red
 # za „HQD novi ukusi", jer se novi ukusi uvode posebno.
 CENE_SISTEMI = {
-    "3M": ["HQD stari ukusi", "HQD novi ukusi", "NERD 1000", "NERD 2000"],
+    "3M": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000"],
     "AMAN": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000", "SYX"],
     "AROMA": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000"],
-    "BB TRADE": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000", "SYX", "GOAT", "KILLA"],
+    "BB TRADE": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000", "SYX"],
     "BEOKOLP": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000", "ZVAKE"],
     "BOBAR": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000", "SYX"],
-    "CORNER KIOSK": ["HQD stari ukusi", "HQD novi ukusi", "NERD 1000", "NERD 2000", "SYX",
-                     "GOAT"],
+    "CORNER KIOSK": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000", "SYX"],
     "GRAL": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000"],
-    "KNEZ PETROL": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000", "SYX", "GOAT", "KILLA"],
+    "KNEZ PETROL": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000", "SYX"],
     "MATIC PROMET": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000"],
-    "MEDIUS": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000", "SYX", "GOAT", "KILLA"],
+    "MEDIUS": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000", "SYX"],
     "MIKROMARKET": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000"],
-    "MOBILLAND": ["HQD stari ukusi", "HQD novi ukusi", "HQD GLOW PRO KIT", "HQD GLOW PRO POD",
-                  "NERD 1000", "NERD 2000", "SYX", "GOAT", "KILLA"],
-    "SREM PRESS": ["HQD stari ukusi", "HQD novi ukusi", "NERD 1000", "NERD 2000", "SYX"],
+    "MOBILLAND": ["HQD stari ukusi", "HQD novi ukusi", "HQD GLOW PRO KIT",
+                  "HQD GLOW PRO POD", "NERD 2000", "SYX"],
+    "SREM PRESS": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000", "SYX"],
     "UNIVEREXPORT": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000"],
     "VX TRADE": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000"],
 }
+
 CENE_ODG_PRAZNO = "— nije izabran —"
 CENE_ODGOVORNI = [CENE_ODG_PRAZNO, "Zorana - administracija", "Aleksandra - administracija",
                   "Hristina - analitika", "Vukašin - direktor", "Slobodan - direktor",
                   "Jelena - direktor"]
 CENOVNIK_PODRAZUMEVANI = {"HQD stari ukusi": 890, "HQD novi ukusi": 490,
                           "HQD GLOW PRO KIT": 1990, "HQD GLOW PRO POD": 1090,
-                          "NERD 1000": 890, "NERD 2000": 1390, "SYX": 490,
-                          "GOAT": 0, "KILLA": 0, "ZVAKE": 0}
+                          "NERD 2000": 1390, "SYX": 490, "ZVAKE": 0}
 
 
 def sb_cene_ok():
@@ -10676,6 +10675,34 @@ def cene_ui(uloga, ugradjeno=False):
     _pod = dict(_svi.get(_mk) or {})
     _zakljucan = bool(_pod.get("zakljucan"))
     _redovi_svi = _cene_sort(_pod.get("redovi") or [])
+    _p1, _p2 = _cene_prvi_poslednji(_mk)
+    _cen = dict(CENOVNIK_PODRAZUMEVANI)
+    try:
+        _cen.update({str(k): int(v) for k, v in (_pod.get("cenovnik") or {}).items()})
+    except Exception:
+        pass
+    # --- mesec se sam popunjava: svi sistemi i grupe su odmah tu ---
+    # (osim redova koje je neko namerno obrisao i osim zaključanog meseca)
+    if (not _ro) and (not _zakljucan):
+        _obrisani = {(str(_x[0]), str(_x[1])) for _x in (_pod.get("obrisani") or [])
+                     if isinstance(_x, (list, tuple)) and len(_x) >= 2}
+        _ima0 = {(str(_r0.get("sistem")), str(_r0.get("grupa"))) for _r0 in _redovi_svi}
+        _fale0 = [(_s0, _g0) for _s0, _gl0 in CENE_SISTEMI.items() for _g0 in _gl0
+                  if (_s0, _g0) not in _ima0 and (_s0, _g0) not in _obrisani]
+        if _fale0:
+            for _s0, _g0 in _fale0:
+                _redovi_svi.append({"sistem": _s0, "grupa": _g0,
+                                    "redovna": int(_cen.get(_g0, 0) or 0), "akcijska": "",
+                                    "od": _p1.isoformat(), "do": _p2.isoformat(),
+                                    "status": "", "odgovoran": "", "napomena": ""})
+            _redovi_svi = _cene_sort(_redovi_svi)
+            _pod["redovi"] = _redovi_svi
+            _pod.setdefault("cenovnik", _cen)
+            try:
+                sb_cene_set(_mk, _pod)
+                _cene_ocisti_polja(_mk)
+            except Exception:
+                pass
     _sis_spisak = []
     for _r0 in _redovi_svi:
         if str(_r0.get("sistem")) not in _sis_spisak:
@@ -10686,27 +10713,13 @@ def cene_ui(uloga, ugradjeno=False):
                if _f_sis != "Svi sistemi" else _redovi_svi)
     _moze_menjati = (not _ro) and (not _zakljucan)
 
-    # ---- nema podataka za taj mesec ----
+    # ---- nema podataka za taj mesec (zaključan ili pregled) ----
     if not _redovi:
-        _prethodni = _svi.get(_mesec_pomak(_mk, -1)) or {}
         st.info("Za " + _sel + " još nema cena.")
-        if uloga in ("analitika", "direktor") and not _ro:
-            if st.button("➕ Napravi spisak za " + _sel +
-                         (" (prepiši sisteme i grupe iz prethodnog meseca)" if _prethodni else ""),
-                         key="cene_nov_" + _mk, use_container_width=True):
-                try:
-                    _nov = cene_prazan_mesec(_mk, _prethodni, sb_svi_sistemi())
-                    sb_cene_set(_mk, _nov)
-                    st.rerun()
-                except Exception as _e:
-                    st.error("Greška: " + str(_e))
-        else:
-            st.caption("Spisak pravi analitičar ili direktor.")
         return
 
     # ---- zaglavlje: predlog, rok, zaključan mesec ----
     _pp = _pod.get("predlog_poslat") or {}
-    _p1, _p2 = _cene_prvi_poslednji(_mk)
     if _zakljucan:
         st.markdown('<div style="background:#eef2ff;border:1px solid #c7d2fe;border-radius:10px;'
                     'padding:9px 14px;font-size:13px;color:#3730a3;margin:2px 0 10px;">'
@@ -10722,11 +10735,6 @@ def cene_ui(uloga, ugradjeno=False):
         st.caption("Predlog akcijskih cena još nije poslat administraciji.")
 
     # ---- cenovnik (redovne cene) ----
-    _cen = dict(CENOVNIK_PODRAZUMEVANI)
-    try:
-        _cen.update({str(k): int(v) for k, v in (_pod.get("cenovnik") or {}).items()})
-    except Exception:
-        pass
     if uloga in ("analitika", "direktor"):
         with st.expander("💲 Redovan cenovnik (važi za sve sisteme, izuzeci se menjaju u tabeli)"):
             _cc = st.columns(len(CENE_GRUPE))
@@ -10797,32 +10805,6 @@ def cene_ui(uloga, ugradjeno=False):
                     except Exception as _e:
                         st.error("Greška: " + str(_e))
         return
-
-    # ---- fale li sistemi/grupe iz osnovnog spiska? ----
-    _ima = {(str(_r0.get("sistem")), str(_r0.get("grupa"))) for _r0 in _redovi_svi}
-    _fale = [(_s0, _g0) for _s0, _gl0 in CENE_SISTEMI.items() for _g0 in _gl0
-             if (_s0, _g0) not in _ima]
-    if _fale and uloga in ("analitika", "direktor") and not _ro:
-        _fc1, _fc2 = st.columns([2.4, 2.6])
-        with _fc1:
-            if st.button("➕ Dodaj sve sisteme i grupe koji fale (" + str(len(_fale)) + ")",
-                         key="cene_dopuna_" + _mk, use_container_width=True, type="primary"):
-                for _s0, _g0 in _fale:
-                    _redovi_svi.append({"sistem": _s0, "grupa": _g0,
-                                        "redovna": int(_cen.get(_g0, 0) or 0),
-                                        "akcijska": "", "od": _p1.isoformat(),
-                                        "do": _p2.isoformat(), "status": "",
-                                        "odgovoran": "", "napomena": ""})
-                _pod["redovi"] = _cene_sort(_redovi_svi)
-                try:
-                    sb_cene_set(_mk, _pod)
-                    _cene_ocisti_polja(_mk)
-                    st.rerun()
-                except Exception as _e:
-                    st.error("Greška: " + str(_e))
-        with _fc2:
-            st.caption("U ovom mesecu nema svih sistema i grupa iz osnovnog spiska — "
-                       "dugmetom levo se dodaju, a ono što je već upisano ostaje.")
 
     # ---- izmena direktno u tabeli ----
     _SIR = [1.45, 1.35, 0.95, 1.45, 1.15, 1.15, 1.3, 1.6, 1.8]
@@ -10994,6 +10976,13 @@ def cene_ui(uloga, ugradjeno=False):
                             if (str(r.get("sistem")) + "  ·  " + str(r.get("grupa")))
                             not in _bri]
                     _pod["redovi"] = _cene_sort(_ost)
+                    # zapamti da su namerno obrisani — da se ne vrate sami
+                    _ob = [list(_x) for _x in (_pod.get("obrisani") or [])]
+                    for _x in _bri:
+                        _dd = str(_x).split("  ·  ")
+                        if len(_dd) == 2 and [_dd[0], _dd[1]] not in _ob:
+                            _ob.append([_dd[0], _dd[1]])
+                    _pod["obrisani"] = _ob
                     try:
                         sb_cene_set(_mk, _pod)
                         _cene_ocisti_polja(_mk)
@@ -11017,6 +11006,8 @@ def cene_ui(uloga, ugradjeno=False):
                                         "od": _p1.isoformat(), "do": _p2.isoformat(),
                                         "status": "", "odgovoran": "", "napomena": ""})
                         _pod["redovi"] = _cene_sort(_redovi_svi)
+                        _pod["obrisani"] = [list(_x) for _x in (_pod.get("obrisani") or [])
+                                            if [str(_x[0]), str(_x[1])] != [_ns, _ng]]
                         try:
                             sb_cene_set(_mk, _pod)
                             _cene_ocisti_polja(_mk)
