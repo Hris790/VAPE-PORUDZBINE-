@@ -10629,13 +10629,15 @@ table.cene-tab tbody tr.nema td.grp{color:#94a3b8;}
         overflow:hidden;text-overflow:ellipsis;}
 .cene-c{font-size:13px;color:#1f2937;padding:6px 6px;text-align:center;}
 .cene-c.sis{font-weight:800;color:#312e81;text-align:left;white-space:nowrap;}
-.cene-c.sis.nov{border-left:4px solid #7c3aed;padding-left:8px;background:#f7f4ff;
-                border-radius:6px;}
+.cene-c.sis.nov{background:transparent;padding-left:6px;font-size:13.5px;
+                letter-spacing:.3px;text-transform:uppercase;}
 .cene-c.grp{text-align:left;font-weight:600;color:#4b5563;white-space:nowrap;}
 .cene-c.red{font-variant-numeric:tabular-nums;color:#6b7280;}
 .cene-c.odg{text-align:left;font-size:12px;color:#334155;}
 .cene-note{font-size:12px;color:#6b7280;margin:8px 0 6px;}
 div[class*="st-key-cenered"]{border-top:1px solid #efeafb;padding:1px 0;}
+/* prvi red novog sistema — samo tanka linija, bez boje preko boje */
+div[class*="st-key-cenered"][class*="_snov_"]{border-top:2px solid #ded5fb;margin-top:5px;}
 div[class*="st-key-cenered"]:hover{background:#faf8ff;}
 /* ceo red u boji statusa — vidi se na prvi pogled */
 div[class*="st-key-ceneredpot_"]{background:#eafbf0;box-shadow:inset 4px 0 0 #16a34a;
@@ -10902,14 +10904,34 @@ def cene_mejl_telo(sistem, redovi, mesec_key, podsetnik=False):
             "Molimo Vas za potvrdu ukoliko ste saglasni.\n")
 
 
+# Adrese koje su dogovorene za najavu akcije (ako u Prikupljanju izveštaja nema ništa)
+CENE_MEJL_PODRAZUMEVANE = {
+    "AMAN": ["sasa.dekic@aman.co.rs"],
+    "BEOKOLP": ["sladjana.mandic@beokolp.rs"],
+    "CORNER KIOSK": ["tatjana.cvetinovic@cornerkiosk.rs"],
+    "KNEZ PETROL": ["predrag.nikic@knezpetrol.com"],
+    "MEDIUS": ["slobodan.vukas@medius.rs"],
+    "SREM PRESS": ["srempress@gmail.com", "bane.press@gmail.com"],
+}
+# Sistemi kojima se akcija ne šalje mejlom
+CENE_MEJL_TELEFON = {
+    "MIKROMARKET": "Kod njih se akcija najavljuje telefonskim pozivom — mejl se ne šalje.",
+}
+
+
 def cene_mejl_adrese(sistem):
-    """Podrazumevane adrese sistema — iste koje se koriste za prikupljanje izveštaja."""
+    """Podrazumevane adrese sistema — iste koje se koriste za prikupljanje izveštaja,
+    a ako tamo još nije podešeno, one koje su dogovorene za najavu akcije."""
+    _a = []
     try:
-        return [str(_a) for _a in
-                ((sb_prikup_podesavanja() or {}).get(str(sistem), {}) or {}).get("adrese", [])
-                if str(_a).strip()]
+        _a = [str(_x) for _x in
+              ((sb_prikup_podesavanja() or {}).get(str(sistem), {}) or {}).get("adrese", [])
+              if str(_x).strip()]
     except Exception:
-        return []
+        _a = []
+    if _a:
+        return _a
+    return list(CENE_MEJL_PODRAZUMEVANE.get(str(sistem), []))
 
 
 def sb_cene_mejl_log(mesec_key, sistem, adrese, ko="", tip="prvi"):
@@ -10956,6 +10978,22 @@ def _cene_mejl_blok(mesec_key, sel_lbl, podaci, redovi_svi, uloga, ro, f_sis="Sv
                           key="cene_mejl_s_" + mesec_key)
         _lst = list(_mj_svi.get(_s) or [])
         _podsetnik = len(_lst) > 0
+        if str(_s) in CENE_MEJL_TELEFON:
+            st.info("📞 " + CENE_MEJL_TELEFON[str(_s)])
+            if _lst:
+                _z = _lst[-1]
+                st.caption("Zabeleženo " + str(len(_lst)) + "× · poslednji put "
+                           + _dt_kratko(_z.get("at")) + " · " + str(_z.get("ko") or ""))
+            if st.button("📞 Zabeleži da je javljeno telefonom",
+                         key="cene_tel_b_" + mesec_key + "_" + _s):
+                try:
+                    _n = sb_cene_mejl_log(mesec_key, _s, [],
+                                          st.session_state.get("admin_user", ""), "telefon")
+                    st.success("Zabeleženo (" + str(_n) + ". put).")
+                    st.rerun()
+                except Exception as _e:
+                    st.error("Nije zabeleženo: " + str(_e))
+            return
         if _lst:
             _z = _lst[-1]
             st.caption("Već poslato " + str(len(_lst)) + "× · poslednji put "
@@ -11202,7 +11240,7 @@ def cene_ui(uloga, ugradjeno=False):
             _kl_r = cene_status_klasa(_r, _danas)
             _pref = {"pot": "ceneredpot_", "odb": "ceneredodb_",
                      "cek": "ceneredcek_", "nema": "ceneredno_"}[_kl_r]
-            with st.container(key=_pref + _kljuc_r):
+            with st.container(key=_pref + ("snov_" if _nov_sis else "") + _kljuc_r):
                 _c = st.columns(_SIR, vertical_alignment="center")
                 with _c[0]:
                     st.markdown('<div class="cene-c sis' + (' nov' if _nov_sis else '') + '">'
