@@ -10720,6 +10720,163 @@ def cene_html(redovi, danas=None, cenovnik=None):
     return "".join(_h)
 
 
+# ---- mejl sistemu: predlog akcije (šalje administracija) ----
+CENE_MEJL_NAZIV = {"HQD stari ukusi": "HQD 1000", "HQD novi ukusi": "HQD 1000 (novi ukusi)",
+                   "HQD GLOW PRO KIT": "HQD Glow Pro Kit",
+                   "HQD GLOW PRO POD": "HQD Glow Pro Pod",
+                   "NERD 2000": "Nerd 2000", "SYX": "SYX"}
+CENE_MESEC_U = {1: "januaru", 2: "februaru", 3: "martu", 4: "aprilu", 5: "maju", 6: "junu",
+                7: "julu", 8: "avgustu", 9: "septembru", 10: "oktobru", 11: "novembru",
+                12: "decembru"}
+
+
+def _cene_cena_tekst(v):
+    """'790' -> '790,00 RSD/kom, sa uračunatim PDV-om'; tekst ostaje kakav jeste."""
+    _s = str(v or "").strip()
+    if not _s:
+        return ""
+    try:
+        _b = float(_s.replace(".", "").replace(",", "."))
+        _c = ("{:,.2f}".format(_b).replace(",", "#").replace(".", ",").replace("#", "."))
+        return _c + " RSD/kom, sa uračunatim PDV-om"
+    except Exception:
+        return _s
+
+
+def cene_mejl_telo(sistem, redovi, mesec_key, podsetnik=False):
+    """Tekst mejla sistemu — predlog akcije za taj mesec (ili podsetnik)."""
+    _g = int(str(mesec_key).split("-")[0]); _m = int(str(mesec_key).split("-")[1])
+    _u_mesecu = CENE_MESEC_U.get(_m, mesec_label(mesec_key))
+    _stavke = []
+    for _r in _cene_sort(redovi or []):
+        if str(_r.get("sistem")) != str(sistem):
+            continue
+        _akc = str(_r.get("akcijska") or "").strip()
+        if not _akc:
+            continue
+        _naz = CENE_MEJL_NAZIV.get(str(_r.get("grupa")), str(_r.get("grupa")))
+        _stavke.append("• " + _naz + " – " + _cene_cena_tekst(_akc))
+    _spisak = "\n".join(_stavke)
+    if podsetnik:
+        return ("Poštovani,\n\n"
+                "Ljubazan podsetnik da odgovorite na naš mejl u vezi sa predlogom akcije "
+                "u " + _u_mesecu + " za proizvode iz našeg portfolija:\n\n"
+                + _spisak + "\n\n"
+                "Na osnovu izveštaja o realizovanoj prodaji, početkom narednog meseca "
+                "izdali bismo knjižno odobrenje za artikle obuhvaćene akcijom.\n"
+                "Molimo Vas za potvrdu ukoliko ste saglasni.\n")
+    return ("Poštovani,\n\n"
+            "Ovim putem Vas obaveštavamo da bismo želeli da sprovedemo akciju u "
+            + _u_mesecu + " za proizvode iz našeg portfolija:\n\n"
+            + _spisak + "\n\n"
+            "Na osnovu izveštaja o realizovanoj prodaji, početkom narednog meseca izdali "
+            "bismo knjižno odobrenje za artikle obuhvaćene akcijom.\n"
+            "Molimo Vas za potvrdu ukoliko ste saglasni.\n")
+
+
+def cene_mejl_adrese(sistem):
+    """Podrazumevane adrese sistema — iste koje se koriste za prikupljanje izveštaja."""
+    try:
+        return [str(_a) for _a in
+                ((sb_prikup_podesavanja() or {}).get(str(sistem), {}) or {}).get("adrese", [])
+                if str(_a).strip()]
+    except Exception:
+        return []
+
+
+def sb_cene_mejl_log(mesec_key, sistem, adrese, ko="", tip="prvi"):
+    """Zabeleži da je mejl poslat: ko, kada, kome i koji put."""
+    _pod = sb_cene_get(mesec_key)
+    _mj = dict(_pod.get("mejlovi") or {})
+    _lst = list(_mj.get(str(sistem)) or [])
+    _lst.append({"ko": str(ko or ""), "at": _now().isoformat(),
+                 "adrese": [str(_a) for _a in (adrese or [])], "tip": str(tip or "prvi")})
+    _mj[str(sistem)] = _lst
+    _pod["mejlovi"] = _mj
+    sb_cene_set(mesec_key, _pod)
+    return len(_lst)
+
+
+def _cene_mejl_blok(mesec_key, sel_lbl, podaci, redovi_svi, uloga, ro, f_sis="Svi sistemi"):
+    """Slanje predloga akcije sistemu (administracija) + trag ko je i kada slao."""
+    _mj_svi = dict((podaci or {}).get("mejlovi") or {})
+    _sis_lista = []
+    for _r in redovi_svi:
+        _s = str(_r.get("sistem"))
+        if _s not in _sis_lista and str(_r.get("akcijska") or "").strip():
+            _sis_lista.append(_s)
+    if uloga != "admin":
+        if _mj_svi:
+            _red = []
+            for _s in sorted(_mj_svi.keys()):
+                _l = _mj_svi[_s] or []
+                if not _l:
+                    continue
+                _z = _l[-1]
+                _red.append("<b>" + _h_escape(_s) + "</b>: " + str(len(_l)) + "× · poslednji put "
+                            + _h_escape(_dt_kratko(_z.get("at"))) + " · "
+                            + _h_escape(str(_z.get("ko") or "")))
+            if _red:
+                st.markdown('<div class="cene-note">✉️ Mejlovi sistemima — '
+                            + "  |  ".join(_red) + '</div>', unsafe_allow_html=True)
+        return
+    if ro or not _sis_lista:
+        return
+    with st.expander("✉️ Pošalji predlog akcije sistemu (" + str(len(_sis_lista)) + ")"):
+        _izbor = ([f_sis] if f_sis in _sis_lista else _sis_lista)
+        _s = st.selectbox("Sistem", _izbor + [x for x in _sis_lista if x not in _izbor],
+                          key="cene_mejl_s_" + mesec_key)
+        _lst = list(_mj_svi.get(_s) or [])
+        _podsetnik = len(_lst) > 0
+        if _lst:
+            _z = _lst[-1]
+            st.caption("Već poslato " + str(len(_lst)) + "× · poslednji put "
+                       + _dt_kratko(_z.get("at")) + " · " + str(_z.get("ko") or "")
+                       + " · na: " + ", ".join(_z.get("adrese") or [])
+                       + "  →  sada ide PODSETNIK.")
+        else:
+            st.caption("Za " + str(_s) + " još nije poslat predlog — ide prvi mejl.")
+        _adr_poc = ", ".join(cene_mejl_adrese(_s))
+        _adr_txt = st.text_input("Adrese (više adresa razdvoji zarezom)", value=_adr_poc,
+                                 key="cene_mejl_a_" + mesec_key + "_" + _s,
+                                 placeholder="primer@sistem.rs, drugi@sistem.rs")
+        _adr = [_a.strip() for _a in str(_adr_txt or "").replace(";", ",").split(",")
+                if _a.strip()]
+        _nas = st.text_input("Naslov", key="cene_mejl_n_" + mesec_key + "_" + _s,
+                             value=(("Podsetnik: predlog akcije — " if _podsetnik
+                                     else "Predlog akcije — ") + str(sel_lbl)))
+        _telo = st.text_area("Tekst mejla", height=330,
+                             key="cene_mejl_t_" + mesec_key + "_" + _s,
+                             value=cene_mejl_telo(_s, redovi_svi, mesec_key, _podsetnik))
+        if not _adr:
+            st.warning("Za ovaj sistem nemamo adresu — upiši je gore (zapamtiće se u "
+                       "Prikupljanju izveštaja kad je tamo podesiš).")
+        if st.button(("📤 Pošalji podsetnik" if _podsetnik else "📤 Pošalji mejl"),
+                     key="cene_mejl_b_" + mesec_key + "_" + _s, type="primary",
+                     disabled=(not _adr or not smtp_dostupan())):
+            _greske = []
+            _telo_pun = str(_telo or "") + "\n" + _potpis_tekst()
+            with st.spinner("Šaljem…"):
+                for _a in _adr:
+                    try:
+                        posalji_mejl_sa_prilogom(_a, str(_nas or ""), _telo_pun)
+                    except Exception as _e:
+                        _greske.append(_a + ": " + str(_e)[:120])
+            _uspele = [a for a in _adr if not any(g.startswith(a + ":") for g in _greske)]
+            if _greske:
+                st.error("Nije poslato na: " + "  ·  ".join(_greske))
+            if _uspele:
+                try:
+                    _n = sb_cene_mejl_log(mesec_key, _s, _uspele,
+                                          st.session_state.get("admin_user", ""),
+                                          ("podsetnik" if _podsetnik else "prvi"))
+                    st.success("Poslato na " + str(len(_uspele)) + " adresa (" + str(_n)
+                               + ". put).")
+                    st.rerun()
+                except Exception as _e:
+                    st.error("Poslato, ali nije zabeleženo: " + str(_e))
+
+
 def cene_ui(uloga, ugradjeno=False):
     """Kartica „Cene i akcije".
 
@@ -10882,6 +11039,7 @@ def cene_ui(uloga, ugradjeno=False):
                         st.rerun()
                     except Exception as _e:
                         st.error("Greška: " + str(_e))
+        _cene_mejl_blok(_mk, _sel, _pod, _redovi_svi, uloga, _ro, _f_sis)
         return
 
     # ---- izmena direktno u tabeli ----
@@ -11131,6 +11289,7 @@ def cene_ui(uloga, ugradjeno=False):
                     st.rerun()
                 except Exception as _e:
                     st.error("Greška: " + str(_e))
+    _cene_mejl_blok(_mk, _sel, _pod, _redovi_svi, uloga, _ro, _f_sis)
 
 def prikazi_administraciju(ugradjeno=False):
     """ugradjeno=True — isti ekran, ali ubačen u drugu karticu (direktorski pregled):
