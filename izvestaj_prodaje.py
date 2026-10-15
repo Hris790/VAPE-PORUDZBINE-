@@ -1845,28 +1845,31 @@ def _napravi_xlsx(nazivi, sistemi, prodaja_data, grand_totals, profit_data, nazi
     for i in range(2, 2 + _nk + 1):
         ws.column_dimensions[get_column_letter(i)].width = 11
 
-    ws2 = wb.create_sheet("Neto profit")
-    ws2.append(["Sistem"] + list(nazivi_profit) + ["TOTAL"])
-    for c in ws2[1]:
-        c.font = hfn
-        c.fill = hf
-        c.alignment = Alignment(horizontal="center", wrap_text=True)
-    for sistem in sistemi:
-        pd_s = profit_data.get(sistem) or {}
-        n = len(nazivi_profit)
-        uk = list(pd_s.get("mkt", [0] * n))
-        for tid in trosak_ids[1:]:
-            src = pd_s.get("dod" if tid == "dod" else tid, [0] * n)
-            for j in range(n):
-                uk[j] += src[j]
-        prof = pd_s.get("profit", [0] * n)
-        neto = [prof[j] - uk[j] for j in range(n)]
-        ws2.append([sistem] + neto + [sum(neto)])
-    ws2.column_dimensions["A"].width = 26
-    for i in range(2, 2 + len(nazivi_profit) + 1):
-        ws2.column_dimensions[get_column_letter(i)].width = 13
+    # List „Neto profit" postoji SAMO u potpunom izveštaju — u nepotpunom troškovi
+    # nisu učitani, pa bi brojke bile pogrešne.
+    if potpun:
+        ws2 = wb.create_sheet("Neto profit")
+        ws2.append(["Sistem"] + list(nazivi_profit) + ["TOTAL"])
+        for c in ws2[1]:
+            c.font = hfn
+            c.fill = hf
+            c.alignment = Alignment(horizontal="center", wrap_text=True)
+        for sistem in sistemi:
+            pd_s = profit_data.get(sistem) or {}
+            n = len(nazivi_profit)
+            uk = list(pd_s.get("mkt", [0] * n))
+            for tid in trosak_ids[1:]:
+                src = pd_s.get("dod" if tid == "dod" else tid, [0] * n)
+                for j in range(n):
+                    uk[j] += src[j]
+            prof = pd_s.get("profit", [0] * n)
+            neto = [prof[j] - uk[j] for j in range(n)]
+            ws2.append([sistem] + neto + [sum(neto)])
+        ws2.column_dimensions["A"].width = 26
+        for i in range(2, 2 + len(nazivi_profit) + 1):
+            ws2.column_dimensions[get_column_letter(i)].width = 13
 
-    if mag_data:
+    if mag_data and potpun:
         ws3 = wb.create_sheet("Magacin")
         ws3.append(["Artikal", "Magacin (kom)", "Ø prodaja/mes", "Dana zaliha"])
         for c in ws3[1]:
