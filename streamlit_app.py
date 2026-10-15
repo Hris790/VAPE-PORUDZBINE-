@@ -10695,6 +10695,42 @@ div[class*="st-key-cenered"] [data-testid="stDateInput"] input{font-size:12px !i
 div[class*="st-key-cenered"] [data-testid="stDateInput"] div[data-baseweb="input"]{
     padding-right:2px !important;}
 div[class*="st-key-cenered"] [data-testid="stDateInput"] svg{width:14px;height:14px;}
+/* --- prozorčić: pregled prodaje uz cenu --- */
+.cp{width:520px;max-width:100%;font-size:13px;color:#1f2937;}
+.cp-glava{border-bottom:1px solid #f1ecfd;padding-bottom:8px;margin-bottom:10px;}
+.cp-glava b{font-size:14px;color:#312e81;display:block;}
+.cp-glava span{font-size:11.5px;color:#8a94a3;}
+.cp-kocke{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:12px;}
+.cp-k{border:1px solid #e9e3fb;border-radius:10px;padding:7px 9px;background:#fff;}
+.cp-k.plus{background:#eafbf0;border-color:#bbf7d0;}
+.cp-k.minus{background:#fdecec;border-color:#f3b4b4;}
+.cp-k.plus .cp-v{color:#14532d;} .cp-k.minus .cp-v{color:#991b1b;}
+.cp-m{font-size:9.5px;color:#8a94a3;text-transform:uppercase;letter-spacing:.4px;
+      font-weight:700;}
+.cp-v{font-size:17px;font-weight:800;color:#312e81;line-height:1.3;}
+.cp-graf{display:flex;align-items:flex-end;gap:6px;height:118px;padding-top:12px;
+         border-bottom:1px solid #e9e3fb;}
+.cp-stub{flex:1;display:flex;flex-direction:column;align-items:center;
+         justify-content:flex-end;height:100%;gap:4px;}
+.cp-vred{font-size:10px;font-weight:800;color:#4b5563;}
+.cp-bar{width:66%;border-radius:4px 4px 0 0;background:#c4b5fd;}
+.cp-stub.akc .cp-bar{background:#7c3aed;}
+.cp-stub.nep .cp-bar{background:repeating-linear-gradient(45deg,#e9edf3,#e9edf3 4px,
+                     #f8fafc 4px,#f8fafc 8px);border:1px solid #dbe3ec;}
+.cp-leg i.n{background:repeating-linear-gradient(45deg,#e9edf3,#e9edf3 3px,#f8fafc 3px,
+            #f8fafc 6px);border:1px solid #dbe3ec;}
+.cp-osa{display:flex;gap:6px;margin-top:6px;}
+.cp-osa>div{flex:1;text-align:center;font-size:10px;color:#8a94a3;line-height:1.5;}
+.cp-cena{display:block;font-weight:800;color:#5b21b6;font-size:11px;}
+.cp-cena.bez{color:#b2bac6;font-weight:600;}
+.cp-leg{display:flex;gap:14px;margin:9px 0 0;font-size:11px;color:#4b5563;}
+.cp-leg i{display:inline-block;width:11px;height:11px;border-radius:3px;background:#c4b5fd;
+          margin-right:5px;vertical-align:-1px;}
+.cp-leg i.a{background:#7c3aed;}
+.cp-zak{margin-top:10px;border:1px solid #ddd6fe;background:#f7f4ff;border-radius:10px;
+        padding:9px 11px;font-size:12.5px;color:#312e81;line-height:1.5;}
+.cp-fus{font-size:11px;color:#8a94a3;margin-top:8px;line-height:1.45;}
+.cp-nema{font-size:12.5px;color:#64748b;width:300px;line-height:1.5;}
 """
 
 
@@ -10806,6 +10842,8 @@ CENE_MEJL_NAZIV = {"HQD stari ukusi": "HQD 1000", "HQD novi ukusi": "HQD 1000 (n
                    "HQD GLOW PRO KIT": "HQD Glow Pro Kit",
                    "HQD GLOW PRO POD": "HQD Glow Pro Pod",
                    "NERD 2000": "Nerd 2000", "SYX": "SYX"}
+# Novi ukusi HQD 1000 (šifre 619, 620, 621, 623) — idu u mejl kad im je cena drugačija
+CENE_HQD_NOVI_UKUSI = ["Grape Ice", "Cherry Cola", "Watermelon Ice", "Banana Ice"]
 CENE_MESEC_U = {1: "januaru", 2: "februaru", 3: "martu", 4: "aprilu", 5: "maju", 6: "junu",
                 7: "julu", 8: "avgustu", 9: "septembru", 10: "oktobru", 11: "novembru",
                 12: "decembru"}
@@ -10862,7 +10900,8 @@ def cene_mejl_stavke(sistem, redovi):
         if _spoj and _grupa == "HQD novi ukusi":
             continue
         if _grupa == "HQD novi ukusi" and not _spoj:
-            _uk = str(_r.get("napomena") or "").strip().rstrip(".")
+            _uk = (str(_r.get("napomena") or "").strip().rstrip(".")
+                   or ", ".join(CENE_HQD_NOVI_UKUSI))
             if _stari is not None:
                 _stavke.append("• HQD 1000, za sledeće ukuse"
                                + ((": " + _uk) if _uk else " (novi ukusi)")
@@ -10974,8 +11013,12 @@ def _cene_mejl_blok(mesec_key, sel_lbl, podaci, redovi_svi, uloga, ro, f_sis="Sv
         return
     with st.expander("✉️ Pošalji predlog akcije sistemu (" + str(len(_sis_lista)) + ")"):
         _izbor = ([f_sis] if f_sis in _sis_lista else _sis_lista)
-        _s = st.selectbox("Sistem", _izbor + [x for x in _sis_lista if x not in _izbor],
+        _opc_s = _izbor + [x for x in _sis_lista if x not in _izbor]
+        _zap_s = str(st.session_state.get("cene_mejl_sis") or "")
+        _s = st.selectbox("Sistem", _opc_s,
+                          index=(_opc_s.index(_zap_s) if _zap_s in _opc_s else 0),
                           key="cene_mejl_s_" + mesec_key)
+        st.session_state["cene_mejl_sis"] = _s
         _lst = list(_mj_svi.get(_s) or [])
         _podsetnik = len(_lst) > 0
         if str(_s) in CENE_MEJL_TELEFON:
@@ -11052,6 +11095,208 @@ def _cene_mejl_blok(mesec_key, sel_lbl, podaci, redovi_svi, uloga, ro, f_sis="Sv
                     st.error("Poslato, ali nije zabeleženo: " + str(_e))
 
 
+# ---- mali pregled prodaje uz akcijsku cenu (📊 pored cene) ----
+CENE_MES_SKR = {"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAJ": 5, "JUN": 6, "JUL": 7,
+                "AVG": 8, "SEP": 9, "OKT": 10, "NOV": 11, "DEC": 12}
+CENE_MES_KRATKO = {1: "jan", 2: "feb", 3: "mar", 4: "apr", 5: "maj", 6: "jun", 7: "jul",
+                   8: "avg", 9: "sep", 10: "okt", 11: "nov", 12: "dec"}
+
+
+def _cene_mk_od_labela(lbl):
+    """'Maj 2026' -> '2026-05'."""
+    _d = str(lbl or "").replace(".", " ").replace("-", " ").split()
+    if len(_d) < 2:
+        return ""
+    _m = CENE_MES_SKR.get(_d[0][:3].upper())
+    try:
+        _g = int(_d[-1])
+    except Exception:
+        return ""
+    if not _m or _g < 2000:
+        return ""
+    return str(_g) + "-" + ("0" + str(_m))[-2:]
+
+
+def cene_grupa_korpa(grupa):
+    """HQD stari i novi ukusi se u izveštajima ne razdvajaju — idu u istu korpu."""
+    _g = str(grupa or "").strip()
+    if _g in ("HQD stari ukusi", "HQD novi ukusi"):
+        return "HQD 1000"
+    return _g
+
+
+def _cene_korpa_artikla(tekst):
+    """Iz grupe/naziva artikla u izveštaju pogodi korpu iz kartice cena."""
+    _t = str(tekst or "").upper()
+    for _a, _b in (("Ć", "C"), ("Č", "C"), ("Ž", "Z"), ("Š", "S"), ("Đ", "DJ")):
+        _t = _t.replace(_a, _b)
+    if "SYX" in _t or "VRECIC" in _t:
+        return "SYX"
+    if "GLOW" in _t:
+        if "POD" in _t or "ULOZ" in _t:
+            return "HQD GLOW PRO POD"
+        return "HQD GLOW PRO KIT"
+    if "NERD" in _t:
+        return "NERD 2000" if "2000" in _t else ""
+    if "HQD" in _t:
+        return "HQD 1000"
+    return ""
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cene_prodaja_sistema(sistem):
+    """{korpa: {mesec_key: kom}} — mesečna prodaja iz poslednjeg objavljenog izveštaja."""
+    try:
+        _mes = [str(_m.get("key")) for _m in (sb_meseci() or [])][:8]
+    except Exception:
+        return {}
+    for _mk in _mes:
+        try:
+            _p = sb_ucitaj(_mk, sistem)
+        except Exception:
+            _p = None
+        if not _p:
+            continue
+        _lbl = ((_p.get("meta") or {}).get("mesec_nazivi") or [])
+        _stv = _p.get("stavke") or []
+        if not _lbl or not _stv:
+            continue
+        _kl = [_cene_mk_od_labela(_x) for _x in _lbl]
+        _out = {}
+        for _s in _stv:
+            _k = _cene_korpa_artikla(str(_s.get("grupa") or "") + " "
+                                     + str(_s.get("naziv") or ""))
+            if not _k:
+                continue
+            _d = _out.setdefault(_k, {})
+            for _i, _v in enumerate(_s.get("prodaja_mesecno") or []):
+                if _i >= len(_kl) or not _kl[_i]:
+                    continue
+                try:
+                    _d[_kl[_i]] = _d.get(_kl[_i], 0) + max(int(_v or 0), 0)
+                except Exception:
+                    pass
+        if _out:
+            return _out
+    return {}
+
+
+def _cene_mesec_cena(svi_meseci, mesec_key, sistem, grupa):
+    """(cena_za_prikaz, stanje) za taj mesec: 'akc' | 'red' | '?' (nemamo zapis)."""
+    for _r in (((svi_meseci or {}).get(mesec_key) or {}).get("redovi") or []):
+        if str(_r.get("sistem")) != str(sistem) or str(_r.get("grupa")) != str(grupa):
+            continue
+        _a = str(_r.get("akcijska") or "").strip()
+        if _a:
+            return (_a, "akc")
+        _rv = int(_r.get("redovna") or 0)
+        return ((format(_rv, ",").replace(",", ".") if _rv else "redovna"), "red")
+    return ("?", "?")
+
+
+def cene_pregled(sistem, grupa, svi_meseci=None, koliko=6, prodaja=None):
+    """Podaci za prozorčić: poslednjih `koliko` meseci — prodaja i cena po mesecu."""
+    _korpa = cene_grupa_korpa(grupa)
+    _prod = dict((prodaja if prodaja is not None
+                  else (cene_prodaja_sistema(sistem) or {})).get(_korpa, {}) or {})
+    if not _prod:
+        return None
+    _svi = svi_meseci if svi_meseci is not None else sb_cene_svi()
+    _red = []
+    for _mk in sorted(_prod.keys())[-int(koliko):]:
+        _c, _stanje = _cene_mesec_cena(_svi, _mk, sistem, grupa)
+        _red.append({"mesec": _mk, "kom": int(_prod.get(_mk, 0) or 0),
+                     "cena": _c, "stanje": _stanje, "akcija": (_stanje == "akc")})
+    if not _red:
+        return None
+    _ak = [_r["kom"] for _r in _red if _r["stanje"] == "akc"]
+    _be = [_r["kom"] for _r in _red if _r["stanje"] == "red"]
+    _pa = int(round(sum(_ak) / float(len(_ak)))) if _ak else 0
+    _pb = int(round(sum(_be) / float(len(_be)))) if _be else 0
+    _raz = int(round((_pa - _pb) * 100.0 / _pb)) if (_pa and _pb) else None
+    _naj = None
+    for _r in _red:
+        if _r["akcija"] and (_naj is None or _r["kom"] > _naj["kom"]):
+            _naj = _r
+    return {"redovi": _red, "korpa": _korpa, "pros_akc": _pa, "pros_bez": _pb,
+            "razlika": _raz, "najbolji": _naj, "n_akc": len(_ak), "n_bez": len(_be),
+            "n_nepoznato": sum(1 for _r in _red if _r["stanje"] == "?")}
+
+
+def _cene_mes_lbl(mesec_key):
+    try:
+        _g, _m = str(mesec_key).split("-")
+        return CENE_MES_KRATKO.get(int(_m), str(_m))
+    except Exception:
+        return str(mesec_key)
+
+
+def cene_pregled_html(p, sistem, grupa, redovna=0):
+    """Sadržaj prozorčića — tri broja, stubići po mesecima i zaključak."""
+    if not p:
+        return ('<div class="cp-nema">Za ovaj sistem još nemam mesečnu prodaju iz '
+                'objavljenih izveštaja.</div>')
+    _red = p["redovi"]
+    _max = max([_r["kom"] for _r in _red] + [1])
+    _h = ['<div class="cp">']
+    _h.append('<div class="cp-glava"><b>' + _h_escape(str(sistem)) + ' · '
+              + _h_escape(str(grupa)) + '</b><span>'
+              + (("redovna " + format(int(redovna), ",").replace(",", ".") + " · ")
+                 if redovna else "")
+              + "poslednjih " + str(len(_red)) + " meseci</span></div>")
+    _h.append('<div class="cp-kocke">')
+    _h.append('<div class="cp-k"><div class="cp-m">Sa akcijom</div><div class="cp-v">'
+              + (format(p["pros_akc"], ",").replace(",", ".") if p["pros_akc"] else "—")
+              + ' kom</div><div class="cp-m">prosek · ' + str(p["n_akc"]) + ' mes.</div></div>')
+    _h.append('<div class="cp-k"><div class="cp-m">Bez akcije</div><div class="cp-v">'
+              + (format(p["pros_bez"], ",").replace(",", ".") if p["pros_bez"] else "—")
+              + ' kom</div><div class="cp-m">prosek · ' + str(p["n_bez"]) + ' mes.</div></div>')
+    _rz = p["razlika"]
+    _kl = " plus" if (_rz is not None and _rz > 0) else (" minus" if (_rz is not None and _rz < 0) else "")
+    _h.append('<div class="cp-k' + _kl + '"><div class="cp-m">Razlika</div><div class="cp-v">'
+              + (("+" if _rz > 0 else "") + str(_rz) + "%" if _rz is not None else "—")
+              + '</div><div class="cp-m">akcija vs. redovna</div></div></div>')
+    _h.append('<div class="cp-graf">')
+    for _r in _red:
+        _vis = max(int(round(_r["kom"] * 100.0 / _max)), 3)
+        _h.append('<div class="cp-stub ' + {"akc": "akc", "red": "red", "?": "nep"}[_r["stanje"]]
+                  + '">'
+                  '<span class="cp-vred">'
+                  + format(_r["kom"], ",").replace(",", ".") + '</span>'
+                  '<span class="cp-bar" style="height:' + str(_vis) + '%"></span></div>')
+    _h.append('</div><div class="cp-osa">')
+    for _r in _red:
+        _h.append('<div>' + _h_escape(_cene_mes_lbl(_r["mesec"]))
+                  + '<span class="cp-cena' + ('' if _r["akcija"] else ' bez') + '" title="'
+                  + ("mesec pre nego što vodimo akcijske cene — ne znamo da li je bila akcija"
+                     if _r["stanje"] == "?" else "")
+                  + '">'
+                  + _h_escape(_r["cena"] or "—") + '</span></div>')
+    _h.append('</div>')
+    _leg = ('<div class="cp-leg"><span><i class="a"></i>mesec sa akcijom</span>'
+            '<span><i></i>redovna cena</span>')
+    if p.get("n_nepoznato"):
+        _leg += '<span><i class="n"></i>nemamo zapis o ceni</span>'
+    _h.append(_leg + '</div>')
+    if p["najbolji"]:
+        _n = p["najbolji"]
+        _t = ("Najbolje je prošlo na <b>" + _h_escape(_n["cena"]) + "</b> ("
+              + _h_escape(_cene_mes_lbl(_n["mesec"])) + ", "
+              + format(_n["kom"], ",").replace(",", ".") + " kom).")
+        if p["razlika"] is not None:
+            _t += (" Prosek meseci sa akcijom je "
+                   + ("veći" if p["razlika"] > 0 else "manji") + " za "
+                   + str(abs(p["razlika"])) + "% od meseci bez akcije.")
+    else:
+        _t = "U ovih " + str(len(_red)) + " meseci nije bilo akcije na ovoj grupi."
+    _h.append('<div class="cp-zak">' + _t + '</div>')
+    if p["korpa"] == "HQD 1000":
+        _h.append('<div class="cp-fus">HQD stari i novi ukusi se u izveštajima ne razdvajaju, '
+                  'pa je prodaja prikazana zajedno za celu HQD 1000 grupu.</div>')
+    _h.append('</div>')
+    return "".join(_h)
+
+
 def cene_ui(uloga, ugradjeno=False):
     """Kartica „Cene i akcije".
 
@@ -11104,9 +11349,14 @@ def cene_ui(uloga, ugradjeno=False):
         return
 
     _c1, _c2, _c3 = st.columns([1.2, 1.6, 2.2])
+    # izabrani mesec se pamti zasebno — da ga Streamlit ne vrati na prvi u spisku
+    # kad se stranica osveži (npr. kad se u mejlu promeni sistem)
+    _zap_mes = str(st.session_state.get("cene_mes_kljuc") or "")
+    _idx_mes = _kljucevi.index(_zap_mes) if _zap_mes in _kljucevi else 0
     with _c1:
-        _sel = st.selectbox("Mesec", _lbls, index=0, key="cene_mes")
+        _sel = st.selectbox("Mesec", _lbls, index=_idx_mes, key="cene_mes")
     _mk = _kljucevi[_lbls.index(_sel)]
+    st.session_state["cene_mes_kljuc"] = _mk
     _pod = dict(_svi.get(_mk) or {})
     _zakljucan = bool(_pod.get("zakljucan"))
     _redovi_svi = _cene_sort(_pod.get("redovi") or [])
@@ -11161,6 +11411,15 @@ def cene_ui(uloga, ugradjeno=False):
     _redovi = ([_r0 for _r0 in _redovi_svi if str(_r0.get("sistem")) == _f_sis]
                if _f_sis != "Svi sistemi" else _redovi_svi)
     _moze_menjati = (not _ro) and (not _zakljucan)
+    with _c3:
+        st.write("")
+        _pok_prod = st.checkbox("📊 Pregled prodaje uz svaku cenu",
+                                value=(_f_sis != "Svi sistemi"),
+                                key="cene_prod_" + _mk,
+                                help="Pored akcijske cene stoji dugme koje otvara prodaju u "
+                                     "poslednjih 6 meseci — koliko se prodavalo u mesecima sa "
+                                     "akcijom, a koliko bez nje. Za sve sisteme odjednom učitava "
+                                     "se duže, pa je brže kad izabereš jedan sistem.")
 
     # ---- nema podataka za taj mesec (zaključan ili pregled) ----
     if not _redovi:
@@ -11218,9 +11477,14 @@ def cene_ui(uloga, ugradjeno=False):
         return
 
     # ---- izmena direktno u tabeli ----
-    _SIR = [1.2, 1.25, 0.8, 1.2, 1.45, 1.45, 1.1, 1.45, 1.45]
-    _NASLOVI = ["Kupac", "Artikal", "Redovna", "Akcijska cena", "Početak", "Kraj",
-                "Status", "Odgovoran", "Napomena"]
+    _SIR = ([1.2, 1.25, 0.8, 1.2, 0.33, 1.45, 1.45, 1.1, 1.45, 1.45] if _pok_prod
+            else [1.2, 1.25, 0.8, 1.2, 1.45, 1.45, 1.1, 1.45, 1.45])
+    _NASLOVI = (["Kupac", "Artikal", "Redovna", "Akcijska cena", "", "Početak", "Kraj",
+                 "Status", "Odgovoran", "Napomena"] if _pok_prod
+                else ["Kupac", "Artikal", "Redovna", "Akcijska cena", "Početak", "Kraj",
+                      "Status", "Odgovoran", "Napomena"])
+    _poml = 1 if _pok_prod else 0      # pomeraj kolona kad stoji dugme 📊
+    _prod_keš = {}
     _je_admin = (uloga == "admin")
     with st.form("cene_form_" + _mk, border=False):
         _hc = st.columns(_SIR, vertical_alignment="center")
@@ -11265,17 +11529,28 @@ def cene_ui(uloga, ugradjeno=False):
                                            key="cn_akc_" + _kljuc_r,
                                            placeholder="npr. 690",
                                            label_visibility="collapsed")
-                with _c[4]:
+                if _pok_prod:
+                    with _c[4]:
+                        if _sis not in _prod_keš:
+                            _prod_keš[_sis] = cene_prodaja_sistema(_sis) or {}
+                        _pg = cene_pregled(_sis, str(_r.get("grupa") or ""), _svi,
+                                           prodaja=_prod_keš[_sis])
+                        with st.popover("📊", width=(560 if _pg else 320),
+                                        help="Prodaja u poslednjih 6 meseci"):
+                            st.markdown(cene_pregled_html(
+                                _pg, _sis, str(_r.get("grupa") or ""),
+                                int(_r.get("redovna") or 0)), unsafe_allow_html=True)
+                with _c[4 + _poml]:
                     _od_v = st.date_input("od", value=_cene_d(_r.get("od"), _p1),
                                           format="DD.MM.YYYY",
                                           key="cn_od_" + _kljuc_r,
                                           label_visibility="collapsed")
-                with _c[5]:
+                with _c[5 + _poml]:
                     _do_v = st.date_input("do", value=_cene_d(_r.get("do"), _p2),
                                           format="DD.MM.YYYY",
                                           key="cn_do_" + _kljuc_r,
                                           label_visibility="collapsed")
-                with _c[6]:
+                with _c[6 + _poml]:
                     if _bez_akc:
                         _st_v = None
                         st.markdown('<div class="cene-c"><span class="cene-chip" style="background:'
@@ -11294,7 +11569,7 @@ def cene_ui(uloga, ugradjeno=False):
                                     + _bg + ';color:' + _fg + ';">'
                                     + _h_escape(_cene_lbl_kratko(_lbl))
                                     + '</span></div>', unsafe_allow_html=True)
-                with _c[7]:
+                with _c[7 + _poml]:
                     if _je_admin:
                         _odg_v = None
                         st.markdown('<div class="cene-c odg">'
@@ -11308,7 +11583,7 @@ def cene_ui(uloga, ugradjeno=False):
                         _odg_v = st.selectbox("odgovoran", _opc_o, index=_opc_o.index(_tren_o),
                                               key="cn_odg_" + _kljuc_r,
                                               label_visibility="collapsed")
-                with _c[8]:
+                with _c[8 + _poml]:
                     _nap_v = st.text_input("napomena", value=str(_r.get("napomena") or ""),
                                            key="cn_nap_" + _kljuc_r,
                                            placeholder="napomena…",
