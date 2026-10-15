@@ -10731,6 +10731,13 @@ div[class*="st-key-cenered"] [data-testid="stDateInput"] svg{width:14px;height:1
         padding:9px 11px;font-size:12.5px;color:#312e81;line-height:1.5;}
 .cp-fus{font-size:11px;color:#8a94a3;margin-top:8px;line-height:1.45;}
 .cp-nema{font-size:12.5px;color:#64748b;width:300px;line-height:1.5;}
+/* --- knjižno odobrenje --- */
+table.cene-tab tbody tr.knj-zbir td{background:#eef7ee;font-weight:800;color:#14532d;
+    border-top:1px solid #cfe6cf;}
+table.cene-tab tbody tr.knj-uk td{background:#fff3cd;font-weight:800;color:#78350f;
+    border-top:2px solid #f0d089;font-size:13.5px;}
+table.cene-tab tbody tr.knj-rucno td{background:#fff8e6;}
+table.cene-tab td.red i{font-style:normal;font-size:10px;color:#94a3b8;}
 """
 
 
@@ -11112,6 +11119,8 @@ def _cene_mk_od_labela(lbl):
         _g = int(_d[-1])
     except Exception:
         return ""
+    if _g < 100:                      # „Sep 26" iz izveštaja prodaje
+        _g += 2000
     if not _m or _g < 2000:
         return ""
     return str(_g) + "-" + ("0" + str(_m))[-2:]
@@ -11297,6 +11306,491 @@ def cene_pregled_html(p, sistem, grupa, redovna=0):
     return "".join(_h)
 
 
+# ---- knjižno odobrenje: automatski obračun iz izveštaja prodaje ----
+# Račun (isto kao u ručnom Excel-u):
+#   neto cena = MP cena / 1,20 (PDV) / (1 + marža kupca)
+#   osnovica po komadu = neto(redovna) − neto(akcijska)
+#   PDV = osnovica × 20%,  knjižno = (osnovica + PDV) × količina
+KNJ_PDV = 20.0
+KNJ_MARZA_PODR = 20.0
+KNJ_MARZA_GRUPA = {"SYX": 10.0}
+KNJ_MARZA_SISTEM = {"MIKROMARKET": 40.0}
+
+
+def _knj_norm(t):
+    _t = str(t or "").upper().strip()
+    for _a, _b in (("Ć", "C"), ("Č", "C"), ("Ž", "Z"), ("Š", "S"), ("Đ", "DJ")):
+        _t = _t.replace(_a, _b)
+    return " ".join(_t.split())
+
+
+def knjizno_marza(sistem, grupa, podesavanja=None):
+    """Marža kupca u procentima — podrazumevana ili ona koju si podesila u kartici."""
+    _p = dict(podesavanja or {})
+    _s = _knj_norm(sistem)
+    _g = str(grupa or "")
+    for _k in (_s + "|" + _g, _s):
+        if _k in _p:
+            try:
+                return float(_p[_k])
+            except Exception:
+                pass
+    _korpa = cene_grupa_korpa(_g)
+    if _korpa in KNJ_MARZA_GRUPA:
+        return KNJ_MARZA_GRUPA[_korpa]
+    if _s in KNJ_MARZA_SISTEM:
+        return KNJ_MARZA_SISTEM[_s]
+    return KNJ_MARZA_PODR
+
+
+def _knj_neto(cena, marza):
+    """MP cena → neto cena (bez PDV-a i bez marže kupca)."""
+    return float(cena) / (1.0 + KNJ_PDV / 100.0) / (1.0 + float(marza) / 100.0)
+
+
+def knjizno_po_komadu(redovna, akcijska, marza):
+    """Osnovica, PDV i ukupno — po jednom komadu."""
+    _o = _knj_neto(redovna, marza) - _knj_neto(akcijska, marza)
+    return {"osnovica": _o, "pdv": _o * (KNJ_PDV / 100.0), "ukupno": _o * (1 + KNJ_PDV / 100.0)}
+
+
+def _knj_broj(v):
+    """'690' -> 690.0; '490 +1din' -> None (takav red se računa ručno)."""
+    _s = str(v or "").strip().replace(" ", "")
+    if not _s:
+        return None
+    _s = _s.replace(".", "").replace(",", ".")
+    try:
+        return float(_s)
+    except Exception:
+        return None
+
+
+def _knj_je_novi_ukus(naziv):
+    """Da li je artikal jedan od novih HQD ukusa (619, 620, 621, 623)."""
+    _n = _knj_norm(naziv)
+    if "HQD" not in _n:
+        return False
+    return any(_knj_norm(_u) in _n for _u in CENE_HQD_NOVI_UKUSI)
+
+
+def knjizno_kolicine(sales, mesec_key):
+    """Prodate količine za taj mesec iz objavljenog izveštaja prodaje.
+
+    -> {"grupe": {(KUPAC, grupa_iz_izvestaja): kom}, "hqd_novi": {KUPAC: kom},
+        "kupci": [KUPAC…], "mesec": naziv kolone}  (ili None ako tog meseca nema)
+    """
+    _naz = list((sales or {}).get("nazivi") or [])
+    _idx = None
+    for _i, _l in enumerate(_naz):
+        if _cene_mk_od_labela(_l) == str(mesec_key):
+            _idx = _i
+    if _idx is None:
+        return None
+    _grupe, _kupci = {}, []
+    for _sis, _d in ((sales or {}).get("po_sistemu") or {}).items():
+        _s = str(_sis).strip()
+        if _s and _s not in _kupci:
+            _kupci.append(_s)
+        for _g, _v in ((_d or {}).get("grupe") or {}).items():
+            if _idx < len(_v or []):
+                _grupe[(_s, str(_g).strip())] = int(_v[_idx] or 0)
+    _novi = {}
+    for _sis, _arts in ((sales or {}).get("po_artiklu") or {}).items():
+        for _naziv, _a in (_arts or {}).items():
+            if not _knj_je_novi_ukus(_naziv):
+                continue
+            _k = (_a or {}).get("kom") or []
+            if _idx < len(_k):
+                _novi[str(_sis).strip()] = _novi.get(str(_sis).strip(), 0) + int(_k[_idx] or 0)
+    return {"grupe": _grupe, "hqd_novi": _novi, "kupci": sorted(_kupci),
+            "mesec": _naz[_idx], "idx": _idx}
+
+
+def knjizno_kom(kol, kupac, grupa):
+    """Koliko je taj kupac prodao iz te grupe (HQD stari = HQD bez novih ukusa)."""
+    if not kol:
+        return 0
+    _korpa = cene_grupa_korpa(grupa)
+    _zbir = 0
+    for (_s, _g), _q in (kol.get("grupe") or {}).items():
+        if _s == kupac and _cene_korpa_artikla(_g) == _korpa:
+            _zbir += int(_q or 0)
+    _novi = int((kol.get("hqd_novi") or {}).get(kupac, 0) or 0)
+    if str(grupa) == "HQD novi ukusi":
+        return _novi
+    if str(grupa) == "HQD stari ukusi":
+        return max(_zbir - _novi, 0)
+    return _zbir
+
+
+def knjizno_kupac_sistem(kupci, sistemi, mapiranje=None):
+    """{KUPAC: sistem iz kartice cena} — po nazivu, plus ručno raspoređeni."""
+    _map = {}
+    _po_nazivu = {_knj_norm(_s): _s for _s in (sistemi or [])}
+    _rucno = {_knj_norm(_k): _v for _k, _v in (mapiranje or {}).items()}
+    for _k in (kupci or []):
+        _n = _knj_norm(_k)
+        if _n in _rucno and _rucno[_n]:
+            _map[_k] = _rucno[_n]
+        elif _n in _po_nazivu:
+            _map[_k] = _po_nazivu[_n]
+    return _map
+
+
+def knjizno_tabela(redovi, kol, kupac_sistem, marze=None, rucno=None):
+    """Redovi obračuna: po kupcu i grupi, sa količinom, osnovicom, PDV-om i ukupno.
+
+    `rucno` = {"KUPAC|grupa": {"kom": n, "cena": x, "par": bool}} — za akcije koje
+    nisu obična cena (1+1, „490 + 1 din drugi artikal"…).
+    """
+    _po_sis = {}
+    for _r in _cene_sort(redovi or []):
+        if not str(_r.get("akcijska") or "").strip():
+            continue
+        _po_sis.setdefault(str(_r.get("sistem")), []).append(_r)
+    _rucno = dict(rucno or {})
+    _out = []
+    for _kupac in sorted((kol or {}).get("kupci") or []):
+        _sis = (kupac_sistem or {}).get(_kupac)
+        if not _sis:
+            continue
+        for _r in _po_sis.get(_sis, []):
+            _g = str(_r.get("grupa") or "")
+            _kom = knjizno_kom(kol, _kupac, _g)
+            _akc = _knj_broj(_r.get("akcijska"))
+            _red = _knj_broj(_r.get("redovna")) or 0.0
+            _m = knjizno_marza(_sis, _g, marze)
+            _kljuc = _kupac + "|" + _g
+            _ruc = _rucno.get(_kljuc) or {}
+            _nap = ""
+            if _akc is None:
+                _cena = _knj_broj(_ruc.get("cena"))
+                _kom_r = _knj_broj(_ruc.get("kom"))
+                _par = bool(_ruc.get("par"))
+                if _cena is None or _kom_r is None:
+                    _out.append({"kupac": _kupac, "sistem": _sis, "grupa": _g,
+                                 "redovna": _red, "akcijska": str(_r.get("akcijska") or ""),
+                                 "kom": 0, "osnovica": 0.0, "pdv": 0.0, "ukupno": 0.0,
+                                 "marza": _m, "rucno": True, "kljuc": _kljuc,
+                                 "od": _r.get("od"), "do": _r.get("do"),
+                                 "napomena": "upiši ručno (cena i količina)"})
+                    continue
+                _po = knjizno_po_komadu(_red * (2 if _par else 1), _cena, _m)
+                _kom = int(_kom_r)
+                _nap = ("parova" if _par else "kom") + " · ručno"
+                _out.append({"kupac": _kupac, "sistem": _sis, "grupa": _g, "redovna": _red,
+                             "akcijska": str(_r.get("akcijska") or ""), "kom": _kom,
+                             "osnovica": _po["osnovica"] * _kom, "pdv": _po["pdv"] * _kom,
+                             "ukupno": _po["ukupno"] * _kom, "marza": _m, "rucno": True,
+                             "kljuc": _kljuc, "od": _r.get("od"), "do": _r.get("do"),
+                             "napomena": _nap})
+                continue
+            if _kom <= 0:
+                continue
+            _po = knjizno_po_komadu(_red, _akc, _m)
+            _out.append({"kupac": _kupac, "sistem": _sis, "grupa": _g, "redovna": _red,
+                         "akcijska": str(_r.get("akcijska") or ""), "kom": int(_kom),
+                         "osnovica": _po["osnovica"] * _kom, "pdv": _po["pdv"] * _kom,
+                         "ukupno": _po["ukupno"] * _kom, "marza": _m, "rucno": False,
+                         "kljuc": _kljuc, "od": _r.get("od"), "do": _r.get("do"),
+                         "napomena": _nap})
+    return _out
+
+
+def knjizno_zbir(tabela):
+    """Zbirovi po kupcu i ukupno."""
+    _po_kupcu, _red = {}, []
+    for _t in (tabela or []):
+        _d = _po_kupcu.setdefault(_t["kupac"], {"kom": 0, "osnovica": 0.0, "pdv": 0.0,
+                                                "ukupno": 0.0})
+        _d["kom"] += int(_t["kom"] or 0)
+        _d["osnovica"] += float(_t["osnovica"] or 0)
+        _d["pdv"] += float(_t["pdv"] or 0)
+        _d["ukupno"] += float(_t["ukupno"] or 0)
+    _uk = {"kom": sum(_d["kom"] for _d in _po_kupcu.values()),
+           "osnovica": sum(_d["osnovica"] for _d in _po_kupcu.values()),
+           "pdv": sum(_d["pdv"] for _d in _po_kupcu.values()),
+           "ukupno": sum(_d["ukupno"] for _d in _po_kupcu.values())}
+    return _po_kupcu, _uk
+
+
+def _knj_din(v, dec=2):
+    try:
+        _s = ("{:,." + str(dec) + "f}").format(float(v))
+    except Exception:
+        return str(v)
+    return _s.replace(",", "#").replace(".", ",").replace("#", ".")
+
+
+def _knj_period(od, do):
+    _o = _cene_d(od); _d = _cene_d(do)
+    if not (_o and _d):
+        return ""
+    return _o.strftime("%d.%m.") + " - " + _d.strftime("%d.%m.")
+
+
+def knjizno_html(tabela, po_kupcu, uk):
+    """Tabela kao u ručnom Excel-u: po kupcu, sa međuzbirovima."""
+    if not tabela:
+        return ('<div class="cene-note">Nema šta da se obračuna — ili za taj mesec nema '
+                'akcijskih cena, ili izveštaj prodaje još nije objavljen.</div>')
+    _h = ['<div class="cene-wrap"><table class="cene-tab"><thead><tr>'
+          '<th class="l">Kupac</th><th class="l">Artikal</th><th>Redovna</th>'
+          '<th>Akcijska</th><th>Marža</th><th>Period</th><th>Količina</th>'
+          '<th>Osnovica</th><th>PDV</th><th>Knjižno ukupno</th></tr></thead><tbody>']
+    _pre = None
+    for _t in tabela:
+        if _pre is not None and _t["kupac"] != _pre:
+            _z = po_kupcu[_pre]
+            _h.append('<tr class="knj-zbir"><td class="l" colspan="6">' + _h_escape(_pre)
+                      + ' — ukupno</td><td>' + _knj_din(_z["kom"], 0) + '</td><td>'
+                      + _knj_din(_z["osnovica"]) + '</td><td>' + _knj_din(_z["pdv"])
+                      + '</td><td>' + _knj_din(_z["ukupno"]) + '</td></tr>')
+        _pre = _t["kupac"]
+        _h.append('<tr' + (' class="knj-rucno"' if _t.get("rucno") else '') + '>'
+                  '<td class="sis">' + _h_escape(_t["kupac"]) + '</td>'
+                  '<td class="grp">' + _h_escape(_t["grupa"]) + '</td>'
+                  '<td class="red">' + _knj_din(_t["redovna"], 0) + '</td>'
+                  '<td class="akc">' + _h_escape(_t["akcijska"]) + '</td>'
+                  '<td class="red">' + _knj_din(_t["marza"], 0) + '%</td>'
+                  '<td class="per">' + _h_escape(_knj_period(_t.get("od"), _t.get("do")))
+                  + '</td>'
+                  '<td class="red">' + _knj_din(_t["kom"], 0)
+                  + (' <i>' + _h_escape(_t["napomena"]) + '</i>' if _t.get("napomena") else '')
+                  + '</td>'
+                  '<td class="red">' + _knj_din(_t["osnovica"]) + '</td>'
+                  '<td class="red">' + _knj_din(_t["pdv"]) + '</td>'
+                  '<td class="red"><b>' + _knj_din(_t["ukupno"]) + '</b></td></tr>')
+    if _pre is not None:
+        _z = po_kupcu[_pre]
+        _h.append('<tr class="knj-zbir"><td class="l" colspan="6">' + _h_escape(_pre)
+                  + ' — ukupno</td><td>' + _knj_din(_z["kom"], 0) + '</td><td>'
+                  + _knj_din(_z["osnovica"]) + '</td><td>' + _knj_din(_z["pdv"])
+                  + '</td><td>' + _knj_din(_z["ukupno"]) + '</td></tr>')
+    _h.append('<tr class="knj-uk"><td class="l" colspan="6">SVE UKUPNO</td><td>'
+              + _knj_din(uk["kom"], 0) + '</td><td>' + _knj_din(uk["osnovica"]) + '</td><td>'
+              + _knj_din(uk["pdv"]) + '</td><td>' + _knj_din(uk["ukupno"]) + '</td></tr>')
+    _h.append('</tbody></table></div>')
+    return "".join(_h)
+
+
+def knjizno_xlsx(tabela, po_kupcu, uk, mesec_lbl):
+    """Excel u istom rasporedu kao tvoj ručni fajl."""
+    import io as _io
+    from openpyxl import Workbook as _WB
+    from openpyxl.styles import Font as _F, PatternFill as _PF, Alignment as _AL, \
+        Border as _BD, Side as _SD
+    from openpyxl.utils import get_column_letter as _GL
+    _wb = _WB(); _ws = _wb.active; _ws.title = "Knjizno"
+    _thin = _SD(style="thin", color="94A3B8")
+    _bord = _BD(left=_thin, right=_thin, top=_thin, bottom=_thin)
+    _kol = [("KUPAC", 22), ("ARTIKL", 20), ("REDOVNA CENA", 14), ("AKCIJSKA CENA", 18),
+            ("MARŽA", 9), ("PERIOD AKCIJE", 16), ("Kolicina", 11), ("Osnovica", 14),
+            ("PDV", 13), ("Knjizno total", 15)]
+    _ws.append([_h for _h, _w in _kol])
+    _hf = _PF("solid", fgColor="BDD7EE")
+    for _i, (_h, _w) in enumerate(_kol, start=1):
+        _c = _ws.cell(row=1, column=_i)
+        _c.font = _F(bold=True, size=10, name="Arial")
+        _c.fill = _hf
+        _c.alignment = _AL(horizontal="center", vertical="center", wrap_text=True)
+        _c.border = _bord
+        _ws.column_dimensions[_GL(_i)].width = _w
+    _zbf = _PF("solid", fgColor="E2EFDA")
+    _ukf = _PF("solid", fgColor="FFE699")
+
+    def _red_zbir(naziv, z, fill):
+        _ws.append([naziv, "", "", "", "", "", z["kom"], round(z["osnovica"], 2),
+                    round(z["pdv"], 2), round(z["ukupno"], 2)])
+        _rr = _ws.max_row
+        for _ci in range(1, len(_kol) + 1):
+            _c = _ws.cell(row=_rr, column=_ci)
+            _c.fill = fill
+            _c.font = _F(bold=True, size=10, name="Arial")
+            _c.border = _bord
+            if _ci >= 7:
+                _c.number_format = "#,##0.00" if _ci > 7 else "#,##0"
+
+    _pre = None
+    for _t in tabela:
+        if _pre is not None and _t["kupac"] != _pre:
+            _red_zbir(_pre + " — ukupno", po_kupcu[_pre], _zbf)
+        _pre = _t["kupac"]
+        _ws.append([_t["kupac"], _t["grupa"], _t["redovna"], _t["akcijska"],
+                    round(_t["marza"], 0) / 100.0, _knj_period(_t.get("od"), _t.get("do")),
+                    _t["kom"], round(_t["osnovica"], 2), round(_t["pdv"], 2),
+                    round(_t["ukupno"], 2)])
+        _rr = _ws.max_row
+        for _ci in range(1, len(_kol) + 1):
+            _c = _ws.cell(row=_rr, column=_ci)
+            _c.border = _bord
+            _c.font = _F(size=10, name="Arial", bold=(_ci == 10))
+            _c.alignment = _AL(horizontal=("left" if _ci in (1, 2) else "center"),
+                               vertical="center")
+            if _ci == 5:
+                _c.number_format = "0%"
+            elif _ci == 7:
+                _c.number_format = "#,##0"
+            elif _ci >= 8:
+                _c.number_format = "#,##0.00"
+    if _pre is not None:
+        _red_zbir(_pre + " — ukupno", po_kupcu[_pre], _zbf)
+    _red_zbir("SVE UKUPNO", uk, _ukf)
+    _ws.freeze_panes = "A2"
+    _ws.insert_rows(1)
+    _t = _ws.cell(row=1, column=1, value="KNJIŽNO ODOBRENJE · " + str(mesec_lbl))
+    _t.font = _F(bold=True, size=13, color="1F4E79", name="Arial")
+    _ws2 = _wb.create_sheet("Kako se računa")
+    for _r in (["KNJIŽNO ODOBRENJE — kako se računa"], [],
+               ["1.", "neto cena = MP cena / 1,20 (PDV) / (1 + marža kupca)"],
+               ["2.", "osnovica po komadu = neto(redovna) − neto(akcijska)"],
+               ["3.", "PDV = osnovica × 20%"],
+               ["4.", "knjižno = (osnovica + PDV) × prodata količina"], [],
+               ["Marža:", "20% podrazumevano · SYX 10% · MIKROMARKET 40% "
+                          "(može se promeniti u kartici Cene i akcije)"],
+               ["Količine:", "iz objavljenog izveštaja prodaje, za izabrani mesec"],
+               ["Novi HQD ukusi:", ", ".join(CENE_HQD_NOVI_UKUSI)
+                + " — računaju se po svojoj ceni"]):
+        _ws2.append(_r)
+    _ws2.column_dimensions["A"].width = 16
+    _ws2.column_dimensions["B"].width = 95
+    _ws2.cell(row=1, column=1).font = _F(bold=True, size=12, color="1F4E79", name="Arial")
+    _buf = _io.BytesIO(); _wb.save(_buf); return _buf.getvalue()
+
+
+def _knjizno_blok(mesec_key, sel_lbl, podaci, redovi_svi, uloga, ro):
+    """Automatski obračun knjižnog odobrenja za izabrani mesec (analitika i direktori)."""
+    if uloga not in ("analitika", "direktor"):
+        return
+    import json as _json
+    _pod = dict(podaci or {})
+    _knj = dict(_pod.get("knjizno") or {})
+    _marze = dict(_knj.get("marze") or {})
+    _mapa = dict(_knj.get("kupci") or {})
+    _rucno = dict(_knj.get("rucno") or {})
+    with st.expander("💳 Knjižno odobrenje — automatski obračun (" + str(sel_lbl) + ")"):
+        _izvp = None
+        try:
+            _izvp = sb_ucitaj_izvestaj_prodaje()
+        except Exception:
+            _izvp = None
+        _sales = {}
+        try:
+            _sales = _json.loads((_izvp or {}).get("prodaja_json") or "{}")
+        except Exception:
+            _sales = {}
+        if not _sales:
+            st.info("Još nema objavljenog izveštaja prodaje — kad ga objaviš, količine se "
+                    "same povuku odavde.")
+            return
+        _kol = knjizno_kolicine(_sales, mesec_key)
+        if not _kol:
+            st.warning("Objavljeni izveštaj prodaje ne sadrži " + str(sel_lbl)
+                       + ". Poslednji meseci u izveštaju: "
+                       + ", ".join([str(x) for x in (_sales.get("nazivi") or [])[-4:]]) + ".")
+            return
+        _sis_kart = sorted({str(_r.get("sistem")) for _r in (redovi_svi or [])})
+        _veza = knjizno_kupac_sistem(_kol["kupci"], _sis_kart, _mapa)
+        _nerasp = [_k for _k in _kol["kupci"] if _k not in _veza]
+        if _nerasp:
+            with st.popover("⚠️ Kupci koji nisu povezani sa sistemom (" + str(len(_nerasp))
+                            + ")", width=520):
+                st.caption("Ovi kupci iz izveštaja prodaje nemaju isti naziv kao sistem u "
+                           "kartici cena, pa ne znam čije cene da primenim. Poveži ih "
+                           "jednom — zapamti se za sve mesece.")
+                _nov = {}
+                for _k in _nerasp:
+                    _nov[_k] = st.selectbox(_k, ["— preskoči —"] + _sis_kart,
+                                            key="knj_map_" + _knj_norm(_k),
+                                            disabled=ro)
+                if (not ro) and st.button("💾 Zapamti raspored", key="knj_map_b_" + mesec_key):
+                    for _k, _v in _nov.items():
+                        if _v and _v != "— preskoči —":
+                            _mapa[_k] = _v
+                    _knj["kupci"] = _mapa
+                    _pod["knjizno"] = _knj
+                    try:
+                        sb_cene_set(mesec_key, _pod)
+                        st.rerun()
+                    except Exception as _e:
+                        st.error("Greška: " + str(_e))
+        _tab = knjizno_tabela(redovi_svi, _kol, _veza, _marze, _rucno)
+        _rucni = [_t for _t in _tab if _t.get("rucno") and not _t["kom"]]
+        if _rucni and not ro:
+            with st.popover("✍️ Akcije koje se ne računaju same (" + str(len(_rucni)) + ")",
+                            width=560):
+                st.caption("Za „1+1“ i slične akcije upiši koliko je para prodato i "
+                           "koliko kupac plaća za par (npr. 491).")
+                for _t in _rucni:
+                    st.markdown("**" + _h_escape(_t["kupac"]) + " · " + _h_escape(_t["grupa"])
+                                + "** — " + _h_escape(_t["akcijska"]))
+                    _r1, _r2, _r3 = st.columns([1, 1, 1])
+                    with _r1:
+                        _kom_v = st.number_input("količina", min_value=0, step=1, value=0,
+                                                 key="knj_kom_" + _knj_norm(_t["kljuc"]))
+                    with _r2:
+                        _cen_v = st.number_input("cena", min_value=0, step=1, value=0,
+                                                 key="knj_cen_" + _knj_norm(_t["kljuc"]))
+                    with _r3:
+                        _par_v = st.checkbox("par (1+1)", value=True,
+                                             key="knj_par_" + _knj_norm(_t["kljuc"]))
+                    if st.button("💾 Upiši", key="knj_ruc_b_" + _knj_norm(_t["kljuc"])):
+                        _rucno[_t["kljuc"]] = {"kom": int(_kom_v), "cena": float(_cen_v),
+                                               "par": bool(_par_v)}
+                        _knj["rucno"] = _rucno
+                        _pod["knjizno"] = _knj
+                        try:
+                            sb_cene_set(mesec_key, _pod)
+                            st.rerun()
+                        except Exception as _e:
+                            st.error("Greška: " + str(_e))
+        _po_kupcu, _uk = knjizno_zbir(_tab)
+        st.markdown('<div class="cene-note">Račun: neto cena = MP cena ÷ 1,20 (PDV) ÷ '
+                    '(1 + marža kupca) · osnovica = neto(redovna) − neto(akcijska) · '
+                    'PDV 20% · × prodata količina iz izveštaja prodaje ('
+                    + _h_escape(str(_kol.get("mesec") or "")) + ').</div>',
+                    unsafe_allow_html=True)
+        st.markdown(knjizno_html(_tab, _po_kupcu, _uk), unsafe_allow_html=True)
+        if _tab:
+            _z1, _z2 = st.columns([1.5, 3])
+            with _z1:
+                st.download_button("⬇️ Izvezi u Excel",
+                                   knjizno_xlsx(_tab, _po_kupcu, _uk, sel_lbl),
+                                   file_name=("knjizno_" + str(mesec_key) + ".xlsx"),
+                                   mime=("application/vnd.openxmlformats-officedocument"
+                                         ".spreadsheetml.sheet"),
+                                   key="knj_xls_" + mesec_key, use_container_width=True)
+            with _z2:
+                st.markdown('<div class="cene-note">Ukupno za knjižna odobrenja: <b>'
+                            + _knj_din(_uk["ukupno"]) + ' RSD</b> (osnovica '
+                            + _knj_din(_uk["osnovica"]) + ' + PDV ' + _knj_din(_uk["pdv"])
+                            + ').</div>', unsafe_allow_html=True)
+        with st.popover("⚙️ Marže kupaca", width=520):
+            st.caption("Marža se koristi da se iz maloprodajne cene dobije neto cena. "
+                       "Podrazumevano 20%, SYX 10%, MIKROMARKET 40%.")
+            _parovi = sorted({(_t["sistem"], _t["grupa"]) for _t in _tab})
+            _nove = {}
+            for _s0, _g0 in _parovi:
+                _nove[(_s0, _g0)] = st.number_input(
+                    _s0 + " · " + _g0, min_value=0.0, max_value=200.0, step=1.0,
+                    value=float(knjizno_marza(_s0, _g0, _marze)),
+                    key="knj_m_" + _cene_kljuc(mesec_key, _s0, _g0), disabled=ro)
+            if (not ro) and st.button("💾 Sačuvaj marže", key="knj_m_b_" + mesec_key):
+                for (_s0, _g0), _v in _nove.items():
+                    if abs(float(_v) - knjizno_marza(_s0, _g0, None)) > 0.001:
+                        _marze[_knj_norm(_s0) + "|" + _g0] = float(_v)
+                    else:
+                        _marze.pop(_knj_norm(_s0) + "|" + _g0, None)
+                _knj["marze"] = _marze
+                _pod["knjizno"] = _knj
+                try:
+                    sb_cene_set(mesec_key, _pod)
+                    st.rerun()
+                except Exception as _e:
+                    st.error("Greška: " + str(_e))
+
+
 def cene_ui(uloga, ugradjeno=False):
     """Kartica „Cene i akcije".
 
@@ -11474,6 +11968,7 @@ def cene_ui(uloga, ugradjeno=False):
                     except Exception as _e:
                         st.error("Greška: " + str(_e))
         _cene_mejl_blok(_mk, _sel, _pod, _redovi_svi, uloga, _ro, _f_sis)
+        _knjizno_blok(_mk, _sel, _pod, _redovi_svi, uloga, _ro)
         return
 
     # ---- izmena direktno u tabeli ----
@@ -11745,6 +12240,8 @@ def cene_ui(uloga, ugradjeno=False):
                 except Exception as _e:
                     st.error("Greška: " + str(_e))
     _cene_mejl_blok(_mk, _sel, _pod, _redovi_svi, uloga, _ro, _f_sis)
+    _knjizno_blok(_mk, _sel, _pod, _redovi_svi, uloga, _ro)
+
 
 def prikazi_administraciju(ugradjeno=False):
     """ugradjeno=True — isti ekran, ali ubačen u drugu karticu (direktorski pregled):
