@@ -10303,7 +10303,7 @@ CENE_SQL_PORUKA = ("Tabela „cene“ još nije napravljena u bazi. Analitičar 
                    "iz fajla „SQL_cene.sql“ u Supabase → SQL Editor.")
 
 CENE_GRUPE = ["HQD stari ukusi", "HQD novi ukusi", "HQD GLOW PRO KIT", "HQD GLOW PRO POD",
-              "NERD 2000", "SYX", "ZVAKE"]
+              "NERD 2000", "SYX"]
 # Koji sistem radi koje grupe (osnovni spisak — red se kasnije dodaje ili briše u tabeli).
 # „HQD 1000" iz starih tabela = „HQD stari ukusi"; uz njega svaki sistem dobija i red
 # za „HQD novi ukusi", jer se novi ukusi uvode posebno.
@@ -10312,10 +10312,9 @@ CENE_SISTEMI = {
     "AMAN": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000", "SYX"],
     "AROMA": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000"],
     "BB TRADE": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000", "SYX"],
-    "BEOKOLP": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000", "ZVAKE"],
+    "BEOKOLP": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000"],
     "BOBAR": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000", "SYX"],
     "CORNER KIOSK": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000", "SYX"],
-    "GRAL": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000"],
     "KNEZ PETROL": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000", "SYX"],
     "MATIC PROMET": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000"],
     "MEDIUS": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000", "SYX"],
@@ -10324,18 +10323,19 @@ CENE_SISTEMI = {
                   "HQD GLOW PRO POD", "NERD 2000", "SYX"],
     "SREM PRESS": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000", "SYX"],
     "UNIVEREXPORT": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000"],
-    "VX TRADE": ["HQD stari ukusi", "HQD novi ukusi", "NERD 2000"],
 }
 
 # Grupe koje se više ne vode — ako su ostale od ranije, same se sklone iz tabele.
-CENE_GRUPE_UKINUTE = {"GOAT", "KILLA", "NERD 1000"}
+CENE_GRUPE_UKINUTE = {"GOAT", "KILLA", "NERD 1000", "ZVAKE"}
+# Sistemi sa kojima više ne radimo — redovi im se sami sklone iz svakog meseca.
+CENE_SISTEMI_UKINUTI = {"GRAL", "VX TRADE"}
 CENE_ODG_PRAZNO = "— nije izabran —"
 CENE_ODGOVORNI = [CENE_ODG_PRAZNO, "Zorana - administracija", "Aleksandra - administracija",
                   "Hristina - analitika", "Vukašin - direktor", "Slobodan - direktor",
                   "Jelena - direktor"]
 CENOVNIK_PODRAZUMEVANI = {"HQD stari ukusi": 890, "HQD novi ukusi": 490,
                           "HQD GLOW PRO KIT": 1990, "HQD GLOW PRO POD": 1090,
-                          "NERD 2000": 1390, "SYX": 490, "ZVAKE": 0}
+                          "NERD 2000": 1390, "SYX": 490}
 
 
 def sb_cene_ok():
@@ -10434,7 +10434,7 @@ def cene_status_prikaz(red, danas=None):
     if _st == "nije":
         return ("NISU POTVRDILI", "#fee2e2", "#991b1b")
     if not _akc:
-        return ("—", "#f8fafc", "#94a3b8")
+        return ("NEMA AKCIJE · ostaje redovna", "#eef2f6", "#64748b")
     _od = _cene_d((red or {}).get("od"))
     if _od and danas >= _od:
         return ("ODBIJENO (nije potvrđeno na vreme)", "#fee2e2", "#991b1b")
@@ -10527,8 +10527,10 @@ def cene_xlsx(redovi, mesec_lbl, cenovnik=None):
         _od = _cene_d(_r.get("od")); _do = _cene_d(_r.get("do"))
         _per = ((_od.strftime("%d.%m.") + "-" + _do.strftime("%d.%m.")) if (_od and _do) else "")
         _ws.append([_r.get("sistem", ""), _r.get("grupa", ""),
-                    (int(_r.get("redovna") or 0) or ""), str(_r.get("akcijska") or ""),
-                    _per, _lbl, str(_r.get("odgovoran") or ""), str(_r.get("napomena") or "")])
+                    (int(_r.get("redovna") or 0) or ""),
+                    (str(_r.get("akcijska") or "") or "nema akcije"),
+                    _per, ("NEMA AKCIJE" if "NEMA AKCIJE" in _lbl else _lbl),
+                    str(_r.get("odgovoran") or ""), str(_r.get("napomena") or "")])
         _rr = _ws.max_row
         _odbijen = ("ODBIJENO" in _lbl) or ("NISU" in _lbl)
         for _ci in range(1, len(_kol) + 1):
@@ -10544,6 +10546,9 @@ def cene_xlsx(redovi, mesec_lbl, cenovnik=None):
                 _c.fill = _zuto
             elif _ci == 6 and "POTVRĐENO" in _lbl:
                 _c.fill = _zeleno
+            elif "NEMA AKCIJE" in _lbl and _ci in (3, 4, 6):
+                _c.fill = _PF("solid", fgColor="EEF2F6")
+                _c.font = _F(size=10, name="Arial", bold=(_ci == 3), color="475569")
     _ws.freeze_panes = "A2"
     _ws.auto_filter.ref = "A1:" + _GL(len(_kol)) + str(max(_ws.max_row, 2))
     _ws.insert_rows(1)
@@ -10592,21 +10597,85 @@ table.cene-tab tr.sep td{border-top:2px solid #e9e3fb;}
 .cene-c.red{font-variant-numeric:tabular-nums;color:#6b7280;}
 .cene-c.odg{text-align:left;font-size:12px;color:#334155;}
 .cene-note{font-size:12px;color:#6b7280;margin:8px 0 6px;}
-div[class*="st-key-cenered_"]{border-top:1px solid #efeafb;padding:1px 0;}
-div[class*="st-key-cenered_"]:hover{background:#faf8ff;}
-div[class*="st-key-cenered_"] input,
-div[class*="st-key-cenered_"] div[data-baseweb="select"] div{font-size:12.5px !important;}
-div[class*="st-key-cenered_"] div[data-baseweb="input"],
-div[class*="st-key-cenered_"] div[data-baseweb="select"] > div{min-height:34px !important;}
-div[class*="st-key-cenered_"] [data-testid="stNumberInputStepUp"],
-div[class*="st-key-cenered_"] [data-testid="stNumberInputStepDown"]{display:none;}
+div[class*="st-key-cenered"]{border-top:1px solid #efeafb;padding:1px 0;}
+div[class*="st-key-cenered"]:hover{background:#faf8ff;}
+/* red bez akcijske cene — ostaje redovna, ništa se ne popunjava */
+div[class*="st-key-ceneredno_"]{background:#f7f9fb;}
+div[class*="st-key-ceneredno_"] [data-testid="stNumberInput"] input{color:#475569 !important;
+    font-weight:700;background:#eef2f6 !important;}
+div[class*="st-key-ceneredno_"]:hover{background:#eef3f8;}
+div[class*="st-key-cenered"] input,
+div[class*="st-key-cenered"] div[data-baseweb="select"] div{font-size:12.5px !important;}
+div[class*="st-key-cenered"] div[data-baseweb="input"],
+div[class*="st-key-cenered"] div[data-baseweb="select"] > div{min-height:34px !important;}
+div[class*="st-key-cenered"] [data-testid="stNumberInputStepUp"],
+div[class*="st-key-cenered"] [data-testid="stNumberInputStepDown"]{display:none;}
 /* datum: ceo se vidi (dd.mm.gggg) i kalendar ostaje */
-div[class*="st-key-cenered_"] [data-testid="stDateInput"] input{font-size:12px !important;
+div[class*="st-key-cenered"] [data-testid="stDateInput"] input{font-size:12px !important;
     padding:0 2px 0 6px !important;letter-spacing:-.2px;}
-div[class*="st-key-cenered_"] [data-testid="stDateInput"] div[data-baseweb="input"]{
+div[class*="st-key-cenered"] [data-testid="stDateInput"] div[data-baseweb="input"]{
     padding-right:2px !important;}
-div[class*="st-key-cenered_"] [data-testid="stDateInput"] svg{width:14px;height:14px;}
+div[class*="st-key-cenered"] [data-testid="stDateInput"] svg{width:14px;height:14px;}
 """
+
+
+def cene_kroz_mesece(svi_meseci, sistem, danas=None):
+    """Jedan sistem, sve grupe, svi meseci — akcijske cene i status kroz vreme."""
+    danas = danas or _now().date()
+    _mes = sorted([_k for _k, _v in (svi_meseci or {}).items()
+                   if any(str(_r.get("sistem")) == str(sistem)
+                          for _r in ((_v or {}).get("redovi") or []))])
+    if not _mes:
+        return ""
+    _rang = {_g: _i for _i, _g in enumerate(CENE_GRUPE)}
+    _grupe = []
+    for _k in _mes:
+        for _r in ((svi_meseci.get(_k) or {}).get("redovi") or []):
+            if str(_r.get("sistem")) == str(sistem):
+                _g = str(_r.get("grupa"))
+                if _g not in _grupe:
+                    _grupe.append(_g)
+    _grupe.sort(key=lambda g: (_rang.get(g, 99), g))
+    _nadji = {}
+    for _k in _mes:
+        for _r in ((svi_meseci.get(_k) or {}).get("redovi") or []):
+            if str(_r.get("sistem")) == str(sistem):
+                _nadji[(_k, str(_r.get("grupa")))] = _r
+    _h = ['<div class="cene-wrap"><table class="cene-tab"><thead><tr>'
+          '<th class="l">Artikal</th>']
+    for _k in _mes:
+        _h.append('<th>' + _h_escape(mesec_label(_k)) + '</th>')
+    _h.append('</tr></thead><tbody>')
+    for _g in _grupe:
+        _h.append('<tr><td class="grp">' + _h_escape(_g) + '</td>')
+        for _k in _mes:
+            _r = _nadji.get((_k, _g))
+            if not _r:
+                _h.append('<td class="akc prazno">·</td>')
+                continue
+            _lbl, _bg, _fg = cene_status_prikaz(_r, danas)
+            _akc = str(_r.get("akcijska") or "").strip()
+            _red = int(_r.get("redovna") or 0)
+            _od = _cene_d(_r.get("od")); _do = _cene_d(_r.get("do"))
+            _tip = ((("Akcija " + _od.strftime("%d.%m.") + "–" + _do.strftime("%d.%m."))
+                     if (_od and _do) else "")
+                    + "  ·  redovna " + (format(_red, ",").replace(",", ".") if _red else "—")
+                    + "  ·  " + _lbl
+                    + (("  ·  " + str(_r.get("odgovoran"))) if _r.get("odgovoran") else "")
+                    + (("  ·  " + str(_r.get("napomena"))) if _r.get("napomena") else ""))
+            if not _akc:
+                _h.append('<td class="akc prazno" title="' + _h_escape(_tip) + '">—<div '
+                          'style="font-size:10px;color:#b6bdc9;font-weight:600;">'
+                          + (format(_red, ",").replace(",", ".") if _red else "") + '</div></td>')
+                continue
+            _h.append('<td style="background:' + _bg + ';color:' + _fg + ';font-weight:800;'
+                      'text-align:center;padding:7px 8px;border-top:1px solid #efeafb;" title="'
+                      + _h_escape(_tip) + '">' + _h_escape(_akc)
+                      + '<div style="font-size:10px;font-weight:600;opacity:.75;">'
+                      + (format(_red, ",").replace(",", ".") if _red else "") + '</div></td>')
+        _h.append('</tr>')
+    _h.append('</tbody></table></div>')
+    return "".join(_h)
 
 
 def cene_html(redovi, danas=None, cenovnik=None):
@@ -10676,6 +10745,32 @@ def cene_ui(uloga, ugradjeno=False):
     _tek = _danas.strftime("%Y-%m")
     _kljucevi = sorted(set(list(_svi.keys()) + [_tek, _mesec_pomak(_tek, 1)]), reverse=True)
     _lbls = [mesec_label(k) for k in _kljucevi]
+    # ---- dva pogleda: mesečni pregled ili jedan sistem kroz mesece ----
+    _pogled = st.radio("Pogled", ["📅 Mesečni pregled", "📈 Jedan sistem kroz mesece"],
+                       horizontal=True, key="cene_pogled", label_visibility="collapsed")
+    if _pogled.startswith("📈"):
+        _sis_svi = sorted({str(_r.get("sistem"))
+                           for _v in _svi.values()
+                           for _r in ((_v or {}).get("redovi") or [])
+                           if str(_r.get("sistem")).strip().upper() not in CENE_SISTEMI_UKINUTI}
+                          | set(CENE_SISTEMI.keys()))
+        if not _sis_svi:
+            st.info("Još nema unetih cena.")
+            return
+        _k1, _k2 = st.columns([1.5, 3])
+        with _k1:
+            _sis_izb = st.selectbox("Sistem", _sis_svi, key="cene_sis_kroz")
+        _html_k = cene_kroz_mesece(_svi, _sis_izb, _danas)
+        if not _html_k:
+            st.info("Za " + str(_sis_izb) + " još nema unetih cena.")
+            return
+        st.markdown('<div class="cene-note">Akcijska cena po mesecima (ispod nje sitno stoji '
+                    'redovna). Zeleno je potvrđeno, crveno odbijeno ili nisu potvrdili, žuto '
+                    'čeka potvrdu. Pređi mišem preko polja za period, odgovornog i napomenu.'
+                    '</div>', unsafe_allow_html=True)
+        st.markdown(_html_k, unsafe_allow_html=True)
+        return
+
     _c1, _c2, _c3 = st.columns([1.2, 1.6, 2.2])
     with _c1:
         _sel = st.selectbox("Mesec", _lbls, index=0, key="cene_mes")
@@ -10693,10 +10788,13 @@ def cene_ui(uloga, ugradjeno=False):
     # (osim redova koje je neko namerno obrisao i osim zaključanog meseca)
     if (not _ro) and (not _zakljucan):
         _izbaci = [_r0 for _r0 in _redovi_svi
-                   if str(_r0.get("grupa")) in CENE_GRUPE_UKINUTE]
+                   if str(_r0.get("grupa")) in CENE_GRUPE_UKINUTE
+                   or str(_r0.get("sistem")).strip().upper() in CENE_SISTEMI_UKINUTI]
         if _izbaci:
             _redovi_svi = [_r0 for _r0 in _redovi_svi
-                           if str(_r0.get("grupa")) not in CENE_GRUPE_UKINUTE]
+                           if str(_r0.get("grupa")) not in CENE_GRUPE_UKINUTE
+                           and str(_r0.get("sistem")).strip().upper()
+                           not in CENE_SISTEMI_UKINUTI]
             _pod["redovi"] = _redovi_svi
             try:
                 sb_cene_set(_mk, _pod)
@@ -10759,30 +10857,6 @@ def cene_ui(uloga, ugradjeno=False):
                    + "  —  cene su zajedničke, svaka sačuvana izmena odmah važi i za "
                      "administraciju i za direktore.")
 
-    # ---- cenovnik (redovne cene) ----
-    if uloga in ("analitika", "direktor"):
-        with st.expander("💲 Redovan cenovnik (važi za sve sisteme, izuzeci se menjaju u tabeli)"):
-            _cc = st.columns(len(CENE_GRUPE))
-            _novi_cen = {}
-            for _i, _g in enumerate(CENE_GRUPE):
-                with _cc[_i]:
-                    _novi_cen[_g] = st.number_input(_g, min_value=0, step=10,
-                                                    value=int(_cen.get(_g, 0) or 0),
-                                                    key="cene_cv_" + _mk + "_" + str(_i),
-                                                    disabled=not _moze_menjati)
-            if _moze_menjati and st.button("Primeni cenovnik na sve redove", key="cene_cv_b_" + _mk):
-                for _r in _redovi:
-                    _r["redovna"] = int(_novi_cen.get(str(_r.get("grupa")), _r.get("redovna") or 0) or 0)
-                _pod["cenovnik"] = _novi_cen
-                _pod["redovi"] = _redovi
-                try:
-                    sb_cene_set(_mk, _pod)
-                    _cene_ocisti_polja(_mk)
-                    st.success("Cenovnik je primenjen.")
-                    st.rerun()
-                except Exception as _e:
-                    st.error("Greška: " + str(_e))
-
     _KOL_STATUS = {"": "— čeka —", "potvrdjeno": "POTVRĐENO", "nije": "NISU POTVRDILI"}
     # ---- tabela: menja se direktno u njoj, čuva se dugmetom ispod ----
     # Zaključan mesec (ili direktorski pregled) — samo lep prikaz, bez izmena
@@ -10829,7 +10903,8 @@ def cene_ui(uloga, ugradjeno=False):
             _pre_sis = _sis
             _lbl, _bg, _fg = cene_status_prikaz(_r, _danas)
             _kljuc_r = _cene_kljuc(_mk, _sis, _r.get("grupa"))
-            with st.container(key="cenered_" + _kljuc_r):
+            _bez_akc = not str(_r.get("akcijska") or "").strip()
+            with st.container(key=("ceneredno_" if _bez_akc else "cenered_") + _kljuc_r):
                 _c = st.columns(_SIR, vertical_alignment="center")
                 with _c[0]:
                     st.markdown('<div class="cene-c sis' + (' nov' if _nov_sis else '') + '">'
@@ -10865,7 +10940,12 @@ def cene_ui(uloga, ugradjeno=False):
                                           key="cn_do_" + _kljuc_r,
                                           label_visibility="collapsed")
                 with _c[6]:
-                    if _je_admin:
+                    if _bez_akc:
+                        _st_v = None
+                        st.markdown('<div class="cene-c"><span class="cene-chip" style="background:'
+                                    + _bg + ';color:' + _fg + ';">NEMA AKCIJE</span></div>',
+                                    unsafe_allow_html=True)
+                    elif _je_admin:
                         _opc = list(_KOL_STATUS.values())
                         _tren = _KOL_STATUS.get(str(_r.get("status") or ""), "— čeka —")
                         _st_v = st.selectbox("status", _opc, index=_opc.index(_tren),
