@@ -14,6 +14,10 @@ Glavna funkcija:
      "dan": int, "stara": float, "nova": float}
 """
 
+# Oznaka verzije modula — vidi se u aplikaciji (Objava izveštaja → Izveštaj prodaje),
+# da se odmah zna da li je na GitHub-u najnoviji fajl.
+VERZIJA = "3.1 · 15.10.2026 (Excel kao tabela na ekranu, boje cena, legenda iznad tabele)"
+
 import calendar
 import html as html_mod
 import io
@@ -1727,7 +1731,8 @@ def _napravi_xlsx(nazivi, sistemi, prodaja_data, grand_totals, profit_data, nazi
                   xls_prodaja=None, potpun=True, mesec_lbl="", palete=None):
     """Excel: list „Prodaja" je ISTA tabela kao na ekranu — sistem ▸ grupa ▸ artikal,
     meseci u kolonama, ćelije obojene po ceni (kao u pregledaču), redovi se skupljaju
-    i šire kao pivot. Plus listovi Neto profit, Magacin i Legenda cena."""
+    i šire kao pivot. Iznad tabele stoji legenda cena po grupama. U potpunom
+    izveštaju tu su i listovi Neto profit i Magacin."""
     from openpyxl import Workbook
     from openpyxl.comments import Comment
     from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
@@ -1755,14 +1760,45 @@ def _napravi_xlsx(nazivi, sistemi, prodaja_data, grand_totals, profit_data, nazi
                 + ("" if potpun else "  ·  NEPOTPUN IZVEŠTAJ (troškovi nisu učitani)"))
     _t.font = Font(bold=True, size=13, color="1E3A8A", name="Arial")
     ws.row_dimensions[1].height = 22
-    ws.append([])
-    ws.append(["SISTEM / GRUPA / ARTIKAL"] + list(nazivi) + ["TOTAL"])
-    for c in ws[3]:
-        c.font = hfn
-        c.fill = hf
-        c.alignment = Alignment(horizontal="center", wrap_text=True)
-        c.border = _bord
-    ws["A3"].alignment = Alignment(horizontal="left", vertical="center")
+
+    # ---- LEGENDA CENA iznad tabele (kao traka „Cene po grupama" na ekranu) ----
+    _red = 2
+    if palete:
+        _red += 1
+        _c = ws.cell(row=_red, column=1, value="CENE PO GRUPAMA  (boja ćelije = cena)")
+        _c.font = Font(bold=True, size=10, color="6D28D9", name="Arial")
+        for _g in sorted(palete.keys()):
+            _niv = [x for x in (palete.get(_g) or []) if x and x[0]]
+            if not _niv:
+                continue
+            _red += 1
+            _cg = ws.cell(row=_red, column=1, value=str(_g))
+            _cg.font = Font(bold=True, size=10, color="334155", name="Arial")
+            _cg.alignment = Alignment(horizontal="right", vertical="center")
+            for _j, (_cena, _boja) in enumerate(_niv[:_nk]):
+                _cc = ws.cell(row=_red, column=2 + _j, value=int(_cena))
+                _cc.number_format = _num
+                _cc.alignment = Alignment(horizontal="center")
+                _bh = _hex(_boja)
+                if _bh:
+                    _cc.fill = PatternFill("solid", fgColor=_bh)
+                    _cc.font = Font(bold=True, size=10, color=_tekst_na(_bh), name="Arial")
+                _cc.border = _bord
+        _red += 1
+        _c = ws.cell(row=_red, column=1,
+                     value="Ćelija sa komentarom (crveni ugao) = cena menjana u toku meseca "
+                           "ili ukusi nisu svi na istoj ceni — objašnjenje je u komentaru.")
+        _c.font = Font(italic=True, size=9, color="7C8494", name="Arial")
+
+    _red += 1                                   # prazan red između legende i tabele
+    _hr = _red + 1                              # red zaglavlja tabele
+    for _j, _v in enumerate(["SISTEM / GRUPA / ARTIKAL"] + list(nazivi) + ["TOTAL"]):
+        _c = ws.cell(row=_hr, column=1 + _j, value=_v)
+        _c.font = hfn
+        _c.fill = hf
+        _c.alignment = Alignment(horizontal="center", wrap_text=True)
+        _c.border = _bord
+    ws.cell(row=_hr, column=1).alignment = Alignment(horizontal="left", vertical="center")
 
     def _upis(red, vrednosti, total):
         for j, v in enumerate(vrednosti):
@@ -1840,7 +1876,7 @@ def _napravi_xlsx(nazivi, sistemi, prodaja_data, grand_totals, profit_data, nazi
             grupe = prodaja_data.get(sistem, {})
             for g, vals in sorted(grupe.items()):
                 ws.append([sistem, g] + list(vals) + [sum(vals)])
-    ws.freeze_panes = "B4"
+    ws.freeze_panes = "B" + str(_hr + 1)
     ws.column_dimensions["A"].width = 46
     for i in range(2, 2 + _nk + 1):
         ws.column_dimensions[get_column_letter(i)].width = 11
@@ -1883,27 +1919,6 @@ def _napravi_xlsx(nazivi, sistemi, prodaja_data, grand_totals, profit_data, nazi
         ws3.column_dimensions["A"].width = 52
         for col in "BCD":
             ws3.column_dimensions[col].width = 16
-
-    if palete:
-        ws4 = wb.create_sheet("Legenda cena")
-        ws4.append(["Grupa", "Cena (RSD)", "Boja"])
-        for c in ws4[1]:
-            c.font = hfn
-            c.fill = hf
-        for _g in sorted(palete.keys()):
-            for _cena, _boja in (palete.get(_g) or []):
-                ws4.append([_g, int(_cena), ""])
-                _bh = _hex(_boja)
-                if _bh:
-                    _cc = ws4.cell(row=ws4.max_row, column=3)
-                    _cc.fill = PatternFill("solid", fgColor=_bh)
-        ws4.append([])
-        ws4.append(["Napomena", "Celija u listu Prodaja je obojena bojom cene te grupe. "
-                                "Komentar u celiji (crveni ugao) objasnjava promenu cene u toku "
-                                "meseca ili razlicite cene ukusa u grupi."])
-        ws4.column_dimensions["A"].width = 26
-        ws4.column_dimensions["B"].width = 14
-        ws4.column_dimensions["C"].width = 12
 
     buf = io.BytesIO()
     wb.save(buf)
