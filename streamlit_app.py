@@ -822,6 +822,29 @@ def sb_load_obrada(mesec_key, sistem):
     return out
 
 
+def tel_za_pozivanje(raw):
+    """Telefon iz baze -> oblik koji Phone Link pouzdano okrene (+381…).
+
+    Rešava i slučaj kada Excel „pojede" vodeću nulu (0648595855 -> 648595855):
+    broj bez vodeće nule i bez pozivnog broja se tretira kao srpski.
+    """
+    import re as _re
+    _d = _re.sub(r"[^\d+]", "", str(raw or ""))
+    if _d.count("+") > 1:
+        _d = "+" + _d.replace("+", "")
+    if _d.startswith("+"):
+        return _d
+    if _d.startswith("00"):
+        return "+" + _d[2:]
+    if _d.startswith("381"):
+        return "+" + _d
+    if _d.startswith("0"):
+        return "+381" + _d[1:]
+    if 8 <= len(_d) <= 12:          # Excel pojeo nulu: 648595855 -> +381648595855
+        return "+381" + _d
+    return _d
+
+
 def _dt_kratko(iso):
     """ISO -> 'DD.MM.YYYY HH:MM' (ili original)."""
     if not iso:
@@ -1042,6 +1065,68 @@ def sb_ponisti_trebovao(mesec_key, sistem, idk):
         return True
     except Exception:
         return False
+
+
+# ---- objekti koje analitika isključi iz zvanja za tekući mesec ----
+AUTO_ZAV_RAZLOZI = ["zatvoren objekat", "ne drži taj asortiman", "naručuje centralno",
+                    "ne radi sa nama", "renoviranje / pauza", "drugo"]
+
+
+def je_auto_zav(v):
+    """Da li je analitika isključila objekat iz zvanja za taj mesec."""
+    return bool(((v or {}).get("dnevnik") or {}).get("auto_zavrseno"))
+
+
+def auto_zav_info(v):
+    """{'ko','at','razlog','napomena'} ili prazno."""
+    return dict((((v or {}).get("dnevnik") or {}).get("auto_zavrseno")) or {})
+
+
+def sb_auto_zavrsi(mesec_key, sistem, idk, razlog="", napomena="", ko=""):
+    """Analitika: ovaj objekat se ovog meseca ne zove — ide pravo u ZAVRŠENO.
+    Važi samo za taj mesec (zapis stoji uz mesec i sistem)."""
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    res = (cli.table("obrada").select("reakcije,trebovali,trebovali_tip,njihova,napomena,"
+                                      "reakcije_ko,dnevnik")
+           .eq("mesec", mesec_key).eq("sistem", sistem).eq("idk", int(idk)).limit(1).execute())
+    _r = res.data[0] if res.data else {}
+    _dn = dict(_r.get("dnevnik") or {})
+    _dn["auto_zavrseno"] = {"at": _now().isoformat(), "ko": str(ko or ""),
+                            "razlog": str(razlog or ""), "napomena": str(napomena or "")}
+    _row = {"mesec": mesec_key, "sistem": sistem, "idk": int(idk),
+            "reakcije": list(_r.get("reakcije") or []),
+            "trebovali": bool(_r.get("trebovali") or False),
+            "trebovali_tip": str(_r.get("trebovali_tip") or ""),
+            "njihova": dict(_r.get("njihova") or {}),
+            "napomena": _r.get("napomena") or "",
+            "reakcije_ko": dict(_r.get("reakcije_ko") or {}),
+            "dnevnik": _dn, "azurirano": _now().isoformat()}
+    cli.table("obrada").upsert(_row, on_conflict="mesec,sistem,idk").execute()
+    return True
+
+
+def sb_auto_zavrsi_skini(mesec_key, sistem, idk, ko=""):
+    """Vrati objekat u igru za taj mesec (skini oznaku analitike). Ostaje trag."""
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    res = (cli.table("obrada").select("dnevnik")
+           .eq("mesec", mesec_key).eq("sistem", sistem).eq("idk", int(idk)).limit(1).execute())
+    if not res.data:
+        return False
+    _dn = dict(res.data[0].get("dnevnik") or {})
+    _st = _dn.pop("auto_zavrseno", None)
+    if not _st:
+        return False
+    _hist = list(_dn.get("auto_zavrseno_skinuto") or [])
+    _hist.append({"at": _now().isoformat(), "ko": str(ko or ""),
+                  "razlog": str(_st.get("razlog") or "")})
+    _dn["auto_zavrseno_skinuto"] = _hist[-10:]
+    (cli.table("obrada").update({"dnevnik": _dn, "azurirano": _now().isoformat()})
+     .eq("mesec", mesec_key).eq("sistem", sistem).eq("idk", int(idk)).execute())
+    return True
 
 
 def sb_mejl_greska(mesec_key, sistem, idk, poruka, ko=""):
@@ -2229,14 +2314,7 @@ def knez_admin_ui():
 
                 # --- Slušalica: klik = zabeležen poziv ---
                 _tel_raw = str(r["telefon"] or "").strip()
-                import re as _ret
-                _tel_c = _ret.sub(r"[^\d+]", "", _tel_raw)
-                if _tel_c.count("+") > 1:
-                    _tel_c = "+" + _tel_c.replace("+", "")
-                if _tel_c.startswith("00"):
-                    _tel_c = "+" + _tel_c[2:]
-                elif _tel_c.startswith("0"):
-                    _tel_c = "+381" + _tel_c[1:]
+                _tel_c = tel_za_pozivanje(_tel_raw)
                 _b1, _b2, _b3 = st.columns([1.5, 1.5, 2])
                 with _b1:
                     st.button("📞 Pozovi " + (_tel_raw or "—"),
@@ -5823,6 +5901,8 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
         def _zav_obj(o):
             """ZAVRŠENO = posle starta je poslao porudžbinu (ili smo mi ubacili)."""
             _v = obrada.get(o["idk"], {}) or {}
+            if je_auto_zav(_v):
+                return True
             if (_v.get("dnevnik") or {}).get("trebovao_posle_starta"):
                 return True
             if (_v.get("trebovali_tip") or "") in ("nas", "njihov"):
@@ -5832,13 +5912,42 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
         _zavL = [o for o in objekti if _zav_obj(o)]
         _zavR = sum(1 for o in _zavL if o["nivo"] == "crveno")
         _zavZ = sum(1 for o in _zavL if o["nivo"] == "zuto")
+        # tri vrste završenog + uspešnost (isto kao u direktorskoj kartici)
+        _sids_pdf = ((_sz or {}).get("narudzbine") or {}) if isinstance(_sz, dict) else {}
+
+        def _pre_starta_pdf(o):
+            if not (_cut_pdf and _sids_pdf):
+                return False
+            _ids = set(_sids_pdf.get(str(int(o["idk"])), []) or [])
+            if not _ids:
+                return False
+            _l = [_x for _x in (_ahist_pdf.get(str(int(o["idk"])), []) or [])
+                  if str(_x.get("id") or "") in _ids]
+            return bool(_treb_posle_preseka(_l, _cut_pdf))
+
+        _anal_o = [o for o in objekti if je_auto_zav(obrada.get(o["idk"], {}) or {})]
+        _anal_ids = {int(o["idk"]) for o in _anal_o}
+        _zav_posle_o = [o for o in _zavL if int(o["idk"]) not in _anal_ids]
+        _posle_ids = {int(o["idk"]) for o in _zav_posle_o}
+        _zav_pre_o = [o for o in objekti if int(o["idk"]) not in _anal_ids
+                      and int(o["idk"]) not in _posle_ids and _pre_starta_pdf(o)]
+        _baza_pdf = max((nred + norg)
+                        - sum(1 for o in _anal_o if o["nivo"] in ("crveno", "zuto")), 0)
+        _zav_baza_pdf = sum(1 for o in _zav_posle_o if o["nivo"] in ("crveno", "zuto"))
         start_narr = ("Od starta"
                       + ((" (" + _h_escape(str(_sz.get("kada", ""))) + ")") if (_sz and _sz.get("kada")) else "")
                       + ": <b>" + str(nred + norg) + "</b> objekata je trebalo da poruči ("
                       + str(nred) + " hitno, " + str(norg) + " za kontrolu) &rarr; "
-                      "<b><font color='#158a3f'>" + str(len(_zavL)) + "</font></b> objekata je prešlo u "
-                      "ZAVRŠENO (poručili posle starta), od toga " + str(_zavR) + " iz hitne zone i "
-                      + str(_zavZ) + " iz zone za kontrolu.")
+                      "<b><font color='#158a3f'>" + str(len(_zavL)) + "</font></b> objekata je u "
+                      "ZAVRŠENOM, od toga " + str(_zavR) + " iz hitne zone i "
+                      + str(_zavZ) + " iz zone za kontrolu.<br/>"
+                      "ZAVRŠENO po vrsti: <b>" + str(len(_zav_posle_o)) + "</b> poručilo posle "
+                      "starta, <b>" + str(len(_zav_pre_o)) + "</b> poručilo samo od 01. do starta, "
+                      "<b>" + str(len(_anal_o)) + "</b> isključila analitika."
+                      + ((" <b>Uspešnost: " + str(int(round(_zav_baza_pdf * 100.0 / _baza_pdf)))
+                          + "%</b> (" + str(_zav_baza_pdf) + " od " + str(_baza_pdf)
+                          + " objekata koji su stvarno trebali da poruče).")
+                         if _baza_pdf else ""))
         img = Image(_chart(nred, norg, ngrn, n, nnas, nnj, nnije, neob, nrev), width=150 * mm, height=150 * mm * 2.15 / 9.0)
         img.hAlign = 'CENTER'
         _blk = [Paragraph(str(_sis), Hsys), Paragraph(narr, Nar),
@@ -6086,7 +6195,8 @@ def zadaci_rows_sistem(mesec_key, sistem):
         _dn = _v.get("dnevnik") or {}
         _pz = _dn.get("pozivi") or []
         _mj = _dn.get("mejlovi") or []
-        _zav = bool(_dn.get("trebovao_posle_starta")
+        _zav = bool(je_auto_zav(_v)
+                    or _dn.get("trebovao_posle_starta")
                     or (_v.get("trebovali_tip") or "") in ("nas", "njihov")
                     or ("Ubačena porudžbina" in (_v.get("reakcije") or [])))
         _red.append({
@@ -11152,84 +11262,88 @@ def _cene_korpa_artikla(tekst):
     return ""
 
 
-@st.cache_data(ttl=600, show_spinner=False)
-def cene_prodaja_sistema(sistem):
-    """{korpa: {mesec_key: kom}} — mesečna prodaja iz poslednjeg objavljenog izveštaja."""
+@st.cache_data(ttl=300, show_spinner=False)
+def cene_izvestaj_podaci():
+    """Sažetak objavljenog izveštaja prodaje — prodaja i ranije akcije po artiklu."""
+    import json as _json
     try:
-        _mes = [str(_m.get("key")) for _m in (sb_meseci() or [])][:8]
+        _i = sb_ucitaj_izvestaj_prodaje() or {}
+        return _json.loads(_i.get("prodaja_json") or "{}")
     except Exception:
         return {}
-    for _mk in _mes:
-        try:
-            _p = sb_ucitaj(_mk, sistem)
-        except Exception:
-            _p = None
-        if not _p:
-            continue
-        _lbl = ((_p.get("meta") or {}).get("mesec_nazivi") or [])
-        _stv = _p.get("stavke") or []
-        if not _lbl or not _stv:
-            continue
-        _kl = [_cene_mk_od_labela(_x) for _x in _lbl]
-        _out = {}
-        for _s in _stv:
-            _k = _cene_korpa_artikla(str(_s.get("grupa") or "") + " "
-                                     + str(_s.get("naziv") or ""))
-            if not _k:
+
+
+def _cene_art_u_grupu(naziv, grupa_izv, grupa_kartice):
+    """Da li taj artikal iz izveštaja pripada ovoj grupi iz kartice cena."""
+    _korpa = cene_grupa_korpa(grupa_kartice)
+    if _cene_korpa_artikla(str(grupa_izv or "") + " " + str(naziv or "")) != _korpa:
+        return False
+    if _korpa != "HQD 1000":
+        return True
+    _novi = _knj_je_novi_ukus(naziv)
+    if str(grupa_kartice) == "HQD novi ukusi":
+        return _novi
+    if str(grupa_kartice) == "HQD stari ukusi":
+        return not _novi
+    return True
+
+
+def cene_pregled(sistem, grupa, sales, kupci_map=None, koliko=6):
+    """Prodaja i ranije akcije za sistem i grupu — iz objavljenog izveštaja prodaje.
+
+    Cene (akcijska i redovna) dolaze iz iste tabele koja se predaje uz izveštaj
+    prodaje, pa se vidi i period pre nego što smo počeli da vodimo karticu cena.
+    """
+    _naz = list((sales or {}).get("nazivi") or [])
+    _po_art = ((sales or {}).get("po_artiklu") or {})
+    if not _naz or not _po_art:
+        return None
+    _veza = knjizno_kupac_sistem(sorted(((sales or {}).get("po_sistemu") or _po_art).keys()),
+                                 [sistem], kupci_map)
+    _kupci = [_k for _k, _s in (_veza or {}).items() if _s == sistem]
+    if not _kupci:
+        return None
+    _n = len(_naz)
+    _kom = [0] * _n; _akc = [0] * _n; _red = [0] * _n
+    for _k in _kupci:
+        for _naziv, _a in (_po_art.get(_k) or {}).items():
+            if not _cene_art_u_grupu(_naziv, (_a or {}).get("grupa"), grupa):
                 continue
-            _d = _out.setdefault(_k, {})
-            for _i, _v in enumerate(_s.get("prodaja_mesecno") or []):
-                if _i >= len(_kl) or not _kl[_i]:
-                    continue
-                try:
-                    _d[_kl[_i]] = _d.get(_kl[_i], 0) + max(int(_v or 0), 0)
-                except Exception:
-                    pass
-        if _out:
-            return _out
-    return {}
-
-
-def _cene_mesec_cena(svi_meseci, mesec_key, sistem, grupa):
-    """(cena_za_prikaz, stanje) za taj mesec: 'akc' | 'red' | '?' (nemamo zapis)."""
-    for _r in (((svi_meseci or {}).get(mesec_key) or {}).get("redovi") or []):
-        if str(_r.get("sistem")) != str(sistem) or str(_r.get("grupa")) != str(grupa):
-            continue
-        _a = str(_r.get("akcijska") or "").strip()
-        if _a:
-            return (_a, "akc")
-        _rv = int(_r.get("redovna") or 0)
-        return ((format(_rv, ",").replace(",", ".") if _rv else "redovna"), "red")
-    return ("?", "?")
-
-
-def cene_pregled(sistem, grupa, svi_meseci=None, koliko=6, prodaja=None):
-    """Podaci za prozorčić: poslednjih `koliko` meseci — prodaja i cena po mesecu."""
-    _korpa = cene_grupa_korpa(grupa)
-    _prod = dict((prodaja if prodaja is not None
-                  else (cene_prodaja_sistema(sistem) or {})).get(_korpa, {}) or {})
-    if not _prod:
+            _lk = (_a.get("kom") or []); _la = (_a.get("akc") or []); _lr = (_a.get("red") or [])
+            for _i in range(_n):
+                if _i < len(_lk):
+                    _kom[_i] += int(_lk[_i] or 0)
+                if _i < len(_la) and float(_la[_i] or 0) > 0:
+                    _akc[_i] = max(_akc[_i], int(round(float(_la[_i]))))
+                if _i < len(_lr) and float(_lr[_i] or 0) > 0:
+                    _red[_i] = max(_red[_i], int(round(float(_lr[_i]))))
+    if not any(_kom):
         return None
-    _svi = svi_meseci if svi_meseci is not None else sb_cene_svi()
-    _red = []
-    for _mk in sorted(_prod.keys())[-int(koliko):]:
-        _c, _stanje = _cene_mesec_cena(_svi, _mk, sistem, grupa)
-        _red.append({"mesec": _mk, "kom": int(_prod.get(_mk, 0) or 0),
-                     "cena": _c, "stanje": _stanje, "akcija": (_stanje == "akc")})
-    if not _red:
+    _red_lst = []
+    for _i in range(max(_n - int(koliko), 0), _n):
+        if _akc[_i] > 0:
+            _st, _cena = "akc", format(_akc[_i], ",").replace(",", ".")
+        elif _red[_i] > 0:
+            _st, _cena = "red", format(_red[_i], ",").replace(",", ".")
+        else:
+            _st, _cena = "?", "?"
+        _red_lst.append({"mesec": _cene_mk_od_labela(_naz[_i]) or _naz[_i],
+                         "kom": int(_kom[_i]), "cena": _cena, "stanje": _st,
+                         "akcija": (_st == "akc")})
+    if not _red_lst:
         return None
-    _ak = [_r["kom"] for _r in _red if _r["stanje"] == "akc"]
-    _be = [_r["kom"] for _r in _red if _r["stanje"] == "red"]
-    _pa = int(round(sum(_ak) / float(len(_ak)))) if _ak else 0
-    _pb = int(round(sum(_be) / float(len(_be)))) if _be else 0
+    _a = [_r["kom"] for _r in _red_lst if _r["stanje"] == "akc"]
+    _b = [_r["kom"] for _r in _red_lst if _r["stanje"] == "red"]
+    _pa = int(round(sum(_a) / float(len(_a)))) if _a else 0
+    _pb = int(round(sum(_b) / float(len(_b)))) if _b else 0
     _raz = int(round((_pa - _pb) * 100.0 / _pb)) if (_pa and _pb) else None
     _naj = None
-    for _r in _red:
-        if _r["akcija"] and (_naj is None or _r["kom"] > _naj["kom"]):
+    for _r in _red_lst:
+        if _r["stanje"] == "akc" and (_naj is None or _r["kom"] > _naj["kom"]):
             _naj = _r
-    return {"redovi": _red, "korpa": _korpa, "pros_akc": _pa, "pros_bez": _pb,
-            "razlika": _raz, "najbolji": _naj, "n_akc": len(_ak), "n_bez": len(_be),
-            "n_nepoznato": sum(1 for _r in _red if _r["stanje"] == "?")}
+    return {"redovi": _red_lst, "korpa": cene_grupa_korpa(grupa), "pros_akc": _pa,
+            "pros_bez": _pb, "razlika": _raz, "najbolji": _naj, "n_akc": len(_a),
+            "n_bez": len(_b), "n_nepoznato": sum(1 for _r in _red_lst if _r["stanje"] == "?")}
 
 
 def _cene_mes_lbl(mesec_key):
@@ -11243,8 +11357,9 @@ def _cene_mes_lbl(mesec_key):
 def cene_pregled_html(p, sistem, grupa, redovna=0):
     """Sadržaj prozorčića — tri broja, stubići po mesecima i zaključak."""
     if not p:
-        return ('<div class="cp-nema">Za ovaj sistem još nemam mesečnu prodaju iz '
-                'objavljenih izveštaja.</div>')
+        return ('<div class="cp-nema">Za ovaj sistem i grupu nema prodaje u objavljenom '
+                'izveštaju prodaje. Ako se kupac u izveštaju zove drugačije nego sistem '
+                'ovde, poveži ga u „Knjižno odobrenje → Kupci koji nisu povezani\u201c.</div>')
     _red = p["redovi"]
     _max = max([_r["kom"] for _r in _red] + [1])
     _h = ['<div class="cp">']
@@ -11300,8 +11415,9 @@ def cene_pregled_html(p, sistem, grupa, redovna=0):
         _t = "U ovih " + str(len(_red)) + " meseci nije bilo akcije na ovoj grupi."
     _h.append('<div class="cp-zak">' + _t + '</div>')
     if p["korpa"] == "HQD 1000":
-        _h.append('<div class="cp-fus">HQD stari i novi ukusi se u izveštajima ne razdvajaju, '
-                  'pa je prodaja prikazana zajedno za celu HQD 1000 grupu.</div>')
+        _h.append('<div class="cp-fus">Novi ukusi (' + _h_escape(", ".join(CENE_HQD_NOVI_UKUSI))
+                  + ') se iz izveštaja izdvajaju po nazivu artikla, pa stari i novi ukusi '
+                  'imaju svaki svoj pregled.</div>')
     _h.append('</div>')
     return "".join(_h)
 
@@ -11343,14 +11459,25 @@ def knjizno_marza(sistem, grupa, podesavanja=None):
     return KNJ_MARZA_PODR
 
 
+def knjizno_marza_std(grupa):
+    """Standardna marža za tu grupu — po njoj se iz NAŠE redovne cene dobija neto."""
+    return KNJ_MARZA_GRUPA.get(cene_grupa_korpa(grupa), KNJ_MARZA_PODR)
+
+
 def _knj_neto(cena, marza):
-    """MP cena → neto cena (bez PDV-a i bez marže kupca)."""
+    """MP cena → neto cena (bez PDV-a i bez marže)."""
     return float(cena) / (1.0 + KNJ_PDV / 100.0) / (1.0 + float(marza) / 100.0)
 
 
-def knjizno_po_komadu(redovna, akcijska, marza):
-    """Osnovica, PDV i ukupno — po jednom komadu."""
-    _o = _knj_neto(redovna, marza) - _knj_neto(akcijska, marza)
+def knjizno_po_komadu(redovna, akcijska, marza, marza_red=None):
+    """Osnovica, PDV i ukupno — po jednom komadu.
+
+    Redovna cena je NAŠA (neto se dobija standardnom maržom grupe: 20%, SYX 10%),
+    a akcijska je cena koju kupac drži na polici — tu ide njegova marža (npr.
+    Mikromarket 40%). Kod kupaca sa standardnom maržom obe strane su iste.
+    """
+    _mr = float(marza if marza_red is None else marza_red)
+    _o = _knj_neto(redovna, _mr) - _knj_neto(akcijska, marza)
     return {"osnovica": _o, "pdv": _o * (KNJ_PDV / 100.0), "ukupno": _o * (1 + KNJ_PDV / 100.0)}
 
 
@@ -11476,7 +11603,8 @@ def knjizno_tabela(redovi, kol, kupac_sistem, marze=None, rucno=None):
                                  "od": _r.get("od"), "do": _r.get("do"),
                                  "napomena": "upiši ručno (cena i količina)"})
                     continue
-                _po = knjizno_po_komadu(_red * (2 if _par else 1), _cena, _m)
+                _po = knjizno_po_komadu(_red * (2 if _par else 1), _cena, _m,
+                                        knjizno_marza_std(_g))
                 _kom = int(_kom_r)
                 _nap = ("parova" if _par else "kom") + " · ručno"
                 _out.append({"kupac": _kupac, "sistem": _sis, "grupa": _g, "redovna": _red,
@@ -11488,7 +11616,7 @@ def knjizno_tabela(redovi, kol, kupac_sistem, marze=None, rucno=None):
                 continue
             if _kom <= 0:
                 continue
-            _po = knjizno_po_komadu(_red, _akc, _m)
+            _po = knjizno_po_komadu(_red, _akc, _m, knjizno_marza_std(_g))
             _out.append({"kupac": _kupac, "sistem": _sis, "grupa": _g, "redovna": _red,
                          "akcijska": str(_r.get("akcijska") or ""), "kom": int(_kom),
                          "osnovica": _po["osnovica"] * _kom, "pdv": _po["pdv"] * _kom,
@@ -11643,7 +11771,10 @@ def knjizno_xlsx(tabela, po_kupcu, uk, mesec_lbl):
     _t.font = _F(bold=True, size=13, color="1F4E79", name="Arial")
     _ws2 = _wb.create_sheet("Kako se računa")
     for _r in (["KNJIŽNO ODOBRENJE — kako se računa"], [],
-               ["1.", "neto cena = MP cena / 1,20 (PDV) / (1 + marža kupca)"],
+               ["1.", "neto cena = MP cena / 1,20 (PDV) / (1 + marža)"],
+               ["", "redovna strana: NAŠA cena sa standardnom maržom grupe (20%, SYX 10%)"],
+               ["", "akcijska strana: cena na polici kupca sa NJEGOVOM maržom "
+                    "(npr. Mikromarket 40%)"],
                ["2.", "osnovica po komadu = neto(redovna) − neto(akcijska)"],
                ["3.", "PDV = osnovica × 20%"],
                ["4.", "knjižno = (osnovica + PDV) × prodata količina"], [],
@@ -11791,6 +11922,131 @@ def _knjizno_blok(mesec_key, sel_lbl, podaci, redovi_svi, uloga, ro):
                     st.error("Greška: " + str(_e))
 
 
+def auto_zav_ui():
+    """Analitika bira objekte koji se ovog meseca ne zovu — idu pravo u ZAVRŠENO."""
+    st.markdown("<style>" + CENE_CSS + """
+div[class*="st-key-az_"]{border-top:1px solid #efeafb;padding:3px 0;}
+div[class*="st-key-az_"]:hover{background:#faf8ff;}
+</style>""", unsafe_allow_html=True)
+    st.markdown('<div class="adm-lbl">✅ Objekti koji se ne zovu</div>', unsafe_allow_html=True)
+    st.caption("Ovde označavaš objekte koje ovog meseca nema smisla zvati (zatvoreni, ne "
+               "drže taj asortiman, naručuju centralno…). Oni odmah prelaze u ZAVRŠENO: "
+               "administracija ih ne zove, ne ulaze u predlog porudžbine ni u mejl sistemu. "
+               "Oznaka važi **samo za izabrani mesec** — sledećeg meseca su opet u igri.")
+    _mes = sb_meseci()
+    if not _mes:
+        st.info("Još nema nijednog objavljenog meseca.")
+        return
+    _c1, _c2, _c3 = st.columns([1.2, 1.6, 2.2])
+    with _c1:
+        _lbls = [_m["label"] for _m in _mes]
+        _sel = st.selectbox("Mesec", _lbls, index=0, key="az_mes")
+    _mk = _mes[_lbls.index(_sel)]["key"]
+    _sis_lista = sb_sisteme(_mk)
+    if not _sis_lista:
+        st.info("Za " + _sel + " nema objavljenih sistema.")
+        return
+    with _c2:
+        _sis = st.selectbox("Sistem", _sis_lista, key="az_sis_" + _mk)
+    _pod = sb_ucitaj(_mk, _sis) or {}
+    _stavke = _pod.get("stavke") or []
+    if not _stavke:
+        st.info("Za " + str(_sis) + " nema objavljenog izveštaja.")
+        return
+    _po = {}
+    for _s in _stavke:
+        _po.setdefault(int(_s.get("idk")), []).append(_s)
+    _kom = sb_komitenti_full()
+    _obr = sb_load_obrada(_mk, _sis) or {}
+    _red = []
+    for _idk, _lst in _po.items():
+        _niv = hitnost_objekta(_lst)[0]
+        _v = _obr.get(int(_idk), {}) or {}
+        _info = auto_zav_info(_v)
+        _red.append({"idk": int(_idk),
+                     "naziv": (_kom.get(int(_idk), {}) or {}).get("naziv", "") or ("ID " + str(_idk)),
+                     "mesto": (_kom.get(int(_idk), {}) or {}).get("mesto", ""),
+                     "nivo": _niv, "iskljucen": bool(_info), "info": _info,
+                     "porucio": bool((_v.get("dnevnik") or {}).get("trebovao_posle_starta")
+                                     or (_v.get("trebovali_tip") or ""))})
+    _red.sort(key=lambda r: (not r["iskljucen"], r["naziv"].upper()))
+    _n_isk = sum(1 for r in _red if r["iskljucen"])
+    with _c3:
+        st.write("")
+        st.markdown('<div class="cene-note">' + str(len(_red)) + ' objekata · <b>'
+                    + str(_n_isk) + '</b> isključeno ovog meseca</div>',
+                    unsafe_allow_html=True)
+    _trazi = st.text_input("Pretraga", key="az_q_" + _mk + "_" + _sis,
+                           placeholder="naziv objekta ili ID…", label_visibility="collapsed")
+    _q = str(_trazi or "").strip().lower()
+    if _q:
+        _red = [r for r in _red if _q in r["naziv"].lower() or _q in str(r["idk"])]
+    _ko = st.session_state.get("admin_user", "") or "analitika"
+    _ZN = {"crveno": ("HITNO", "#fdecec", "#991b1b"), "zuto": ("KONTROLA", "#fff8e6", "#92400e"),
+           "zeleno": ("DOBRA", "#eafbf0", "#14532d")}
+    for _r in _red[:400]:
+        with st.container(key="az_" + _mk + "_" + str(_r["idk"])):
+            _c = st.columns([3.2, 1.1, 1.6, 2.4, 1.3], vertical_alignment="center")
+            with _c[0]:
+                _lbl, _bg, _fg = _ZN.get(_r["nivo"], ("—", "#eef2f6", "#64748b"))
+                st.markdown('<div class="cene-c sis" style="text-align:left;">'
+                            + _h_escape(_r["naziv"])
+                            + ' <span style="font-weight:600;color:#8a94a3;font-size:11.5px;">· '
+                            + str(_r["idk"]) + (' · ' + _h_escape(_r["mesto"])
+                                                if _r["mesto"] else '') + '</span></div>',
+                            unsafe_allow_html=True)
+            with _c[1]:
+                st.markdown('<div class="cene-c"><span class="cene-chip" style="background:'
+                            + _bg + ';color:' + _fg + ';">' + _lbl + '</span></div>',
+                            unsafe_allow_html=True)
+            if _r["iskljucen"]:
+                _i = _r["info"]
+                with _c[2]:
+                    st.markdown('<div class="cene-c"><span class="cene-chip" '
+                                'style="background:#eef2f6;color:#475569;">NE ZOVE SE</span></div>',
+                                unsafe_allow_html=True)
+                with _c[3]:
+                    st.markdown('<div class="cene-c" style="text-align:left;font-size:12px;'
+                                'color:#64748b;">' + _h_escape(str(_i.get("razlog") or ""))
+                                + ((' · ' + _h_escape(str(_i.get("napomena"))))
+                                   if _i.get("napomena") else '')
+                                + '<br><span style="font-size:11px;">'
+                                + _h_escape(str(_i.get("ko") or "")) + ' · '
+                                + _h_escape(_dt_kratko(_i.get("at"))) + '</span></div>',
+                                unsafe_allow_html=True)
+                with _c[4]:
+                    if st.button("↩️ Vrati", key="az_off_" + _mk + "_" + str(_r["idk"]),
+                                 use_container_width=True):
+                        try:
+                            sb_auto_zavrsi_skini(_mk, _sis, _r["idk"], _ko)
+                            st.rerun()
+                        except Exception as _e:
+                            st.error("Greška: " + str(_e))
+            else:
+                with _c[2]:
+                    _raz = st.selectbox("razlog", AUTO_ZAV_RAZLOZI,
+                                        key="az_r_" + _mk + "_" + str(_r["idk"]),
+                                        label_visibility="collapsed")
+                with _c[3]:
+                    _nap = st.text_input("napomena", key="az_n_" + _mk + "_" + str(_r["idk"]),
+                                         placeholder="napomena (nije obavezno)",
+                                         label_visibility="collapsed")
+                with _c[4]:
+                    if st.button("Ne zovi", key="az_on_" + _mk + "_" + str(_r["idk"]),
+                                 use_container_width=True,
+                                 disabled=_r["porucio"],
+                                 help=("Objekat je već poručio — nema potrebe."
+                                       if _r["porucio"] else
+                                       "Objekat ide u ZAVRŠENO za " + _sel + ".")):
+                        try:
+                            sb_auto_zavrsi(_mk, _sis, _r["idk"], _raz, _nap, _ko)
+                            st.rerun()
+                        except Exception as _e:
+                            st.error("Greška: " + str(_e))
+    if len(_red) > 400:
+        st.caption("Prikazano prvih 400 — suzi pretragom.")
+
+
 def cene_ui(uloga, ugradjeno=False):
     """Kartica „Cene i akcije".
 
@@ -11814,7 +12070,9 @@ def cene_ui(uloga, ugradjeno=False):
     _svi = sb_cene_svi()
     _danas = _now().date()
     _tek = _danas.strftime("%Y-%m")
-    _kljucevi = sorted(set(list(_svi.keys()) + [_tek, _mesec_pomak(_tek, 1)]), reverse=True)
+    # spisak meseci: svi upisani + poslednjih 5 unazad + sledeći mesec
+    _kljucevi = sorted(set(list(_svi.keys())
+                           + [_mesec_pomak(_tek, _d) for _d in range(-5, 2)]), reverse=True)
     _lbls = [mesec_label(k) for k in _kljucevi]
     # ---- dva pogleda: mesečni pregled ili jedan sistem kroz mesece ----
     _pogled = st.radio("Pogled", ["📅 Mesečni pregled", "📈 Jedan sistem kroz mesece"],
@@ -11905,15 +12163,10 @@ def cene_ui(uloga, ugradjeno=False):
     _redovi = ([_r0 for _r0 in _redovi_svi if str(_r0.get("sistem")) == _f_sis]
                if _f_sis != "Svi sistemi" else _redovi_svi)
     _moze_menjati = (not _ro) and (not _zakljucan)
-    with _c3:
-        st.write("")
-        _pok_prod = st.checkbox("📊 Pregled prodaje uz svaku cenu",
-                                value=(_f_sis != "Svi sistemi"),
-                                key="cene_prod_" + _mk,
-                                help="Pored akcijske cene stoji dugme koje otvara prodaju u "
-                                     "poslednjih 6 meseci — koliko se prodavalo u mesecima sa "
-                                     "akcijom, a koliko bez nje. Za sve sisteme odjednom učitava "
-                                     "se duže, pa je brže kad izabereš jedan sistem.")
+    # pregled prodaje uz cenu — samo direktorima (oni predlažu akcijske cene)
+    _sales = cene_izvestaj_podaci() if uloga == "direktor" else {}
+    _kupci_map = dict(((_pod.get("knjizno") or {}).get("kupci")) or {})
+    _pok_prod = bool(_sales)
 
     # ---- nema podataka za taj mesec (zaključan ili pregled) ----
     if not _redovi:
@@ -11979,7 +12232,6 @@ def cene_ui(uloga, ugradjeno=False):
                 else ["Kupac", "Artikal", "Redovna", "Akcijska cena", "Početak", "Kraj",
                       "Status", "Odgovoran", "Napomena"])
     _poml = 1 if _pok_prod else 0      # pomeraj kolona kad stoji dugme 📊
-    _prod_keš = {}
     _je_admin = (uloga == "admin")
     with st.form("cene_form_" + _mk, border=False):
         _hc = st.columns(_SIR, vertical_alignment="center")
@@ -12026,12 +12278,10 @@ def cene_ui(uloga, ugradjeno=False):
                                            label_visibility="collapsed")
                 if _pok_prod:
                     with _c[4]:
-                        if _sis not in _prod_keš:
-                            _prod_keš[_sis] = cene_prodaja_sistema(_sis) or {}
-                        _pg = cene_pregled(_sis, str(_r.get("grupa") or ""), _svi,
-                                           prodaja=_prod_keš[_sis])
-                        with st.popover("📊", width=(560 if _pg else 320),
-                                        help="Prodaja u poslednjih 6 meseci"):
+                        _pg = cene_pregled(_sis, str(_r.get("grupa") or ""), _sales,
+                                           _kupci_map)
+                        with st.popover("📊", width=(560 if _pg else 330),
+                                        help="Prodaja i ranije akcije — iz izveštaja prodaje"):
                             st.markdown(cene_pregled_html(
                                 _pg, _sis, str(_r.get("grupa") or ""),
                                 int(_r.get("redovna") or 0)), unsafe_allow_html=True)
@@ -12942,7 +13192,10 @@ div[data-stale="true"] { opacity: 1 !important; }
             return {}
 
         def _zavrsen_ned(idk):
-            """Objekat je ZAVRŠEN ako je posle starta poslao porudžbinu."""
+            """Objekat je ZAVRŠEN ako je posle starta poslao porudžbinu (ili ga je
+            analitika isključila za taj mesec)."""
+            if je_auto_zav(obrada_map.get(int(idk)) or {}):
+                return True
             _v0 = obrada_map.get(int(idk)) or {}
             if (_v0.get("dnevnik") or {}).get("trebovao_posle_starta"):
                 return True
@@ -13111,7 +13364,18 @@ div[data-stale="true"] { opacity: 1 !important; }
             if _is_prij:
                 _hdr += "   ·   ✅ prijavljeno"
             with st.expander(_hdr, expanded=False):
-                if _je_zav:
+                if _je_zav and auto_zav_info(obrada_map.get(_idk) or {}):
+                    _azi = auto_zav_info(obrada_map.get(_idk) or {})
+                    st.markdown('<div style="background:#eef2f6;border:2px solid #cbd5e1;'
+                                'border-radius:10px;padding:10px 14px;margin:0 0 10px;">'
+                                '<div style="font-size:15px;font-weight:900;color:#334155;">'
+                                '✅ ZAVRŠENO — OVOG MESECA SE NE ZOVE</div>'
+                                '<div style="font-size:12.5px;color:#475569;margin-top:3px;">'
+                                'Analitika: ' + _h_escape(str(_azi.get("razlog") or ""))
+                                + ((' · ' + _h_escape(str(_azi.get("napomena"))))
+                                   if _azi.get("napomena") else '') + '</div></div>',
+                                unsafe_allow_html=True)
+                elif _je_zav:
                     _vz = obrada_map.get(_idk) or {}
                     _az = (_vz.get("dnevnik") or {}).get("trebovao_posle_starta") or {}
                     _tz = str(_az.get("tip") or _vz.get("trebovali_tip") or "")
@@ -13624,8 +13888,11 @@ div[data-stale="true"] { opacity: 1 !important; }
     _snap_z = meta.get("start_zone") if isinstance(meta, dict) else None
 
     def _zavrsen(_o, _v):
-        """Da li je objekat gotov — poručio je, pa ga ne treba više zvati ni slati mu mejl."""
+        """Da li je objekat gotov — poručio je (ili ga je analitika isključila ovog
+        meseca), pa ga ne treba više zvati ni slati mu mejl."""
         _v = _v or {}
+        if je_auto_zav(_v):
+            return True
         if (_v.get("trebovali_tip") or "") in ("nas", "njihov"):
             return True
         if "Ubačena porudžbina" in (_v.get("reakcije") or []):
@@ -14261,7 +14528,30 @@ div[data-stale="true"] { opacity: 1 !important; }
                     + _naz_html +
                     '<span style="margin-left:auto;">' + _revb + '</span></div>', unsafe_allow_html=True)
         # --- VELIKA oznaka: objekat je završen i zaključan (ništa se ne dira) ---
-        if _zav_ovaj:
+        _az_ovaj = auto_zav_info(obrada_map.get(int(sel_id)) or {})
+        if _zav_ovaj and _az_ovaj:
+            st.markdown(
+                '<div style="background:#eef2f6;border:2px solid #cbd5e1;border-radius:12px;'
+                'padding:14px 18px;margin:6px 0 14px;">'
+                '<div style="font-size:19px;font-weight:900;color:#334155;letter-spacing:.3px;">'
+                '✅ ZAVRŠENO — OVOG MESECA SE NE ZOVE</div>'
+                '<div style="font-size:13px;color:#475569;margin-top:4px;">Analitika je '
+                'isključila ovaj objekat: <b>' + _h_escape(str(_az_ovaj.get("razlog") or ""))
+                + '</b>' + ((' · ' + _h_escape(str(_az_ovaj.get("napomena"))))
+                            if _az_ovaj.get("napomena") else '') + '</div>'
+                '<div style="font-size:11.5px;color:#64748b;margin-top:5px;font-style:italic;">'
+                + _h_escape(str(_az_ovaj.get("ko") or "")) + ' · '
+                + _h_escape(_dt_kratko(_az_ovaj.get("at")))
+                + ' — ne ulazi u predlog porudžbine ni u mejl. Oznaka važi samo za ovaj mesec.'
+                '</div></div>', unsafe_allow_html=True)
+            if st.button("↩️ Ipak ga zovi ovog meseca", key="az_back_" + str(sel_id)):
+                try:
+                    sb_auto_zavrsi_skini(mesec_key, sistem, int(sel_id),
+                                         st.session_state.get("admin_user", ""))
+                    st.rerun()
+                except Exception as _e:
+                    st.error("Greška: " + str(_e))
+        elif _zav_ovaj:
             _ai = dict(_auto_treb.get("info") or {})
             _tip_txt = (("PO NAŠEM SISTEMU" if _tip_now == "nas" else "PO NJIHOVOM SISTEMU")
                         if _tip_now in ("nas", "njihov") else "")
@@ -14313,18 +14603,7 @@ div[data-stale="true"] { opacity: 1 !important; }
                    + '</div>')
                 + '</div>', unsafe_allow_html=True)
         _tel_raw = str(_kinfo.get("telefon", "") or "").strip()
-        # očisti broj za tel: link (zadrži cifre i vodeći +)
-        import re as _reph
-        _tel_clean = _reph.sub(r"[^\d+]", "", _tel_raw)
-        if _tel_clean.count("+") > 1:
-            _tel_clean = "+" + _tel_clean.replace("+", "")
-        # Prevedi u međunarodni format (+381…) da Phone Link pouzdano okrene
-        if _tel_clean.startswith("+"):
-            pass
-        elif _tel_clean.startswith("00"):
-            _tel_clean = "+" + _tel_clean[2:]
-        elif _tel_clean.startswith("0"):
-            _tel_clean = "+381" + _tel_clean[1:]
+        _tel_clean = tel_za_pozivanje(_tel_raw)
         _kbits = []
         if _kinfo.get("mesto"):
             _kbits.append("📍 " + _h_escape(_kinfo["mesto"]))
@@ -16233,8 +16512,11 @@ def izvestaj_admin_sistemi(mesec_key):
                       for x in (obrada.get(o["idk"], {}).get("njihova") or {}).values())
 
         def _je_zav(o):
-            """Objekat je ZAVRŠEN: posle starta je poslao porudžbinu (ili smo mi ubacili)."""
+            """Objekat je ZAVRŠEN: posle starta je poslao porudžbinu, mi smo ubacili,
+            ili ga je analitika isključila za taj mesec."""
             _v = obrada.get(o["idk"], {}) or {}
+            if je_auto_zav(_v):
+                return True
             if (_v.get("dnevnik") or {}).get("trebovao_posle_starta"):
                 return True
             if (_v.get("trebovali_tip") or "") in ("nas", "njihov"):
@@ -16244,11 +16526,46 @@ def izvestaj_admin_sistemi(mesec_key):
         _zav_o = [o for o in objekti if _je_zav(o)]
         _zav_red = sum(1 for o in _zav_o if o["nivo"] == "crveno")
         _zav_zut = sum(1 for o in _zav_o if o["nivo"] == "zuto")
+
+        # --- tri vrste ZAVRŠENOG -------------------------------------------------
+        # 1) sam poručio OD 01. DO STARTA (zato je na startu već bio zelen)
+        # 2) poručio POSLE starta — to je stvarno trebovanje, po njemu se meri uspeh
+        # 3) analitika ga isključila za ovaj mesec (ne zove se)
+        _start_ids = ((_sz or {}).get("narudzbine") or {}) if isinstance(_sz, dict) else {}
+
+        def _pre_starta(o):
+            """Objekat je sam poručio između 01. i starta (porudžbina postoji u
+            startnom snimku, a datum joj je posle preseka)."""
+            if not (_cut and _start_ids):
+                return False
+            _ids = set(_start_ids.get(str(int(o["idk"])), []) or [])
+            if not _ids:
+                return False
+            _lst = [_x for _x in (_ah.get(str(int(o["idk"])), []) or [])
+                    if str(_x.get("id") or "") in _ids]
+            return bool(_treb_posle_preseka(_lst, _cut))
+
+        _zav_anal = [o for o in objekti if je_auto_zav(obrada.get(o["idk"], {}) or {})]
+        _anal_idk = {int(o["idk"]) for o in _zav_anal}
+        _zav_posle = [o for o in _zav_o if int(o["idk"]) not in _anal_idk]
+        _zav_pre = [o for o in objekti
+                    if int(o["idk"]) not in _anal_idk
+                    and int(o["idk"]) not in {int(x["idk"]) for x in _zav_posle}
+                    and _pre_starta(o)]
+        # uspešnost: od objekata koji su na startu TREBALI da poruče (crveno+žuto),
+        # skidaju se oni koje je analitika isključila; koliko je od ostalih trebovalo
+        _anal_cz = sum(1 for o in _zav_anal if o["nivo"] in ("crveno", "zuto"))
+        _treb_baza = max((_nred + _norg) - _anal_cz, 0)
+        _zav_cz = sum(1 for o in _zav_posle if o["nivo"] in ("crveno", "zuto"))
+        _uspeh = (round(_zav_cz * 100.0 / _treb_baza) if _treb_baza else None)
         _out.append({
             "sistem": _sis, "nedeljni": False, "n": len(objekti),
             "crveno": _nred, "zuto": _norg, "zeleno": _ngrn,
             "start_kada": str((_sz or {}).get("kada") or ""),
             "zavrseno": len(_zav_o), "zav_crveno": _zav_red, "zav_zuto": _zav_zut,
+            "zav_pre_starta": len(_zav_pre), "zav_posle_starta": len(_zav_posle),
+            "zav_analitika": len(_zav_anal), "treb_baza": _treb_baza,
+            "zav_u_bazi": _zav_cz, "uspeh": _uspeh,
             "obradjeno": len(_rev), "neobradjeno": len(objekti) - len(_rev),
             "pozvano": sum(1 for o in objekti if _ima(o, "Pozvala sam")),
             "mejlova": sum(1 for o in objekti if _ima(o, "Poslala sam mejl")),
@@ -16332,9 +16649,18 @@ def render_izvestaj_admin(mesec_key, sel_lbl):
                 + ': <b>' + str(x["crveno"] + x["zuto"]) + '</b> objekata je trebalo da poruči ('
                 + str(x["crveno"]) + ' hitno, ' + str(x["zuto"]) + ' za kontrolu) → '
                 '<b style="color:#15803d;">' + str(x.get("zavrseno", 0)) + '</b> objekata je '
-                'prešlo u ZAVRŠENO (poručili posle starta), od toga '
+                'u ZAVRŠENOM, od toga '
                 + str(x.get("zav_crveno", 0)) + ' iz hitne zone i '
                 + str(x.get("zav_zuto", 0)) + ' iz zone za kontrolu.</div>'
+                + '<div style="font-size:13px;color:#374151;line-height:1.6;margin-top:4px;">'
+                '✅ ZAVRŠENO po vrsti: <b>' + str(x.get("zav_posle_starta", 0))
+                + '</b> poručilo posle starta · <b>' + str(x.get("zav_pre_starta", 0))
+                + '</b> poručilo samo od 01. do starta · <b>'
+                + str(x.get("zav_analitika", 0)) + '</b> isključila analitika.'
+                + ((' <b>Uspešnost: ' + str(x.get("uspeh")) + '%</b> ('
+                    + str(x.get("zav_u_bazi", 0)) + ' od ' + str(x.get("treb_baza", 0))
+                    + ' objekata koji su stvarno trebali da poruče).')
+                   if x.get("uspeh") is not None else '') + '</div>'
                 + ('<div style="font-size:12.5px;color:#6b7280;margin-top:6px;">'
                    'Ko je šta uradio — ' + _osoba + '</div>' if _osoba else ""),
                 unsafe_allow_html=True)
@@ -19181,14 +19507,18 @@ try:
                   if not (_r.get("odluka") or {}).get("status"))
 except Exception:
     _prim_n = 0
-tab_obj, tab_prim, tab_cene, tab_ana = st.tabs(
+tab_obj, tab_prim, tab_cene, tab_zav, tab_ana = st.tabs(
     ["📤 Objava izveštaja",
      "📥 Primljeni izveštaji" + ((" (" + str(_prim_n) + ")") if _prim_n else ""),
      "🏷️ Cene i akcije",
+     "✅ Ne zovu se",
      "📊 Analitika"])
 
 with tab_cene:
     cene_ui("analitika")
+
+with tab_zav:
+    auto_zav_ui()
 
 with tab_prim:
     prikazi_primljene()
