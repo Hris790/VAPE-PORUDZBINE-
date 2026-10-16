@@ -5589,6 +5589,179 @@ def izv_grafik_sistem(nred, norg, ngrn, n, nnas, nnj, nnije, neob, nrev):
     return b
 
 
+def izv_pdf_zone_tab(redovi, Nar):
+    """Mala tabela „trud po zonama" za jedan sistem u PDF-u."""
+    from reportlab.lib import colors as _c
+    from reportlab.lib.units import mm as _mm
+    from reportlab.platypus import Paragraph as _P, Table as _T, TableStyle as _TS
+    _zag = ["Zona", "Obj.", "Kontakt.", "\u00d8 poziva", "\u00d8 mejlova", "\u00d8 vreme",
+            "Poručilo", "Nisu"]
+    _d = [[_P("<font size=7 color='#ffffff'><b>" + _h + "</b></font>", Nar) for _h in _zag]]
+    for _r in redovi:
+        _d.append([_P("<font size=8>" + str(_v) + "</font>", Nar) for _v in _r])
+    _t = _T(_d, colWidths=[22 * _mm, 13 * _mm, 19 * _mm, 19 * _mm, 20 * _mm, 18 * _mm,
+                           22 * _mm, 14 * _mm], repeatRows=1)
+    _t.setStyle(_TS([("BACKGROUND", (0, 0), (-1, 0), _c.HexColor("#8b5cf6")),
+                     ("GRID", (0, 0), (-1, -1), 0.4, _c.HexColor("#ded5fb")),
+                     ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+                     ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                     ("TOPPADDING", (0, 0), (-1, -1), 2),
+                     ("BOTTOMPADDING", (0, 0), (-1, -1), 2)]))
+    return _t
+
+
+def izv_pdf_blokovi(sis_lst, komfull, Hsys, Nar, FN, FB):
+    """Za PDF: start po sistemima, šta je zatvoreno, trud po zonama, nisu poručili."""
+    from reportlab.lib import colors as _c
+    from reportlab.lib.units import mm as _mm
+    from reportlab.platypus import Paragraph as _P, Spacer as _S, Table as _T, TableStyle as _TS
+    _l = [x for x in (sis_lst or []) if not x.get("nedeljni")]
+    if not _l:
+        return []
+    _l = sorted(_l, key=lambda x: -(x["crveno"] / float(max(x["n"], 1))))
+    _el = []
+
+    def _tabela(zag, redovi, sirine, levo=(0,), boje=None):
+        _d = [[_P("<font size=7.5 color='#ffffff'><b>" + str(_h) + "</b></font>", Nar)
+               for _h in zag]]
+        for _r in redovi:
+            _d.append([_P("<font size=8>" + str(_v) + "</font>", Nar) for _v in _r])
+        _t = _T(_d, colWidths=sirine, repeatRows=1)
+        _st = [("BACKGROUND", (0, 0), (-1, 0), _c.HexColor("#6d28d9")),
+               ("GRID", (0, 0), (-1, -1), 0.4, _c.HexColor("#ded5fb")),
+               ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+               ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+               ("TOPPADDING", (0, 0), (-1, -1), 3),
+               ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]
+        for _i in levo:
+            _st.append(("ALIGN", (_i, 0), (_i, -1), "LEFT"))
+        for _r0, _bg in (boje or []):
+            _st.append(("BACKGROUND", (0, _r0), (-1, _r0), _c.HexColor(_bg)))
+        _t.setStyle(_TS(_st))
+        return _t
+
+    # --- 1) start po sistemima ---
+    _el.append(_P("Start — kako je koji sistem krenuo", Hsys))
+    _red = []
+    _uc = _uz = _ug = 0
+    for _x in _l:
+        _uc += int(_x["crveno"]); _uz += int(_x["zuto"]); _ug += int(_x["zeleno"])
+        _red.append([_x["sistem"], str(_x.get("start_kada", "") or "—"),
+                     "<font color='#c0392b'><b>" + str(_x["crveno"]) + "</b></font>",
+                     "<font color='#b45309'>" + str(_x["zuto"]) + "</font>",
+                     "<font color='#15803d'>" + str(_x["zeleno"]) + "</font>",
+                     "<b>" + str(_x["n"]) + "</b>"])
+    _red.append(["UKUPNO", "", "<b>" + str(_uc) + "</b>", "<b>" + str(_uz) + "</b>",
+                 "<b>" + str(_ug) + "</b>", "<b>" + str(_uc + _uz + _ug) + "</b>"])
+    _el.append(_tabela(["Sistem", "Start", "Hitna zona", "Za kontrolu", "Dobra", "Objekata"],
+                       _red, [40 * _mm, 32 * _mm, 24 * _mm, 24 * _mm, 20 * _mm, 22 * _mm],
+                       boje=[(len(_red), "#f3eeff")]))
+    _el.append(_S(1, 8))
+
+    # --- 2) šta je zatvoreno ---
+    _el.append(_P("Šta je od starta zatvoreno", Hsys))
+    _red2 = []
+    _t = {"b": 0, "po": 0, "pr": 0, "an": 0, "ni": 0, "uzb": 0, "tb": 0}
+    for _x in _l:
+        _n2 = int((_x.get("nisu_rez") or {}).get("n", 0) or 0)
+        _p = _x.get("uspeh")
+        _t["b"] += int(_x["crveno"]) + int(_x["zuto"])
+        _t["po"] += int(_x.get("zav_posle_starta", 0) or 0)
+        _t["pr"] += int(_x.get("zav_pre_starta", 0) or 0)
+        _t["an"] += int(_x.get("zav_analitika", 0) or 0)
+        _t["ni"] += _n2
+        _t["uzb"] += int(_x.get("zav_u_bazi", 0) or 0)
+        _t["tb"] += int(_x.get("treb_baza", 0) or 0)
+        _red2.append([_x["sistem"], str(int(_x["crveno"]) + int(_x["zuto"])),
+                      "<b>" + str(_x.get("zav_posle_starta", 0)) + "</b>",
+                      str(_x.get("zav_pre_starta", 0)), str(_x.get("zav_analitika", 0)),
+                      ("<font color='#c0392b'><b>" + str(_n2) + "</b></font>" if _n2 else "0"),
+                      ("<b>" + str(int(_p)) + "%</b> (" + str(_x.get("zav_u_bazi", 0)) + "/"
+                       + str(_x.get("treb_baza", 0)) + ")") if _p is not None else "—"])
+    _pu = _izv_pct(_t["uzb"], _t["tb"])
+    _red2.append(["UKUPNO", "<b>" + str(_t["b"]) + "</b>", "<b>" + str(_t["po"]) + "</b>",
+                  "<b>" + str(_t["pr"]) + "</b>", "<b>" + str(_t["an"]) + "</b>",
+                  "<b>" + str(_t["ni"]) + "</b>",
+                  "<b>" + str(_pu) + "%</b> (" + str(_t["uzb"]) + "/" + str(_t["tb"]) + ")"])
+    _el.append(_tabela(["Sistem", "Trebalo da poruči", "Poručilo posle starta",
+                        "Samo poručili (01.→start)", "Isključila analitika", "Nisu poručili",
+                        "Uspešnost"], _red2,
+                       [34 * _mm, 22 * _mm, 24 * _mm, 26 * _mm, 24 * _mm, 20 * _mm, 32 * _mm],
+                       boje=[(len(_red2), "#f3eeff")]))
+    _el.append(_P("<font color='#9188a5'>„Trebalo da poruči“ = hitna zona + zona za "
+                  "kontrolu na startu. Uspešnost ne računa objekte koje je analitika "
+                  "isključila.</font>", Nar))
+    _el.append(_S(1, 8))
+
+    # --- 3) trud po zonama ---
+    _z = _izv_zone_zbir(_l)
+    if any(_z[_k]["n"] for _k in _z):
+        _el.append(_P("Trud po zonama — koliko je poziva, mejlova i vremena otišlo na koju zonu",
+                      Hsys))
+        _red3 = []
+        for _k, _ime in (("crveno", "Hitna zona"), ("zuto", "Za kontrolu"),
+                         ("zeleno", "Dobra zaliha")):
+            _d = _z[_k]
+            _n3 = max(_d["n"], 1)
+            _red3.append([
+                _ime, str(_d["n"]),
+                str(_d["kont"]) + " (" + str(_izv_pct(_d["kont"], _d["n"])) + "%)",
+                str(round(_d["poz"] / float(_n3), 1)).replace(".", ","),
+                str(round(_d["mej"] / float(_n3), 1)).replace(".", ","),
+                _efik_hm(_d["min"] / float(_n3)),
+                (str(round(_d["dani_avg"], 1)).replace(".", ",")
+                 if _d.get("dani_avg") is not None else "—"),
+                "<b>" + str(_d["zav"]) + "</b> (" + str(_izv_pct(_d["zav"], _d["n"])) + "%)",
+                str(_d["nisu"]) + " · Ø "
+                + str(round(_d["poz_n"] / float(max(_d["nisu"], 1)), 1)).replace(".", ",")
+                + " poz. · " + _efik_hm(_d["min_n"] / float(max(_d["nisu"], 1)))])
+        _el.append(_tabela(["Zona", "Obj.", "Kontaktirano", "Ø poziva", "Ø mejlova",
+                            "Ø vreme", "Ø dana do 1. kontakta", "Poručilo",
+                            "Nisu poručili — trud na njih"], _red3,
+                           [26 * _mm, 13 * _mm, 22 * _mm, 17 * _mm, 18 * _mm, 16 * _mm,
+                            22 * _mm, 20 * _mm, 38 * _mm]))
+        _el.append(_S(1, 8))
+
+    # --- 4) objekti koji nisu poručili ---
+    _tn = {"n": 0, "bez": 0, "p1": 0, "p2": 0, "p3": 0, "mejl_only": 0, "kom": 0,
+           "poz": 0, "mej": 0, "min": 0.0}
+    _top = []
+    _ukmin = 0.0
+    for _x in _l:
+        _r = _x.get("nisu_rez") or {}
+        for _k in ("n", "bez", "p1", "p2", "p3", "mejl_only", "kom", "poz", "mej"):
+            _tn[_k] += int(_r.get(_k, 0) or 0)
+        _tn["min"] += float(_r.get("min", 0) or 0)
+        _ukmin += float(_x.get("vreme_min", 0) or 0)
+        for _o in (_r.get("top") or []):
+            _top.append(dict(_o, sistem=_x["sistem"]))
+    if _tn["n"]:
+        _el.append(_P("Objekti koji nisu poručili — šta je za njih urađeno", Hsys))
+        _el.append(_P("Od <b>" + str(_tn["n"]) + "</b> objekata iz hitne zone i zone za kontrolu "
+                      "koji nisu poručili: <b>" + str(_tn["bez"]) + "</b> nije dobilo nijedan "
+                      "kontakt, <b>" + str(_tn["p1"]) + "</b> je zvano jednom, <b>"
+                      + str(_tn["p2"]) + "</b> dva puta, <b>" + str(_tn["p3"]) + "</b> tri i "
+                      "više puta, a <b>" + str(_tn["mejl_only"]) + "</b> je dobilo samo mejl. "
+                      "Prosleđeno komercijali: <b>" + str(_tn["kom"]) + "</b>.", Nar))
+        _el.append(_P("Na njih je ukupno otišlo <b>" + _efik_hm(_tn["min"]) + "</b> aktivnog rada "
+                      "(Ø " + _efik_hm(_tn["min"] / float(max(_tn["n"], 1)))
+                      + " po objektu), <b>" + str(_tn["poz"]) + "</b> poziva i <b>"
+                      + str(_tn["mej"]) + "</b> mejlova"
+                      + ((" — to je " + str(_izv_pct(_tn["min"], _ukmin))
+                          + "% ukupnog vremena u mesecu.") if _ukmin else "."), Nar))
+        _top = sorted(_top, key=lambda r: (-r["poz"], -r["min"]))[:5]
+        if _top:
+            _el.append(_S(1, 3))
+            _red4 = [[((komfull.get(int(_o["idk"]), {}) or {}).get("naziv", "")
+                       or ("ID " + str(_o["idk"]))), _o["sistem"], str(_o["poz"]),
+                      str(_o["mej"]), _efik_hm(_o["min"])] for _o in _top]
+            _el.append(_tabela(["Najviše truda bez rezultata", "Sistem", "Pozivi", "Mejlovi",
+                                "Vreme"], _red4,
+                               [66 * _mm, 38 * _mm, 20 * _mm, 20 * _mm, 22 * _mm], levo=(0, 1)))
+        _el.append(_S(1, 8))
+    return _el
+
+
 def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
     import io as _io
     import matplotlib
@@ -5720,6 +5893,19 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
         doc.build(el)
         buf.seek(0)
         return buf.getvalue()
+
+    # ===== START, ZATVORENO, TRUD PO ZONAMA, OBJEKTI KOJI NISU PORUČILI =====
+    try:
+        _lst_izv = izvestaj_admin_sistemi(mesec_key)
+        _komf_izv = {}
+        try:
+            _komf_izv = sb_komitenti_full()
+        except Exception:
+            _komf_izv = {}
+        for _b in izv_pdf_blokovi(_lst_izv, _komf_izv, Hsys, Nar, FN, FB):
+            el.append(_b)
+    except Exception:
+        pass
 
     for _sis in sistemi:
         podaci = sb_ucitaj(mesec_key, _sis)
@@ -5952,6 +6138,40 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
         img.hAlign = 'CENTER'
         _blk = [Paragraph(str(_sis), Hsys), Paragraph(narr, Nar),
                 Spacer(1, 2), Paragraph(start_narr, Nar)]
+        # trud po zonama za ovaj sistem (ista tabela kao na ekranu)
+        try:
+            _xz = next((_q for _q in (_lst_izv or []) if _q.get("sistem") == _sis), None)
+        except Exception:
+            _xz = None
+        if _xz and (_xz.get("zone") or {}):
+            _rz = []
+            for _zk, _zi in (("crveno", "Hitna"), ("zuto", "Kontrola"), ("zeleno", "Dobra")):
+                _zd = (_xz["zone"] or {}).get(_zk) or {}
+                _zn = max(int(_zd.get("n", 0) or 0), 1)
+                _rz.append([_zi, str(_zd.get("n", 0)), str(_zd.get("kont", 0)),
+                            str(round(int(_zd.get("poz", 0)) / float(_zn), 1)).replace(".", ","),
+                            str(round(int(_zd.get("mej", 0)) / float(_zn), 1)).replace(".", ","),
+                            _efik_hm(float(_zd.get("min", 0) or 0) / float(_zn)),
+                            "<b>" + str(_zd.get("zav", 0)) + "</b> ("
+                            + str(_izv_pct(_zd.get("zav", 0), _zd.get("n", 0))) + "%)",
+                            str(_zd.get("nisu", 0))])
+            try:
+                _blk.append(Spacer(1, 3))
+                _blk.append(izv_pdf_zone_tab(_rz, Nar))
+                _rn = _xz.get("nisu_rez") or {}
+                _fus = []
+                if _xz.get("vreme_min"):
+                    _fus.append("aktivno vreme <b>" + _efik_hm(_xz["vreme_min"]) + "</b>")
+                if _xz.get("prvi_kontakt"):
+                    _fus.append("prvi kontakt " + _h_escape(_dt_kratko(_xz["prvi_kontakt"])))
+                if _rn.get("n"):
+                    _fus.append("<b>" + str(_rn["n"]) + "</b> objekata nije poručilo ("
+                                + str(_rn.get("bez", 0)) + " bez ijednog kontakta)")
+                if _fus:
+                    _blk.append(Paragraph("<font color='#6b6377'>Trud: "
+                                          + "  ·  ".join(_fus) + ".</font>", Nar))
+            except Exception:
+                pass
         if _osoba_txt:
             _blk.append(Spacer(1, 2))
             _blk.append(Paragraph("Ko je šta uradio — " + _osoba_txt, Nar))
@@ -10284,14 +10504,15 @@ def _efik_vreme(dogadjaji, pauza_min=EFIK_PAUZA_MIN, potez_min=EFIK_POTEZ_MIN):
     Vreme se deli po sistemima: svaki razmak pripada sistemu poteza kojim počinje.
 
     Vraća {"ukupno": min, "po_sistemu": {}, "po_osobi": {}, "po_danu": {},
-           "po_osobi_sistem": {(ko,sis): min}, "sesije": [...]}"""
+           "po_osobi_sistem": {(ko,sis): min}, "po_objektu": {(sis,idk): min},
+           "sesije": [...]}"""
     _res = {"ukupno": 0.0, "po_sistemu": {}, "po_osobi": {}, "po_danu": {},
-            "po_osobi_sistem": {}, "sesije": []}
+            "po_osobi_sistem": {}, "po_objektu": {}, "sesije": []}
     _po_ko = {}
     for _t, _ko, _sis, _vr, _idk in (dogadjaji or []):
         _po_ko.setdefault(_ko, []).append((_t, _sis, _vr, _idk))
 
-    def _dodaj(ko, sis, dan, minuta):
+    def _dodaj(ko, sis, dan, minuta, idk=None):
         if minuta <= 0:
             return
         _res["ukupno"] += minuta
@@ -10299,6 +10520,9 @@ def _efik_vreme(dogadjaji, pauza_min=EFIK_PAUZA_MIN, potez_min=EFIK_POTEZ_MIN):
         _res["po_osobi"][ko] = _res["po_osobi"].get(ko, 0.0) + minuta
         _res["po_danu"][dan] = _res["po_danu"].get(dan, 0.0) + minuta
         _res["po_osobi_sistem"][(ko, sis)] = _res["po_osobi_sistem"].get((ko, sis), 0.0) + minuta
+        if idk is not None:
+            _k = (sis, int(idk))
+            _res["po_objektu"][_k] = _res["po_objektu"].get(_k, 0.0) + minuta
 
     for _ko, _lst in _po_ko.items():
         _lst.sort(key=lambda x: x[0])
@@ -10309,8 +10533,10 @@ def _efik_vreme(dogadjaji, pauza_min=EFIK_PAUZA_MIN, potez_min=EFIK_POTEZ_MIN):
                 # zatvori sesiju
                 for _i in range(len(_sesija) - 1):
                     _min = (_sesija[_i + 1][0] - _sesija[_i][0]).total_seconds() / 60.0
-                    _dodaj(_ko, _sesija[_i][1], _sesija[_i][0].date().isoformat(), _min)
-                _dodaj(_ko, _sesija[-1][1], _sesija[-1][0].date().isoformat(), potez_min)
+                    _dodaj(_ko, _sesija[_i][1], _sesija[_i][0].date().isoformat(), _min,
+                           _sesija[_i][3])
+                _dodaj(_ko, _sesija[-1][1], _sesija[-1][0].date().isoformat(), potez_min,
+                       _sesija[-1][3])
                 _traj = ((_sesija[-1][0] - _sesija[0][0]).total_seconds() / 60.0) + potez_min
                 _res["sesije"].append({"ko": _ko, "od": _sesija[0][0], "do": _sesija[-1][0],
                                        "minuta": _traj, "poteza": len(_sesija),
@@ -16444,8 +16670,14 @@ def prikazi_komercijalu():
 
 
 def izvestaj_admin_sistemi(mesec_key):
-    """Brojevi po sistemu za izveštaj administracije — isti račun kao u PDF-u."""
+    """Brojevi po sistemu za izveštaj administracije — isti račun kao u PDF-u,
+    plus trud po zonama (pozivi, mejlovi, vreme) i objekti koji nisu poručili."""
     _out = []
+    # aktivno vreme po objektu (za trud po zonama) — jednom za ceo mesec
+    try:
+        _vr_obj = (_efik_vreme(_efik_dogadjaji(mesec_key)) or {}).get("po_objektu") or {}
+    except Exception:
+        _vr_obj = {}
     for _sis in (sb_sisteme(mesec_key) or []):
         podaci = sb_ucitaj(mesec_key, _sis)
         if not podaci or not podaci.get("stavke"):
@@ -16558,8 +16790,77 @@ def izvestaj_admin_sistemi(mesec_key):
         _treb_baza = max((_nred + _norg) - _anal_cz, 0)
         _zav_cz = sum(1 for o in _zav_posle if o["nivo"] in ("crveno", "zuto"))
         _uspeh = (round(_zav_cz * 100.0 / _treb_baza) if _treb_baza else None)
+        # ---- trud po zonama + objekti koji nisu poručili ----
+        _zav_ids = {int(o["idk"]) for o in _zav_posle}
+        _ZON = ("crveno", "zuto", "zeleno")
+        _zone = {_z: {"n": 0, "kont": 0, "poz": 0, "mej": 0, "min": 0.0, "zav": 0,
+                      "nisu": 0, "dani": [], "poz_z": 0, "min_z": 0.0,
+                      "poz_n": 0, "min_n": 0.0} for _z in _ZON}
+        _nisu = {"n": 0, "bez": 0, "p1": 0, "p2": 0, "p3": 0, "mejl_only": 0, "kom": 0,
+                 "poz": 0, "mej": 0, "min": 0.0, "top": []}
+        _prvi_kont = _zadnji_kont = None
+        for o in objekti:
+            _v = obrada.get(o["idk"], {}) or {}
+            _dn = _v.get("dnevnik") or {}
+            _pz = list(_dn.get("pozivi") or [])
+            _mj = list(_dn.get("mejlovi") or [])
+            _np = len(_pz) or (1 if "Pozvala sam" in (_v.get("reakcije") or []) else 0)
+            _nm = len(_mj) or (1 if "Poslala sam mejl" in (_v.get("reakcije") or []) else 0)
+            _min = float(_vr_obj.get((_sis, int(o["idk"])), 0.0) or 0.0)
+            _z = o["nivo"] if o["nivo"] in _ZON else "zeleno"
+            _d = _zone[_z]
+            _d["n"] += 1; _d["poz"] += _np; _d["mej"] += _nm; _d["min"] += _min
+            _je_zav = int(o["idk"]) in _zav_ids
+            if _je_zav:
+                _d["zav"] += 1; _d["poz_z"] += _np; _d["min_z"] += _min
+            elif not je_auto_zav(_v):
+                _d["nisu"] += 1; _d["poz_n"] += _np; _d["min_n"] += _min
+            if _np or _nm:
+                _d["kont"] += 1
+                _t0 = None
+                for _e in (_pz + _mj):
+                    _tt = _dt_parse(_e.get("at"))
+                    if _tt and (_t0 is None or _tt < _t0):
+                        _t0 = _tt
+                    if _tt:
+                        if _prvi_kont is None or _tt < _prvi_kont:
+                            _prvi_kont = _tt
+                        if _zadnji_kont is None or _tt > _zadnji_kont:
+                            _zadnji_kont = _tt
+                if _t0 and _sz and _sz.get("kada"):
+                    _ts = _dt_parse(_sz.get("kada"))
+                    if _ts and 0 <= (_t0 - _ts).days <= 60:
+                        _d["dani"].append((_t0 - _ts).total_seconds() / 86400.0)
+            # objekti koji NISU poručili (hitna + žuta zona, bez isključenih)
+            if (not _je_zav) and (not je_auto_zav(_v)) and _z in ("crveno", "zuto"):
+                _nisu["n"] += 1
+                _nisu["poz"] += _np; _nisu["mej"] += _nm; _nisu["min"] += _min
+                if _np >= 3:
+                    _nisu["p3"] += 1
+                elif _np == 2:
+                    _nisu["p2"] += 1
+                elif _np == 1:
+                    _nisu["p1"] += 1
+                elif _nm:
+                    _nisu["mejl_only"] += 1
+                else:
+                    _nisu["bez"] += 1
+                if "Obavestila direktorku" in (_v.get("reakcije") or []):
+                    _nisu["kom"] += 1
+                if _np or _nm:
+                    _nisu["top"].append({"idk": int(o["idk"]), "poz": _np, "mej": _nm,
+                                         "min": _min})
+        _nisu["top"] = sorted(_nisu["top"], key=lambda r: (-r["poz"], -r["min"]))[:5]
+        for _z in _ZON:
+            _d = _zone[_z]
+            _d["dani_avg"] = (sum(_d["dani"]) / len(_d["dani"])) if _d["dani"] else None
+            _d.pop("dani", None)
         _out.append({
             "sistem": _sis, "nedeljni": False, "n": len(objekti),
+            "zone": _zone, "nisu_rez": _nisu,
+            "vreme_min": float(sum(_vr_obj.get((_sis, int(o["idk"])), 0.0) for o in objekti)),
+            "prvi_kontakt": (_prvi_kont.isoformat() if _prvi_kont else ""),
+            "zadnji_kontakt": (_zadnji_kont.isoformat() if _zadnji_kont else ""),
             "crveno": _nred, "zuto": _norg, "zeleno": _ngrn,
             "start_kada": str((_sz or {}).get("kada") or ""),
             "zavrseno": len(_zav_o), "zav_crveno": _zav_red, "zav_zuto": _zav_zut,
@@ -16603,17 +16904,382 @@ def _izv_zadaci_dugme(mesec_key, sistem, sel_lbl):
         st.caption("Po objektima: zona, mejl i 1./2./3. poziv — ko je zvao i kada, i da li je završeno.")
 
 
+IZV_CSS = """
+.izv-k{border:1px solid #e9e3fb;border-radius:14px;background:#fff;padding:14px 16px;
+       box-shadow:0 1px 4px rgba(76,29,149,.07);margin-bottom:6px;}
+.izv-red{display:grid;grid-template-columns:150px 1fr 92px;align-items:center;gap:12px;
+         padding:6px 0;border-top:1px solid #f3f0fb;}
+.izv-red:first-child{border-top:none;}
+.izv-sis{font-weight:800;color:#312e81;font-size:13.5px;}
+.izv-sis u{display:block;text-decoration:none;font-weight:600;color:#8a94a3;font-size:11px;}
+.izv-stack{display:flex;height:24px;border-radius:7px;overflow:hidden;background:#f2f4f8;}
+.izv-stack div{display:flex;align-items:center;justify-content:center;color:#fff;
+               font-size:11.5px;font-weight:800;}
+.izv-stack .c{background:#dc2626;} .izv-stack .z{background:#f59e0b;}
+.izv-stack .g{background:#16a34a;}
+.izv-uk{text-align:right;color:#4b5563;font-size:12px;font-variant-numeric:tabular-nums;}
+.izv-uk b{color:#312e81;font-size:15px;}
+.izv-leg{display:flex;gap:15px;margin-top:9px;font-size:11.5px;color:#4b5563;flex-wrap:wrap;}
+.izv-leg i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;
+           vertical-align:-1px;}
+table.izv-t{width:100%;border-collapse:collapse;font-size:12.5px;}
+table.izv-t thead th{background:linear-gradient(180deg,#7c3aed,#5b21b6);color:#fff;
+    font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;
+    padding:7px 7px;text-align:center;}
+table.izv-t thead th.l{text-align:left;}
+table.izv-t td{padding:7px;border-top:1px solid #f1ecfd;text-align:center;
+               font-variant-numeric:tabular-nums;}
+table.izv-t td.l{text-align:left;}
+table.izv-t tr.zbir td{background:#f7f4ff;font-weight:800;color:#312e81;
+                       border-top:2px solid #ddd6fe;}
+.izv-mini{height:7px;border-radius:4px;background:#eef2f6;overflow:hidden;}
+.izv-mini i{display:block;height:100%;border-radius:4px;background:#16a34a;}
+.izv-mini i.sred{background:#f59e0b;} .izv-mini i.lose{background:#dc2626;}
+.izv-pct{font-size:12px;font-weight:800;color:#14532d;}
+.izv-pct.sred{color:#92400e;} .izv-pct.lose{color:#991b1b;}
+.izv-zone{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+.izv-zk{border-radius:13px;padding:12px 14px;border:1px solid;}
+.izv-zk.c{background:#fdecec;border-color:#f3b4b4;}
+.izv-zk.z{background:#fff8e6;border-color:#fcd34d;}
+.izv-zk.g{background:#eafbf0;border-color:#bbf7d0;}
+.izv-zk h4{margin:0 0 2px;font-size:12.5px;letter-spacing:.3px;}
+.izv-zk.c h4{color:#991b1b;} .izv-zk.z h4{color:#92400e;} .izv-zk.g h4{color:#14532d;}
+.izv-zk .ob{font-size:11.5px;color:#4b5563;margin-bottom:8px;}
+.izv-zk .r{display:flex;justify-content:space-between;align-items:baseline;padding:3px 0;
+           border-top:1px solid rgba(0,0,0,.06);}
+.izv-zk .r:first-of-type{border-top:none;}
+.izv-zk .r span{font-size:11.5px;color:#4b5563;}
+.izv-zk .r b{font-size:14.5px;color:#1f2937;font-variant-numeric:tabular-nums;}
+.izv-zk .dve{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;}
+.izv-zk .dve div{background:#fff;border-radius:9px;padding:7px 8px;}
+.izv-zk .dve .m{font-size:9px;color:#8a94a3;text-transform:uppercase;letter-spacing:.4px;
+                font-weight:700;}
+.izv-zk .dve .v{font-size:17px;font-weight:800;line-height:1.2;color:#1f2937;}
+.izv-zk .dve .s{font-size:10.5px;color:#64748b;}
+.izv-np{display:grid;grid-template-columns:1.2fr 1fr;gap:14px;}
+.izv-rr{display:grid;grid-template-columns:140px 1fr 80px;align-items:center;gap:9px;
+        padding:4px 0;}
+.izv-rr .nm{font-size:12px;color:#4b5563;font-weight:700;}
+.izv-rr .bar{height:18px;background:#f2f4f8;border-radius:6px;position:relative;}
+.izv-rr .bar i{position:absolute;left:0;top:0;bottom:0;border-radius:6px;background:#7c3aed;}
+.izv-rr .br{font-size:12px;color:#4b5563;text-align:right;font-variant-numeric:tabular-nums;}
+.izv-rr .br b{color:#312e81;font-size:14px;}
+.izv-par{display:flex;justify-content:space-between;align-items:baseline;
+         border-bottom:1px dotted #e9e3fb;padding:3px 0;}
+.izv-par span{font-size:11.5px;color:#4b5563;}
+.izv-par b{font-size:13px;color:#312e81;font-variant-numeric:tabular-nums;}
+.izv-nas{font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:#8a94a3;
+         font-weight:800;margin:0 0 4px;}
+.izv-fus{font-size:12px;color:#4b5563;margin-top:8px;line-height:1.5;background:#f7f4ff;
+         border-radius:9px;padding:8px 10px;}
+.izv-fus b{color:#312e81;}
+.izv-mal{font-size:11.5px;color:#8a94a3;margin-top:8px;line-height:1.5;}
+"""
+
+_IZV_ZONE_IME = {"crveno": ("🔴 HITNA ZONA", "c"), "zuto": ("🟠 ZA KONTROLU", "z"),
+                 "zeleno": ("🟢 DOBRA ZALIHA", "g")}
+
+
+def _izv_pct(deo, uk):
+    return int(round(100.0 * float(deo) / float(uk))) if uk else 0
+
+
+def _izv_kl(p):
+    return "" if p >= 55 else (" sred" if p >= 40 else " lose")
+
+
+def _izv_zone_zbir(sis_lst):
+    """Saberi trud po zonama kroz sve (obične) sisteme."""
+    _z = {_k: {"n": 0, "kont": 0, "poz": 0, "mej": 0, "min": 0.0, "zav": 0, "nisu": 0,
+               "poz_z": 0, "min_z": 0.0, "poz_n": 0, "min_n": 0.0, "dani": [], "mej_z": 0}
+          for _k in ("crveno", "zuto", "zeleno")}
+    for _x in sis_lst:
+        for _k, _d in (_x.get("zone") or {}).items():
+            if _k not in _z:
+                continue
+            for _p in ("n", "kont", "poz", "mej", "zav", "nisu", "poz_z", "poz_n"):
+                _z[_k][_p] += int(_d.get(_p, 0) or 0)
+            for _p in ("min", "min_z", "min_n"):
+                _z[_k][_p] += float(_d.get(_p, 0) or 0)
+            if _d.get("dani_avg") is not None:
+                _z[_k]["dani"].append((float(_d["dani_avg"]), int(_d.get("kont", 0) or 0)))
+    for _k in _z:
+        _dn = _z[_k].pop("dani", [])
+        _w = sum(_c for _, _c in _dn)
+        _z[_k]["dani_avg"] = (sum(_v * _c for _v, _c in _dn) / _w) if _w else None
+    return _z
+
+
+def izv_start_html(sis_lst):
+    """Blok 1: start — kako je koji sistem krenuo (sortirano po udelu hitne zone)."""
+    _l = [x for x in sis_lst if not x.get("nedeljni")]
+    if not _l:
+        return ""
+    _l = sorted(_l, key=lambda x: -(x["crveno"] / float(max(x["n"], 1))))
+    _h = ['<div class="izv-k">']
+    _uc = _uz = _ug = 0
+    for _x in _l:
+        _n = max(int(_x["n"]), 1)
+        _c, _z, _g = int(_x["crveno"]), int(_x["zuto"]), int(_x["zeleno"])
+        _uc += _c; _uz += _z; _ug += _g
+        _h.append('<div class="izv-red"><div class="izv-sis">' + _h_escape(_x["sistem"])
+                  + ('<u>start ' + _h_escape(str(_x.get("start_kada", ""))) + '</u>'
+                     if _x.get("start_kada") else '<u>start nije zabeležen</u>')
+                  + '</div><div class="izv-stack">'
+                  + ('<div class="c" style="width:' + str(round(100.0 * _c / _n, 1)) + '%">'
+                     + (str(_c) if _c else "") + '</div>' if _c else '')
+                  + ('<div class="z" style="width:' + str(round(100.0 * _z / _n, 1)) + '%">'
+                     + (str(_z) if _z else "") + '</div>' if _z else '')
+                  + ('<div class="g" style="width:' + str(round(100.0 * _g / _n, 1)) + '%">'
+                     + (str(_g) if _g else "") + '</div>' if _g else '')
+                  + '</div><div class="izv-uk"><b>' + str(_x["n"]) + '</b><br>objekata</div></div>')
+    _uk = max(_uc + _uz + _ug, 1)
+    _h.append('<div class="izv-red" style="border-top:2px solid #ddd6fe;padding-top:9px;">'
+              '<div class="izv-sis" style="color:#4c1d95;">SVI SISTEMI</div>'
+              '<div class="izv-stack">'
+              '<div class="c" style="width:' + str(round(100.0 * _uc / _uk, 1)) + '%">'
+              + str(_uc) + '</div>'
+              '<div class="z" style="width:' + str(round(100.0 * _uz / _uk, 1)) + '%">'
+              + str(_uz) + '</div>'
+              '<div class="g" style="width:' + str(round(100.0 * _ug / _uk, 1)) + '%">'
+              + str(_ug) + '</div></div>'
+              '<div class="izv-uk"><b>' + str(_uc + _uz + _ug) + '</b><br>objekata</div></div>')
+    _h.append('<div class="izv-leg"><span><i style="background:#dc2626"></i>hitna zona</span>'
+              '<span><i style="background:#f59e0b"></i>za kontrolu</span>'
+              '<span><i style="background:#16a34a"></i>dobra zaliha</span></div>'
+              '<div class="izv-mal">Stanje u trenutku starta — ono što je administracija '
+              'zatekla posle povlačenja porudžbina od 01.</div></div>')
+    return "".join(_h)
+
+
+def izv_zatvoreno_html(sis_lst):
+    """Blok 2: šta je od starta zatvoreno — isti redosled sistema."""
+    _l = [x for x in sis_lst if not x.get("nedeljni")]
+    if not _l:
+        return ""
+    _l = sorted(_l, key=lambda x: -(x["crveno"] / float(max(x["n"], 1))))
+    _h = ['<div class="izv-k"><table class="izv-t"><thead><tr>'
+          '<th class="l">Sistem</th><th>Trebalo<br>da poruči</th><th>Poručilo<br>posle starta</th>'
+          '<th>Samo poručili<br>(01.→start)</th><th>Isključila<br>analitika</th>'
+          '<th>Nisu<br>poručili</th><th style="width:165px;">Uspešnost</th></tr></thead><tbody>']
+    _t = {"baza": 0, "posle": 0, "pre": 0, "anal": 0, "nisu": 0, "uzb": 0, "tb": 0}
+    for _x in _l:
+        _nisu = int((_x.get("nisu_rez") or {}).get("n", 0) or 0)
+        _p = _x.get("uspeh")
+        _kl = _izv_kl(int(_p)) if _p is not None else " lose"
+        _t["baza"] += int(_x["crveno"]) + int(_x["zuto"])
+        _t["posle"] += int(_x.get("zav_posle_starta", 0) or 0)
+        _t["pre"] += int(_x.get("zav_pre_starta", 0) or 0)
+        _t["anal"] += int(_x.get("zav_analitika", 0) or 0)
+        _t["nisu"] += _nisu
+        _t["uzb"] += int(_x.get("zav_u_bazi", 0) or 0)
+        _t["tb"] += int(_x.get("treb_baza", 0) or 0)
+        _h.append('<tr><td class="l"><b style="color:#312e81;">' + _h_escape(_x["sistem"])
+                  + '</b></td><td>' + str(int(_x["crveno"]) + int(_x["zuto"])) + '</td>'
+                  '<td><b>' + str(_x.get("zav_posle_starta", 0)) + '</b></td>'
+                  '<td>' + str(_x.get("zav_pre_starta", 0)) + '</td>'
+                  '<td>' + str(_x.get("zav_analitika", 0)) + '</td>'
+                  '<td' + (' style="color:#991b1b;font-weight:800;"' if _nisu else '') + '>'
+                  + str(_nisu) + '</td><td>'
+                  + ('<div class="izv-mini"><i class="' + _kl.strip()
+                     + '" style="width:' + str(int(_p)) + '%"></i></div>'
+                     '<div class="izv-pct' + _kl + '">' + str(int(_p)) + '% <span '
+                     'style="font-weight:600;color:#8a94a3;">(' + str(_x.get("zav_u_bazi", 0))
+                     + ' od ' + str(_x.get("treb_baza", 0)) + ')</span></div>'
+                     if _p is not None else '<span style="color:#8a94a3;">—</span>')
+                  + '</td></tr>')
+    _pu = _izv_pct(_t["uzb"], _t["tb"])
+    _h.append('<tr class="zbir"><td class="l">UKUPNO</td><td>' + str(_t["baza"]) + '</td>'
+              '<td>' + str(_t["posle"]) + '</td><td>' + str(_t["pre"]) + '</td>'
+              '<td>' + str(_t["anal"]) + '</td><td>' + str(_t["nisu"]) + '</td>'
+              '<td><div class="izv-mini"><i class="' + _izv_kl(_pu).strip()
+              + '" style="width:' + str(_pu) + '%"></i></div>'
+              '<div class="izv-pct' + _izv_kl(_pu) + '">' + str(_pu) + '% <span '
+              'style="font-weight:600;color:#8a94a3;">(' + str(_t["uzb"]) + ' od '
+              + str(_t["tb"]) + ')</span></div></td></tr>')
+    _h.append('</tbody></table><div class="izv-mal">„Trebalo da poruči" = hitna zona + zona za '
+              'kontrolu na startu. Uspešnost se računa bez objekata koje je analitika '
+              'isključila.</div></div>')
+    return "".join(_h)
+
+
+def izv_zone_html(sis_lst):
+    """Blok 3: trud po zonama — posebno za one koji jesu i koji nisu poručili."""
+    _z = _izv_zone_zbir([x for x in sis_lst if not x.get("nedeljni")])
+    if not any(_z[_k]["n"] for _k in _z):
+        return ""
+    _h = ['<div class="izv-zone">']
+    for _k in ("crveno", "zuto", "zeleno"):
+        _d = _z[_k]
+        _ime, _cl = _IZV_ZONE_IME[_k]
+        _n = max(_d["n"], 1)
+        _h.append('<div class="izv-zk ' + _cl + '"><h4>' + _ime + ' — ' + str(_d["n"])
+                  + ' objekata</h4><div class="ob">kontaktirano ' + str(_d["kont"]) + ' ('
+                  + str(_izv_pct(_d["kont"], _d["n"])) + '%)'
+                  + (' · Ø ' + str(round(_d["dani_avg"], 1)).replace(".", ",")
+                     + ' dana do prvog kontakta' if _d.get("dani_avg") is not None else '')
+                  + '</div>'
+                  '<div class="r"><span>Ø poziva po objektu</span><b>'
+                  + str(round(_d["poz"] / float(_n), 1)).replace(".", ",") + '</b></div>'
+                  '<div class="r"><span>Ø mejlova po objektu</span><b>'
+                  + str(round(_d["mej"] / float(_n), 1)).replace(".", ",") + '</b></div>'
+                  '<div class="r"><span>Ø aktivnog vremena</span><b>'
+                  + _efik_hm(_d["min"] / float(_n)) + '</b></div>'
+                  '<div class="dve"><div><div class="m">Poručilo</div><div class="v">'
+                  + str(_d["zav"]) + '</div><div class="s">Ø '
+                  + str(round(_d["poz_z"] / float(max(_d["zav"], 1)), 1)).replace(".", ",")
+                  + ' poziva · ' + _efik_hm(_d["min_z"] / float(max(_d["zav"], 1)))
+                  + '</div></div>'
+                  '<div><div class="m">Nisu poručili</div><div class="v">'
+                  + str(_d["nisu"]) + '</div><div class="s">Ø '
+                  + str(round(_d["poz_n"] / float(max(_d["nisu"], 1)), 1)).replace(".", ",")
+                  + ' poziva · ' + _efik_hm(_d["min_n"] / float(max(_d["nisu"], 1)))
+                  + '</div></div></div></div>')
+    _h.append('</div>')
+    return "".join(_h)
+
+
+def izv_nisu_html(sis_lst, komfull=None):
+    """Blok 4: objekti koji nisu poručili — šta je za njih urađeno."""
+    _l = [x for x in sis_lst if not x.get("nedeljni")]
+    _t = {"n": 0, "bez": 0, "p1": 0, "p2": 0, "p3": 0, "mejl_only": 0, "kom": 0,
+          "poz": 0, "mej": 0, "min": 0.0}
+    _top = []
+    _uk_min = 0.0
+    for _x in _l:
+        _r = _x.get("nisu_rez") or {}
+        for _k in ("n", "bez", "p1", "p2", "p3", "mejl_only", "kom", "poz", "mej"):
+            _t[_k] += int(_r.get(_k, 0) or 0)
+        _t["min"] += float(_r.get("min", 0) or 0)
+        _uk_min += float(_x.get("vreme_min", 0) or 0)
+        for _o in (_r.get("top") or []):
+            _top.append(dict(_o, sistem=_x["sistem"]))
+    if not _t["n"]:
+        return ""
+    _top = sorted(_top, key=lambda r: (-r["poz"], -r["min"]))[:5]
+    _kom = komfull or {}
+    _n = max(_t["n"], 1)
+    _h = ['<div class="izv-k"><div class="izv-np"><div>',
+          '<div class="izv-nas">Koliko je kontakta dobio svaki od njih</div>']
+    for _lbl, _k, _boja in (("3+ poziva", "p3", "#4c1d95"), ("2 poziva", "p2", "#7c3aed"),
+                            ("1 poziv", "p1", "#a78bfa"), ("samo mejl", "mejl_only", "#ddd6fe"),
+                            ("bez ijednog kontakta", "bez", "#dc2626")):
+        _v = _t[_k]
+        _h.append('<div class="izv-rr"><div class="nm"'
+                  + (' style="color:#991b1b;"' if _k == "bez" else '') + '>' + _lbl + '</div>'
+                  '<div class="bar"><i style="width:' + str(round(100.0 * _v / _n, 1))
+                  + '%;background:' + _boja + '"></i></div>'
+                  '<div class="br"><b>' + str(_v) + '</b> · ' + str(_izv_pct(_v, _t["n"]))
+                  + '%</div></div>')
+    _h.append('<div class="izv-leg"><span>Prosleđeno komercijali: <b>' + str(_t["kom"])
+              + '</b> objekata</span></div></div><div>')
+    _h.append('<div class="izv-nas">Koliko je truda otišlo na njih</div>'
+              '<div class="izv-par"><span>Uloženo aktivnog vremena</span><b>'
+              + _efik_hm(_t["min"]) + '</b></div>'
+              '<div class="izv-par"><span>Ø po objektu</span><b>'
+              + _efik_hm(_t["min"] / float(_n)) + '</b></div>'
+              '<div class="izv-par"><span>Ukupno poziva</span><b>' + str(_t["poz"]) + '</b></div>'
+              '<div class="izv-par"><span>Ukupno mejlova</span><b>' + str(_t["mej"]) + '</b></div>'
+              + ('<div class="izv-par"><span>Udeo u ukupnom vremenu meseca</span><b>'
+                 + str(_izv_pct(_t["min"], _uk_min)) + '%</b></div>' if _uk_min else ''))
+    if _top:
+        _h.append('<div class="izv-nas" style="margin-top:11px;">Najviše truda bez rezultata</div>'
+                  '<table class="izv-t"><thead><tr><th class="l">Objekat</th><th>Pozivi</th>'
+                  '<th>Mejlovi</th><th>Vreme</th></tr></thead><tbody>')
+        for _o in _top:
+            _nz = (_kom.get(int(_o["idk"]), {}) or {}).get("naziv", "") or ("ID " + str(_o["idk"]))
+            _h.append('<tr><td class="l">' + _h_escape(_nz) + ' <span style="color:#8a94a3;">· '
+                      + _h_escape(_o["sistem"]) + '</span></td><td>' + str(_o["poz"]) + '</td>'
+                      '<td>' + str(_o["mej"]) + '</td><td>' + _efik_hm(_o["min"]) + '</td></tr>')
+        _h.append('</tbody></table>')
+    _h.append('</div></div><div class="izv-mal">Računaju se objekti iz hitne zone i zone za '
+              'kontrolu koji do kraja nisu poručili (bez onih koje je analitika '
+              'isključila).</div></div>')
+    return "".join(_h)
+
+
+def izv_sistem_zone_html(x):
+    """Dodatak uz postojeću karticu sistema: trud po zonama + ko je radio i kada."""
+    _z = x.get("zone") or {}
+    if not _z:
+        return ""
+    _h = ['<div class="izv-nas" style="margin-top:6px;">Trud i rezultat po zonama</div>'
+          '<table class="izv-t"><thead><tr><th class="l">Zona</th><th>Obj.</th>'
+          '<th>Kontaktirano</th><th>Ø poziva</th><th>Ø mejlova</th><th>Ø vreme</th>'
+          '<th>Poručilo</th><th>Nisu</th></tr></thead><tbody>']
+    for _k, _boja, _ime in (("crveno", "#dc2626", "Hitna"), ("zuto", "#f59e0b", "Kontrola"),
+                            ("zeleno", "#16a34a", "Dobra")):
+        _d = _z.get(_k) or {}
+        _n = max(int(_d.get("n", 0) or 0), 1)
+        _h.append('<tr><td class="l"><span style="display:inline-block;width:9px;height:9px;'
+                  'border-radius:3px;margin-right:6px;background:' + _boja + ';"></span>'
+                  + _ime + '</td><td>' + str(_d.get("n", 0)) + '</td>'
+                  '<td>' + str(_d.get("kont", 0)) + '</td>'
+                  '<td>' + str(round(int(_d.get("poz", 0)) / float(_n), 1)).replace(".", ",")
+                  + '</td><td>'
+                  + str(round(int(_d.get("mej", 0)) / float(_n), 1)).replace(".", ",")
+                  + '</td><td>' + _efik_hm(float(_d.get("min", 0) or 0) / float(_n)) + '</td>'
+                  '<td><b>' + str(_d.get("zav", 0)) + '</b> ('
+                  + str(_izv_pct(_d.get("zav", 0), _d.get("n", 0))) + '%)</td>'
+                  '<td>' + str(_d.get("nisu", 0)) + '</td></tr>')
+    _h.append('</tbody></table>')
+    _r = x.get("nisu_rez") or {}
+    _fus = []
+    if x.get("vreme_min"):
+        _fus.append("Aktivno vreme <b>" + _efik_hm(x["vreme_min"]) + "</b>")
+    if x.get("prvi_kontakt"):
+        _fus.append("prvi kontakt " + _h_escape(_dt_kratko(x["prvi_kontakt"])))
+    if x.get("zadnji_kontakt"):
+        _fus.append("poslednji " + _h_escape(_dt_kratko(x["zadnji_kontakt"])))
+    if _r.get("n"):
+        _t = "<b>" + str(_r["n"]) + " objekata nije poručilo</b>"
+        _dod = []
+        if _r.get("bez"):
+            _dod.append(str(_r["bez"]) + " bez ijednog kontakta")
+        if _r.get("p3"):
+            _dod.append("na " + str(_r["p3"]) + " potrošeno 3+ poziva")
+        if _dod:
+            _t += " — od toga " + " , ".join(_dod)
+        _fus.append(_t)
+    if _fus:
+        _h.append('<div class="izv-fus">' + "  ·  ".join(_fus) + '.</div>')
+    return "".join(_h)
+
+
 def render_izvestaj_admin(mesec_key, sel_lbl):
     """Isti izveštaj koji ide u PDF, samo prikazan na kartici."""
     _rs = lambda n: format(int(n or 0), ",").replace(",", ".")
-    render_aktivno_vreme(mesec_key)
+    st.markdown("<style>" + IZV_CSS + "</style>", unsafe_allow_html=True)
     _sis_lst = izvestaj_admin_sistemi(mesec_key)
-    st.markdown('<div style="margin:20px 0 4px;font-size:12px;text-transform:uppercase;'
-                'letter-spacing:.6px;color:#9aa0ad;font-weight:700;">📦 Po sistemima — '
-                + _h_escape(str(sel_lbl)) + '</div>', unsafe_allow_html=True)
     if not _sis_lst:
         st.caption("Za ovaj mesec nema objavljenih sistema.")
         return
+
+    def _nas(txt, pod=""):
+        st.markdown('<div style="margin:18px 0 6px;font-size:12px;text-transform:uppercase;'
+                    'letter-spacing:.6px;color:#9aa0ad;font-weight:700;">' + txt
+                    + ('<span style="text-transform:none;letter-spacing:0;font-weight:500;'
+                       'color:#b6bcc9;"> · ' + _h_escape(pod) + '</span>' if pod else '')
+                    + '</div>', unsafe_allow_html=True)
+
+    try:
+        _komf = sb_komitenti_full()
+    except Exception:
+        _komf = {}
+    _nas("1 · Start — kako je koji sistem krenuo", "sortirano po udelu hitne zone")
+    st.markdown(izv_start_html(_sis_lst), unsafe_allow_html=True)
+    _nas("2 · Šta je od starta zatvoreno", "isti redosled sistema")
+    st.markdown(izv_zatvoreno_html(_sis_lst), unsafe_allow_html=True)
+    _nas("3 · Trud po zonama", "posebno oni koji jesu i koji nisu poručili")
+    st.markdown(izv_zone_html(_sis_lst), unsafe_allow_html=True)
+    _nisu_html = izv_nisu_html(_sis_lst, _komf)
+    if _nisu_html:
+        _nas("4 · Objekti koji nisu poručili — šta je za njih urađeno")
+        st.markdown(_nisu_html, unsafe_allow_html=True)
+
+    st.markdown('<div style="margin:20px 0 4px;font-size:12px;text-transform:uppercase;'
+                'letter-spacing:.6px;color:#9aa0ad;font-weight:700;">📦 Po sistemima — '
+                + _h_escape(str(sel_lbl)) + '</div>', unsafe_allow_html=True)
     _obicni = [x for x in _sis_lst if not x["nedeljni"]]
     _sistemski = [x for x in _sis_lst if x["nedeljni"]]
 
@@ -16673,6 +17339,10 @@ def render_izvestaj_admin(mesec_key, sel_lbl):
                              use_container_width=True)
             except Exception:
                 pass
+            try:
+                st.markdown(izv_sistem_zone_html(x), unsafe_allow_html=True)
+            except Exception:
+                pass
             _izv_zadaci_dugme(mesec_key, x["sistem"], sel_lbl)
 
     # ---- sistemski sistemi (trebuju u fiksnom periodu) ----
@@ -16726,6 +17396,12 @@ def render_izvestaj_admin(mesec_key, sel_lbl):
             except Exception:
                 pass
             _izv_zadaci_dugme(mesec_key, x["sistem"], sel_lbl)
+
+    # ---- ko je radio (aktivno vreme) — detalj na kraju ----
+    st.markdown('<div style="margin:20px 0 4px;font-size:12px;text-transform:uppercase;'
+                'letter-spacing:.6px;color:#9aa0ad;font-weight:700;">⏱️ Ko je radio</div>',
+                unsafe_allow_html=True)
+    render_aktivno_vreme(mesec_key)
 
 
 KNEZ_TAB_CSS = """/* ===== Naše tabele (Knez): obojeno zaglavlje, čiste linije ===== */
