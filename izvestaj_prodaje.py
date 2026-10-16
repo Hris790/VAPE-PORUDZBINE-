@@ -11459,14 +11459,25 @@ def knjizno_marza(sistem, grupa, podesavanja=None):
     return KNJ_MARZA_PODR
 
 
+def knjizno_marza_std(grupa):
+    """Standardna marža za tu grupu — po njoj se iz NAŠE redovne cene dobija neto."""
+    return KNJ_MARZA_GRUPA.get(cene_grupa_korpa(grupa), KNJ_MARZA_PODR)
+
+
 def _knj_neto(cena, marza):
-    """MP cena → neto cena (bez PDV-a i bez marže kupca)."""
+    """MP cena → neto cena (bez PDV-a i bez marže)."""
     return float(cena) / (1.0 + KNJ_PDV / 100.0) / (1.0 + float(marza) / 100.0)
 
 
-def knjizno_po_komadu(redovna, akcijska, marza):
-    """Osnovica, PDV i ukupno — po jednom komadu."""
-    _o = _knj_neto(redovna, marza) - _knj_neto(akcijska, marza)
+def knjizno_po_komadu(redovna, akcijska, marza, marza_red=None):
+    """Osnovica, PDV i ukupno — po jednom komadu.
+
+    Redovna cena je NAŠA (neto se dobija standardnom maržom grupe: 20%, SYX 10%),
+    a akcijska je cena koju kupac drži na polici — tu ide njegova marža (npr.
+    Mikromarket 40%). Kod kupaca sa standardnom maržom obe strane su iste.
+    """
+    _mr = float(marza if marza_red is None else marza_red)
+    _o = _knj_neto(redovna, _mr) - _knj_neto(akcijska, marza)
     return {"osnovica": _o, "pdv": _o * (KNJ_PDV / 100.0), "ukupno": _o * (1 + KNJ_PDV / 100.0)}
 
 
@@ -11592,7 +11603,8 @@ def knjizno_tabela(redovi, kol, kupac_sistem, marze=None, rucno=None):
                                  "od": _r.get("od"), "do": _r.get("do"),
                                  "napomena": "upiši ručno (cena i količina)"})
                     continue
-                _po = knjizno_po_komadu(_red * (2 if _par else 1), _cena, _m)
+                _po = knjizno_po_komadu(_red * (2 if _par else 1), _cena, _m,
+                                        knjizno_marza_std(_g))
                 _kom = int(_kom_r)
                 _nap = ("parova" if _par else "kom") + " · ručno"
                 _out.append({"kupac": _kupac, "sistem": _sis, "grupa": _g, "redovna": _red,
@@ -11604,7 +11616,7 @@ def knjizno_tabela(redovi, kol, kupac_sistem, marze=None, rucno=None):
                 continue
             if _kom <= 0:
                 continue
-            _po = knjizno_po_komadu(_red, _akc, _m)
+            _po = knjizno_po_komadu(_red, _akc, _m, knjizno_marza_std(_g))
             _out.append({"kupac": _kupac, "sistem": _sis, "grupa": _g, "redovna": _red,
                          "akcijska": str(_r.get("akcijska") or ""), "kom": int(_kom),
                          "osnovica": _po["osnovica"] * _kom, "pdv": _po["pdv"] * _kom,
@@ -11759,7 +11771,10 @@ def knjizno_xlsx(tabela, po_kupcu, uk, mesec_lbl):
     _t.font = _F(bold=True, size=13, color="1F4E79", name="Arial")
     _ws2 = _wb.create_sheet("Kako se računa")
     for _r in (["KNJIŽNO ODOBRENJE — kako se računa"], [],
-               ["1.", "neto cena = MP cena / 1,20 (PDV) / (1 + marža kupca)"],
+               ["1.", "neto cena = MP cena / 1,20 (PDV) / (1 + marža)"],
+               ["", "redovna strana: NAŠA cena sa standardnom maržom grupe (20%, SYX 10%)"],
+               ["", "akcijska strana: cena na polici kupca sa NJEGOVOM maržom "
+                    "(npr. Mikromarket 40%)"],
                ["2.", "osnovica po komadu = neto(redovna) − neto(akcijska)"],
                ["3.", "PDV = osnovica × 20%"],
                ["4.", "knjižno = (osnovica + PDV) × prodata količina"], [],
