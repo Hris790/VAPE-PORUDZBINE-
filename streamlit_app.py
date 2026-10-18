@@ -12176,7 +12176,8 @@ def knjizno_razl_citaj(fajl):
     return _out
 
 
-def knjizno_razlozeno(redovi, sistem, radnje, marze=None, cenovnik=None, danas=None):
+def knjizno_razlozeno(redovi, sistem, radnje, marze=None, cenovnik=None, danas=None,
+                      kol_rucno=None, osn_rucno=None):
     """Isti obračun kao u glavnoj tabeli, ali po radnjama (podfirmama) sistema.
 
     `radnje` = {RADNJA: {grupa: količina}} (iz uvezenog template-a). Cene, marža
@@ -12191,33 +12192,45 @@ def knjizno_razlozeno(redovi, sistem, radnje, marze=None, cenovnik=None, danas=N
         if not knjizno_red_potvrdjen(_r, danas):
             continue
         _po_g.setdefault(str(_r.get("grupa") or ""), _r)
+    _k_ruc = {str(_k): _v for _k, _v in (kol_rucno or {}).items()}
+    _o_ruc = {str(_k): _v for _k, _v in (osn_rucno or {}).items()}
     _out = []
     for _rad in sorted(radnje or {}, key=lambda t: _knj_norm(t)):
         for _g, _r in _po_g.items():
-            _kom = int((radnje.get(_rad) or {}).get(_g, 0) or 0)
+            _kljuc = _rad + "|" + _g
+            _kom_f = int((radnje.get(_rad) or {}).get(_g, 0) or 0)
+            _kom_u = _knj_broj(_k_ruc.get(_kljuc))
+            _kom = int(_kom_u) if _kom_u is not None else _kom_f
+            _osn_r = _knj_broj(_o_ruc.get(_kljuc))
             _red = _knj_broj(_r.get("redovna")) or 0.0
             _akc = _knj_broj(_r.get("akcijska"))
             _m = knjizno_marza(_sis, _g, marze)
             _nap = ""
+            _osn_a = 0.0
             if _akc is None:
-                _osn = 0.0
                 _nap = "akcija se ne računa sama (" + str(_r.get("akcijska") or "") + ")"
             else:
                 _nas, _iz_cen = knjizno_nasa_cena(_g, _red, _m, cenovnik)
                 _po = knjizno_po_komadu(_nas, _akc, _m, knjizno_marza_std(_g))
-                _osn = _po["osnovica"] * _kom
+                _osn_a = _po["osnovica"] * _kom
                 if _iz_cen:
                     _nap = "naša cena " + _knj_din(_nas, 0)
-            if not _kom and not _nap:
+            _osn = _osn_a if _osn_r is None else _osn_r
+            if _kom_u is not None:
+                _nap = (_nap + " · " if _nap else "") + "količina upisana ručno"
+            elif not _kom and not _nap:
                 _nap = "nema prodaje u fajlu za taj artikal"
+            if _osn_r is not None:
+                _nap = (_nap + " · " if _nap else "") + "iznos ručno izmenjen"
             _out.append({"kupac": _rad, "sistem": _sis, "grupa": _g, "redovna": _red,
                          "akcijska": str(_r.get("akcijska") or ""), "kom": _kom,
                          "osnovica": _osn, "pdv": _osn * (KNJ_PDV / 100.0),
                          "ukupno": _osn * (1 + KNJ_PDV / 100.0), "marza": _m,
-                         "rucno": False, "ceka": False, "rucno_sis": False,
-                         "kljuc": _rad + "|" + _g, "od": _r.get("od", ""),
+                         "rucno": bool(_kom_u is not None or _osn_r is not None),
+                         "ceka": False, "rucno_sis": False,
+                         "kljuc": _kljuc, "od": _r.get("od", ""),
                          "do": _r.get("do", ""), "napomena": _nap, "mod": "auto",
-                         "kom_auto": _kom, "osn_auto": _osn})
+                         "kom_auto": _kom_f, "osn_auto": _osn_a})
     return _out
 
 
@@ -12567,9 +12580,11 @@ div[class*="st-key-knjredlagc_"] [data-testid="stTextInputRootElement"]{
 """
 
 
-def knjizno_red_ui(tab, po_kupcu, uk, mesec_key):
+def knjizno_red_ui(tab, po_kupcu, uk, mesec_key, ns=""):
     """Ista tabela kao u prikazu — samo što se Količina i Osnovica kucaju u ćeliji.
-    Vraća {kljuc: {"kom": tekst, "osn": tekst, ...}} — ono što je u poljima."""
+    Vraća {kljuc: {"kom": tekst, "osn": tekst, ...}} — ono što je u poljima.
+    `ns` razdvaja polja kad se ista tabela crta više puta (npr. razloženo po
+    radnjama) da se ključevi widgeta ne poklope."""
     _SIR = [1.35, 1.5, 0.75, 0.8, 0.5, 1.0, 1.1, 1.2, 1.0, 1.25]
     _NAS = ["Kupac", "Artikal", "Redovna", "Akcijska", "Marža", "Period", "Količina",
             "Osnovica", "PDV", "Knjižno ukupno"]
@@ -12600,7 +12615,7 @@ def knjizno_red_ui(tab, po_kupcu, uk, mesec_key):
         if _pre is not None and _t["kupac"] != _pre:
             _zbir(_pre)
         _pre = _t["kupac"]
-        _kl = _knj_norm(_t["kljuc"])
+        _kl = _knj_norm((str(ns) + "|" if ns else "") + str(_t["kljuc"]))
         # „na lager": prvi red grupe nosi dva polja (bez PDV-a / sa PDV-om), ostali
         # redovi su prazni s te strane pa polja izgledaju spojeno preko grupa.
         _lag = (str(_t.get("mod") or "") == "lager")
@@ -13485,12 +13500,15 @@ def _knjizno_blok(mesec_key, sel_lbl, podaci, redovi_svi, uloga, ro):
                                    + _knj_din(sum(sum(_v.values())
                                                   for _v in _proc["radnje"].values()), 0)
                                    + " kom")
-                        st.dataframe(pd.DataFrame(
-                            [{"Radnja": _r, "Objekata": (_proc["lokacije"] or {}).get(_r, 0),
-                              **{_g: _k for _g, _k in sorted(_v.items())},
-                              "Ukupno": sum(_v.values())}
-                             for _r, _v in sorted(_proc["radnje"].items())]),
-                            hide_index=True, use_container_width=True)
+                        _pv = knjizno_razlozeno(redovi_svi, _sel_s, _proc["radnje"],
+                                                _marze, (podaci or {}).get("cenovnik"))
+                        if _pv:
+                            _pvp, _pvu = knjizno_zbir(_pv)
+                            st.markdown(knjizno_html(_pv, _pvp, _pvu),
+                                        unsafe_allow_html=True)
+                        else:
+                            st.info("Za taj sistem još nema nijedne potvrđene akcijske "
+                                    "cene, pa nema šta da se razloži.")
                         if _proc.get("preskoceno"):
                             st.warning("Nije ušlo u obračun (nema te grupe u cenovniku): "
                                        + " · ".join(_h_escape(_k) + " — " + str(_v) + " kom"
@@ -13528,9 +13546,11 @@ def _knjizno_blok(mesec_key, sel_lbl, podaci, redovi_svi, uloga, ro):
                         except Exception as _e:
                             st.error("Greška: " + str(_e))
         for _rs in _razl_sis:
-            _rad = (_razl.get(_rs) or {}).get("radnje") or {}
+            _izv0 = _razl.get(_rs) or {}
+            _rad = _izv0.get("radnje") or {}
             _rtab = knjizno_razlozeno(redovi_svi, _rs, _rad, _marze,
-                                      (podaci or {}).get("cenovnik"))
+                                      (podaci or {}).get("cenovnik"), None,
+                                      _izv0.get("kol"), _izv0.get("osn"))
             if not _rtab:
                 continue
             _razl_tab[_rs] = _rtab
@@ -13545,7 +13565,50 @@ def _knjizno_blok(mesec_key, sel_lbl, podaci, redovi_svi, uloga, ro):
                         + _h_escape(_ko_kratko(_izv.get("ko"))) + ", "
                         + _h_escape(_dt_kratko(_izv.get("at"))) + ') — iste cene, marže '
                         'i period kao u tabeli iznad.</div>', unsafe_allow_html=True)
-            st.markdown(knjizno_html(_rtab, _rpo, _ruk), unsafe_allow_html=True)
+            if uloga == "analitika" and not ro:
+                _rns = "razl_" + _knj_norm(_rs)
+                with st.form("knj_razl_forma_" + _rns + "_" + mesec_key, border=False):
+                    _run = knjizno_red_ui(_rtab, _rpo, _ruk, mesec_key, _rns)
+                    _rs1, _rs2 = st.columns([1.5, 3])
+                    with _rs1:
+                        _rsave = st.form_submit_button("💾 Sačuvaj izmene",
+                                                       type="primary",
+                                                       use_container_width=True)
+                    with _rs2:
+                        st.markdown('<div class="cene-note" style="margin-top:8px;">'
+                                    'Količine dolaze iz fajla; ako nešto ispraviš ovde, '
+                                    'tvoja vrednost važi dok je ne vratiš na onu iz '
+                                    'fajla.</div>', unsafe_allow_html=True)
+                if _rsave:
+                    _nk2, _no2 = dict(_izv0.get("kol") or {}), dict(_izv0.get("osn") or {})
+                    for _kk2, _v2 in (_run or {}).items():
+                        _kv2 = _knj_broj(_v2.get("kom"))
+                        _ov2 = _knj_broj(_v2.get("osn"))
+                        _ka2 = _v2.get("kom_auto")
+                        _oa2 = _v2.get("osn_auto")
+                        if _kv2 is None or (_ka2 is not None
+                                            and int(_kv2) == int(_ka2)):
+                            _nk2.pop(_kk2, None)
+                        else:
+                            _nk2[_kk2] = int(_kv2)
+                        if _ov2 is None or (_oa2 is not None
+                                            and abs(float(_ov2) - float(_oa2)) <= 0.5):
+                            _no2.pop(_kk2, None)
+                        else:
+                            _no2[_kk2] = float(_ov2)
+                    _izv0["kol"] = _nk2
+                    _izv0["osn"] = _no2
+                    _razl[_rs] = _izv0
+                    _knj["razlozeno"] = _razl
+                    _pod["knjizno"] = _knj
+                    try:
+                        sb_cene_set(mesec_key, _pod)
+                        st.success("Sačuvano.")
+                        st.rerun()
+                    except Exception as _e:
+                        st.error("Greška: " + str(_e))
+            else:
+                st.markdown(knjizno_html(_rtab, _rpo, _ruk), unsafe_allow_html=True)
             _k1, _k2, _k3 = knjizno_razl_kontrola(_rtab, _tab, _rs)[:3]
             _k4 = knjizno_razl_kontrola(_rtab, _tab, _rs)[3]
             _ok = abs(_k3 - _k4) < 1.0
