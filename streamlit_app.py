@@ -11384,6 +11384,8 @@ CENE_MEJL_NAZIV = {"HQD stari ukusi": "HQD 1000", "HQD novi ukusi": "HQD 1000 (n
                    "NERD 2000": "Nerd 2000", "SYX": "SYX"}
 # Novi ukusi HQD 1000 (šifre 619, 620, 621, 623) — idu u mejl kad im je cena drugačija
 CENE_HQD_NOVI_UKUSI = ["Grape Ice", "Cherry Cola", "Watermelon Ice", "Banana Ice"]
+# ID artikla je najsigurniji — nazivi se u tabelama skraćuju i menjaju
+CENE_HQD_NOVI_IDA = [619, 620, 621, 623]
 CENE_MESEC_U = {1: "januaru", 2: "februaru", 3: "martu", 4: "aprilu", 5: "maju", 6: "junu",
                 7: "julu", 8: "avgustu", 9: "septembru", 10: "oktobru", 11: "novembru",
                 12: "decembru"}
@@ -11921,8 +11923,16 @@ def _knj_broj(v):
         return None
 
 
-def _knj_je_novi_ukus(naziv):
-    """Da li je artikal jedan od novih HQD ukusa (619, 620, 621, 623)."""
+def _knj_je_novi_ukus(naziv, ida=None):
+    """Da li je artikal jedan od novih HQD ukusa.
+
+    Prvo po ID-u artikla (619 Grape Ice, 620 Cherry Cola, 621 Watermelon Ice,
+    623 Banana Ice) — to je sigurno; ako ID-a nema, onda po nazivu."""
+    try:
+        if ida not in (None, ""):
+            return int(float(ida)) in CENE_HQD_NOVI_IDA
+    except Exception:
+        pass
     _n = _knj_norm(naziv)
     if "HQD" not in _n:
         return False
@@ -11953,7 +11963,7 @@ def knjizno_kolicine(sales, mesec_key):
     _novi = {}
     for _sis, _arts in ((sales or {}).get("po_artiklu") or {}).items():
         for _naziv, _a in (_arts or {}).items():
-            if not _knj_je_novi_ukus(_naziv):
+            if not _knj_je_novi_ukus(_naziv, (_a or {}).get("ida")):
                 continue
             _k = (_a or {}).get("kom") or []
             if _idx < len(_k):
@@ -11961,6 +11971,101 @@ def knjizno_kolicine(sales, mesec_key):
     return {"grupe": _grupe, "hqd_novi": _novi, "kupci": sorted(_kupci),
             "mesec": _naz[_idx], "idx": _idx,
             "po_artiklu": bool((sales or {}).get("po_artiklu"))}
+
+
+def knjizno_kol_iz_tabele(fajl, mesec_key):
+    """Količine po sistemu i grupi direktno iz Excel tabele koja se objavljuje
+    uz izveštaj prodaje („tabela sistemi“).
+
+    Čita list u kome postoje kolone SISTEM · ID ARTIKLA · Grupa artikla · Mesec ·
+    Godina · Prodata kolicina ka krajnjem kupcu i vraća:
+      {"grupe": {(SISTEM, grupa): kom}, "hqd_novi": {SISTEM: kom},
+       "sistemi": [...], "redova": n, "greska": ""}
+    HQD novi ukusi se prepoznaju po ID-u artikla (619, 620, 621, 623)."""
+    import openpyxl as _ox
+    _out = {"grupe": {}, "hqd_novi": {}, "sistemi": [], "redova": 0, "greska": ""}
+    try:
+        _g = int(str(mesec_key).split("-")[0]); _m = int(str(mesec_key).split("-")[1])
+    except Exception:
+        _out["greska"] = "Ne razumem mesec."
+        return _out
+    try:
+        _wb = _ox.load_workbook(fajl, read_only=True, data_only=True)
+    except Exception as _e:
+        _out["greska"] = "Excel se ne može otvoriti: " + str(_e)[:120]
+        return _out
+
+    def _norm(_t):
+        return _knj_norm(_t).replace(" ", "")
+
+    _trazene = {"sistem": ["SISTEM", "SISSTEM"], "ida": ["IDARTIKLA"],
+                "grupa": ["GRUPAARTIKLA", "GRUPAARTIKALA", "GRUPA"],
+                "mesec": ["MESEC"], "godina": ["GODINA"],
+                "kom": ["PRODATAKOLICINAKAKRAJNJEMKUPCU", "PRODATAKOLICINA",
+                        "SUMOFPROMET", "SUMOFKOL"]}
+    for _ws in _wb.worksheets:
+        try:
+            _hdr = next(_ws.iter_rows(min_row=1, max_row=1, values_only=True))
+        except Exception:
+            continue
+        _poz = {}
+        for _i, _h in enumerate(_hdr or []):
+            _hn = _norm(_h)
+            for _k, _var in _trazene.items():
+                if _k in _poz:
+                    continue
+                if any(_hn == _v for _v in _var):
+                    _poz[_k] = _i
+        if not all(_k in _poz for _k in ("sistem", "grupa", "mesec", "godina", "kom")):
+            continue
+        for _r in _ws.iter_rows(min_row=2, values_only=True):
+            try:
+                if int(float(_r[_poz["mesec"]])) != _m or int(float(_r[_poz["godina"]])) != _g:
+                    continue
+            except Exception:
+                continue
+            _sis = str(_r[_poz["sistem"]] or "").strip()
+            _gru = str(_r[_poz["grupa"]] or "").strip()
+            if not _sis or not _gru:
+                continue
+            try:
+                _kom = int(round(float(_r[_poz["kom"]] or 0)))
+            except Exception:
+                _kom = 0
+            _ida = None
+            if "ida" in _poz:
+                try:
+                    _ida = int(float(_r[_poz["ida"]]))
+                except Exception:
+                    _ida = None
+            _kl = (_sis, _gru)
+            _out["grupe"][_kl] = _out["grupe"].get(_kl, 0) + _kom
+            if _ida is not None and _ida in CENE_HQD_NOVI_IDA:
+                _out["hqd_novi"][_sis] = _out["hqd_novi"].get(_sis, 0) + _kom
+            _out["redova"] += 1
+        if _out["redova"]:
+            break
+    if not _out["redova"]:
+        _out["greska"] = ("U fajlu nema reda za taj mesec — proveri da li je to tabela "
+                          "sistema (kolone SISTEM, ID ARTIKLA, Grupa artikla, Mesec, "
+                          "Godina, Prodata kolicina) i da li su mesec i godina ti pravi.")
+    _out["sistemi"] = sorted({_s for _s, _ in _out["grupe"]})
+    return _out
+
+
+def knjizno_kol_mapa(iz_tabele, kupci, kupac_sistem, grupe):
+    """Iz pročitane tabele napravi {"KUPAC|grupa": količina} — spremno za ručni unos."""
+    _k = {"grupe": dict((iz_tabele or {}).get("grupe") or {}),
+          "hqd_novi": dict((iz_tabele or {}).get("hqd_novi") or {})}
+    _out = {}
+    for _kupac in (kupci or []):
+        if not (kupac_sistem or {}).get(_kupac):
+            continue
+        for _g in (grupe or []):
+            _kom = knjizno_kom(_k, _kupac, _g)
+            if _kom:
+                _out[_kupac + "|" + str(_g)] = int(_kom)
+    return _out
 
 
 def knjizno_kom(kol, kupac, grupa):
@@ -12180,15 +12285,16 @@ def knjizno_tabela(redovi, kol, kupac_sistem, marze=None, rucno=None,
                 continue
             # --- obična akcijska cena ---
             _treba_r, _zasto = knjizno_rucna_kolicina(_r, _g, _mod, kol, mesec_key)
-            if _treba_r:
-                _kom = _knj_broj(_k_ruc.get(_kljuc))
-                if _kom is None:
-                    _out.append(_zapis(_kupac, _sis, _g, _red, _akc_txt, None, 0.0, _m,
-                                       _kljuc, _r, _zasto + " — upiši količinu",
-                                       rucno_f=True, ceka=True))
-                    continue
-                _kom = int(_kom)
-                _nap = _zasto + " · količina ručno"
+            _kom_u = _knj_broj(_k_ruc.get(_kljuc))
+            if _kom_u is not None:
+                # analitičar je upisao (ili povukao iz tabele) količinu — ona je jača
+                _kom = int(_kom_u)
+                _nap = (_zasto + " · količina ručno") if _treba_r else "količina upisana ručno"
+            elif _treba_r:
+                _out.append(_zapis(_kupac, _sis, _g, _red, _akc_txt, None, 0.0, _m,
+                                   _kljuc, _r, _zasto + " — upiši količinu",
+                                   rucno_f=True, ceka=True))
+                continue
             else:
                 _kom = int(knjizno_kom(kol, _kupac, _g) or 0)
                 _nap = "" if _kom > 0 else "nema prodaje u izveštaju za taj artikal"
@@ -12601,6 +12707,57 @@ def _knjizno_blok(mesec_key, sel_lbl, podaci, redovi_svi, uloga, ro):
                           "ne unese." if uloga == "direktor" else
                           "  —  upiši količine (ili konačan iznos) dole, pa se ostatak "
                           "računa sam."))
+
+        # ---- količine direktno iz tabele prodaje (Excel) ----
+        if uloga == "analitika" and not ro:
+            _bez_art = not knjizno_deli_ukuse(_kol)
+            with st.expander("📥 Povuci količine iz tabele prodaje (Excel)"
+                             + ("  ·  preporučeno — objavljeni izveštaj ne razdvaja nove "
+                                "ukuse" if _bez_art else ""),
+                             expanded=False):
+                st.caption("Ovo je ista tabela („tabela sistemi“) koju objavljuješ uz "
+                           "izveštaj prodaje. Iz nje se za izabrani mesec čitaju količine "
+                           "po sistemu i grupi, a <b>novi HQD ukusi se prepoznaju po ID-u "
+                           "artikla (619, 620, 621, 623)</b> — zato se stari i novi ukusi "
+                           "tačno razdvoje.", unsafe_allow_html=True)
+                if _bez_art:
+                    st.info("Objavljeni izveštaj prodaje je napravljen starijom verzijom "
+                            "modula `izvestaj_prodaje.py`, pa u njemu nema prodaje po "
+                            "artiklu. Dok ne objaviš izveštaj novom verzijom, količine "
+                            "novih ukusa povuci ovde.")
+                _xls = st.file_uploader("Tabela sistemi (.xlsx)", type=["xlsx"],
+                                        key="knj_tab_up_" + mesec_key,
+                                        label_visibility="collapsed")
+                if _xls is not None:
+                    import io as _io_k
+                    with st.spinner("Čitam tabelu…"):
+                        _iz = knjizno_kol_iz_tabele(_io_k.BytesIO(_xls.getvalue()), mesec_key)
+                    if _iz.get("greska"):
+                        st.error(_iz["greska"])
+                    else:
+                        _nova_kol = knjizno_kol_mapa(_iz, _kol.get("kupci") or [], _veza,
+                                                     CENE_GRUPE)
+                        st.success("Pročitano " + str(_iz["redova"]) + " redova za "
+                                   + _h_escape(str(sel_lbl)) + "  ·  sistema u tabeli: "
+                                   + str(len(_iz["sistemi"])) + "  ·  količina za upis: "
+                                   + str(len(_nova_kol)))
+                        _pr = [{"Kupac": _k.split("|")[0], "Artikal": _k.split("|")[1],
+                                "Količina": _v} for _k, _v in sorted(_nova_kol.items())]
+                        if _pr:
+                            st.dataframe(pd.DataFrame(_pr), hide_index=True,
+                                         use_container_width=True, height=260)
+                        if st.button("💾 Upiši ove količine u obračun",
+                                     key="knj_tab_b_" + mesec_key, type="primary"):
+                            _kk = dict(_kol_ruc)
+                            _kk.update(_nova_kol)
+                            _knj["kol"] = _kk
+                            _pod["knjizno"] = _knj
+                            try:
+                                sb_cene_set(mesec_key, _pod)
+                                st.success("Upisano — iznosi su preračunati.")
+                                st.rerun()
+                            except Exception as _e:
+                                st.error("Greška: " + str(_e))
 
         # ---- način obračuna po sistemu ----
         if uloga == "analitika" and not ro:
