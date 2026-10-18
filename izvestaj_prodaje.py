@@ -16,7 +16,8 @@ Glavna funkcija:
 
 # Oznaka verzije modula — vidi se u aplikaciji (Objava izveštaja → Izveštaj prodaje),
 # da se odmah zna da li je na GitHub-u najnoviji fajl.
-VERZIJA = "3.3 · 15.10.2026 (sažetak nosi prodaju, akcijske i redovne cene po artiklu)"
+VERZIJA = ("3.4 · 18.10.2026 (sažetak nosi prodaju, akcijske i redovne cene po artiklu, "
+           "plus ID artikla — po njemu se prepoznaju novi HQD ukusi)")
 
 import calendar
 import html as html_mod
@@ -1729,7 +1730,12 @@ Meseci: <b id="mesec-count">{num_s}/{num_s}</b> ▾</button>
             _q = float(_q) if pd.notna(_q) else 0.0
             _d = po_artiklu.setdefault(_sis, {}).setdefault(
                 _naz, {"grupa": str(_rr['Grupa_clean']), "kom": [0] * num_s,
-                       "akc": [0] * num_s, "red": [0] * num_s})
+                       "akc": [0] * num_s, "red": [0] * num_s, "ida": None})
+            if _d.get("ida") in (None, ""):
+                try:
+                    _d["ida"] = int(float(_rr.get('ID ARTIKLA')))
+                except Exception:
+                    _d["ida"] = None
             _d["kom"][_gi] += int(round(_q))
             try:
                 _ca = float(_rr.get('AKCIJSKE CENE') or 0)
