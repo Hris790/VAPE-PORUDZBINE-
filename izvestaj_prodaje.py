@@ -16,7 +16,7 @@ Glavna funkcija:
 
 # Oznaka verzije modula — vidi se u aplikaciji (Objava izveštaja → Izveštaj prodaje),
 # da se odmah zna da li je na GitHub-u najnoviji fajl.
-VERZIJA = ("3.4 · 18.10.2026 (sažetak nosi prodaju, akcijske i redovne cene po artiklu, "
+VERZIJA = ("3.5 · 18.10.2026 (sažetak nosi i profitabilnost po sistemu i mesecu — "
            "plus ID artikla — po njemu se prepoznaju novi HQD ukusi)")
 
 import calendar
@@ -1752,6 +1752,20 @@ Meseci: <b id="mesec-count">{num_s}/{num_s}</b> ▾</button>
     except Exception:
         po_artiklu = {}
     summary["po_artiklu"] = po_artiklu
+
+    # ---------- profitabilnost po sistemu i mesecu ----------
+    # Koristi se u kartici „Cene i akcije": ispod svakog meseca se vidi profit
+    # (prvo samo sa troškovima marketinga, pa se ostali troškovi dodaju filterom).
+    try:
+        summary["profit"] = {
+            "nazivi": list(nazivi_profit),
+            "troskovi": [{"id": _i, "naziv": _n}
+                         for _i, _n in zip(trosak_ids_list, trosak_names_list)],
+            "po_sistemu": {str(_s): {str(_k): list(_v)
+                                     for _k, _v in (profit_data_js.get(_s) or {}).items()}
+                           for _s in sistemi_lista}}
+    except Exception:
+        summary["profit"] = {}
     return (html, xlsx_bytes, poslednji_naziv, summary)
 
 
