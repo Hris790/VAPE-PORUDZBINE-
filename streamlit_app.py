@@ -11923,6 +11923,18 @@ def _knj_broj(v):
         return None
 
 
+def _knj_izmenjen(a, b, tol=0.5):
+    """Da li je analitičar promenio polje: `a` je ono što je sada u polju,
+    `b` ono što je bilo prikazano."""
+    _a = _knj_broj(a)
+    _b = _knj_broj(b)
+    if _a is None and _b is None:
+        return False
+    if _a is None or _b is None:
+        return True
+    return abs(float(_a) - float(_b)) > float(tol)
+
+
 def _knj_je_novi_ukus(naziv, ida=None):
     """Da li je artikal jedan od novih HQD ukusa.
 
@@ -12239,23 +12251,34 @@ def knjizno_tabela(redovi, kol, kupac_sistem, marze=None, rucno=None,
             continue
         _mod = knjizno_mod(_sis, modovi, rucni_sistemi)
         if _mod == "lager":
-            # knjižno se izdaje na lager: nema artikala ni količina, samo iznos
+            # Knjižno se izdaje NA LAGER: artikli i period ostaju da se vidi na šta se
+            # odnosi, ali nema količina ni obračuna po grupama — iznos je jedan za ceo
+            # sistem i upisuje se u dva spojena polja (bez PDV-a i sa PDV-om).
             _ri = dict(_r_izn.get(_knj_norm(_kupac)) or {})
             _izn = _knj_broj(_ri.get("iznos"))
             _spdv = bool(_ri.get("sa_pdv"))
             _osn = 0.0 if _izn is None else (
                 (_izn / (1.0 + KNJ_PDV / 100.0)) if _spdv else _izn)
-            _per = sorted({(str(_r.get("od") or ""), str(_r.get("do") or ""))
-                           for _r in _po_sis.get(_sis, [])})
-            _r0 = ({"od": _per[0][0], "do": _per[0][1]} if len(_per) == 1 else {})
-            _out.append(_zapis(_kupac, _sis, "— na lager —", 0.0, "", None, _osn, 0.0,
-                               _kupac + "|lager", _r0,
-                               (str(_ri.get("napomena") or "")
-                                or ("knjižno na lager — ručno upisan iznos"
-                                    if _izn is not None else
-                                    "knjižno na lager — upiši konačan iznos")),
-                               rucno_f=True, ceka=(_izn is None), lager=True,
-                               mod="lager"))
+            _lst_s = list(_po_sis.get(_sis, [])) or [None]
+            for _i_l, _r in enumerate(_lst_s):
+                _prvi = (_i_l == 0)
+                _g = str((_r or {}).get("grupa") or "— na lager —")
+                _nap = ""
+                if _prvi:
+                    _nap = (str(_ri.get("napomena") or "")
+                            or ("knjižno na lager — ručno upisan iznos za ceo sistem"
+                                if _izn is not None else
+                                "knjižno na lager — upiši konačan iznos"))
+                _z = _zapis(_kupac, _sis, _g,
+                            _knj_broj((_r or {}).get("redovna")) or 0.0,
+                            str((_r or {}).get("akcijska") or ""),
+                            None, (_osn if _prvi else 0.0), None,
+                            _kupac + "|lager" + ("" if _prvi else ("|" + _g)),
+                            (_r or {}), _nap, rucno_f=True,
+                            ceka=(_prvi and _izn is None), lager=True, mod="lager")
+                _z["lager_prvi"] = _prvi
+                _z["lager_n"] = len(_lst_s)
+                _out.append(_z)
             continue
         for _r in _po_sis.get(_sis, []):
             _g = str(_r.get("grupa") or "")
@@ -12343,20 +12366,26 @@ KNJ_RED_CSS = """/* Knjižno: ista tabela kao u prikazu, samo se u dve kolone ku
 .knj-uks{background:#f3eeff;color:#312e81;font-weight:800;font-size:13.5px;padding:9px 10px;
          border-top:2px solid #ddd6fe;text-align:right;font-variant-numeric:tabular-nums;}
 .knj-uks.l{text-align:left;letter-spacing:.4px;}
-div[class*="st-key-knjred_"]{border-top:1px solid #efeafb;}
-div[class*="st-key-knjred_"]:hover{background:#faf8ff;}
-div[class*="st-key-knjred_"] div[data-testid="stElementContainer"]{margin:0 !important;}
-div[class*="st-key-knjred_"] [data-testid="stTextInputRootElement"]{
+div[class*="st-key-knjred"]{border-top:1px solid #efeafb;}
+div[class*="st-key-knjred"]:hover{background:#faf8ff;}
+div[class*="st-key-knjred"] div[data-testid="stElementContainer"]{margin:0 !important;}
+div[class*="st-key-knjred"] [data-testid="stTextInputRootElement"]{
     border:1px solid #e5e7eb !important;background:#fffdf5 !important;border-radius:7px;
     min-height:0 !important;}
-div[class*="st-key-knjred_"] [data-testid="stTextInputRootElement"]:focus-within{
+div[class*="st-key-knjred"] [data-testid="stTextInputRootElement"]:focus-within{
     border-color:#7c3aed !important;background:#fff !important;}
-div[class*="st-key-knjred_"] input{font-size:13px !important;text-align:right !important;
+div[class*="st-key-knjred"] input{font-size:13px !important;text-align:right !important;
     padding:5px 8px !important;color:#1f2937 !important;
     font-variant-numeric:tabular-nums;}
-div[class*="st-key-knjred_"] input::placeholder{color:#c4c7cf !important;font-style:italic;}
+div[class*="st-key-knjred"] input::placeholder{color:#c4c7cf !important;font-style:italic;}
 div[class*="st-key-knjredceka_"] [data-testid="stTextInputRootElement"]{
     border-color:#fcd34d !important;background:#fffbeb !important;}
+/* „na lager": nastavak grupa — bez linije, da dva polja izgledaju spojeno */
+div[class*="st-key-knjredlagd_"]{border-top:none !important;}
+div[class*="st-key-knjredlag_"] [data-testid="stTextInputRootElement"],
+div[class*="st-key-knjredlagc_"] [data-testid="stTextInputRootElement"]{
+    background:#f7f5ff !important;border-color:#c7d2fe !important;}
+.knjc.lagsp{background:#f7f5ff;height:100%;min-height:26px;border-radius:0;}
 """
 
 
@@ -12379,7 +12408,8 @@ def knjizno_red_ui(tab, po_kupcu, uk, mesec_key):
         _zc = st.columns([5.9, 1.1, 1.2, 1.0, 1.25], vertical_alignment="center")
         for _i, (_t, _cl) in enumerate([
                 (_h_escape(_kupac) + " — ukupno", "knj-zb l"),
-                (_knj_din(_z.get("kom", 0), 0), "knj-zb"),
+                (_knj_din(_z.get("kom", 0), 0) if _z.get("kom_ima", True) else "",
+                 "knj-zb"),
                 (_knj_din(_z.get("osnovica", 0)), "knj-zb"),
                 (_knj_din(_z.get("pdv", 0)), "knj-zb"),
                 (_knj_din(_z.get("ukupno", 0)), "knj-zb")]):
@@ -12393,7 +12423,15 @@ def knjizno_red_ui(tab, po_kupcu, uk, mesec_key):
             _zbir(_pre)
         _pre = _t["kupac"]
         _kl = _knj_norm(_t["kljuc"])
-        _pref = "knjredceka_" if _t.get("ceka") else "knjred_"
+        # „na lager": prvi red grupe nosi dva polja (bez PDV-a / sa PDV-om), ostali
+        # redovi su prazni s te strane pa polja izgledaju spojeno preko grupa.
+        _lag = (str(_t.get("mod") or "") == "lager")
+        _lag1 = _lag and bool(_t.get("lager_prvi", True))
+        if _lag:
+            _pref = (("knjredlagc_" if _t.get("ceka") else "knjredlag_") if _lag1
+                     else "knjredlagd_")
+        else:
+            _pref = "knjredceka_" if _t.get("ceka") else "knjred_"
         with st.container(key=_pref + _kl):
             _c = st.columns(_SIR, vertical_alignment="center")
             _mod = str(_t.get("mod") or "auto")
@@ -12415,15 +12453,17 @@ def knjizno_red_ui(tab, po_kupcu, uk, mesec_key):
                             + '</div>', unsafe_allow_html=True)
             with _c[4]:
                 st.markdown('<div class="knjc red">'
-                            + ((str(int(_t["marza"])) + "%") if _t.get("marza") else "—")
+                            + ((str(int(_t["marza"])) + "%") if _t.get("marza")
+                               else ("" if _lag else "—"))
                             + '</div>', unsafe_allow_html=True)
             with _c[5]:
                 st.markdown('<div class="knjc per">'
                             + _h_escape(_knj_period(_t.get("od"), _t.get("do")) or "—")
                             + '</div>', unsafe_allow_html=True)
             with _c[6]:
-                if _t.get("rucno_sis"):
-                    st.markdown('<div class="knjc red">—</div>', unsafe_allow_html=True)
+                if _lag or _t.get("rucno_sis"):
+                    st.markdown('<div class="knjc red">' + ("" if _lag else "—")
+                                + '</div>', unsafe_allow_html=True)
                     _kom_v = ""
                 else:
                     _kom_v = st.text_input(
@@ -12431,21 +12471,43 @@ def knjizno_red_ui(tab, po_kupcu, uk, mesec_key):
                                       else _knj_din(_t["kom"], 0)),
                         key="knjk_" + _kl, label_visibility="collapsed",
                         placeholder="upiši")
+            _osn_p = ("" if (_t.get("ceka") and not float(_t["osnovica"] or 0))
+                      else _knj_din(_t["osnovica"]))
+            _uk_p = ("" if (_t.get("ceka") and not float(_t["ukupno"] or 0))
+                     else _knj_din(_t["ukupno"]))
+            _uk_v = None
             with _c[7]:
-                _osn_v = st.text_input(
-                    "osn", value=("" if (_t.get("ceka") and not float(_t["osnovica"] or 0))
-                                  else _knj_din(_t["osnovica"])),
-                    key="knjo_" + _kl, label_visibility="collapsed",
-                    placeholder="upiši iznos")
+                if _lag and not _lag1:
+                    st.markdown('<div class="knjc izn lagsp"></div>',
+                                unsafe_allow_html=True)
+                    _osn_v = None
+                else:
+                    _osn_v = st.text_input(
+                        "osn", value=_osn_p, key="knjo_" + _kl,
+                        label_visibility="collapsed",
+                        placeholder=("bez PDV-a" if _lag else "upiši iznos"))
             with _c[8]:
-                st.markdown('<div class="knjc izn">' + _knj_din(_t["pdv"]) + '</div>',
+                st.markdown('<div class="knjc izn'
+                            + (' lagsp' if _lag else '') + '">'
+                            + ("" if _lag else _knj_din(_t["pdv"])) + '</div>',
                             unsafe_allow_html=True)
             with _c[9]:
-                st.markdown('<div class="knjc uk">' + _knj_din(_t["ukupno"]) + '</div>',
-                            unsafe_allow_html=True)
-        _unos[_t["kljuc"]] = {"kom": _kom_v, "osn": _osn_v, "lager": bool(_t.get("rucno_sis")),
-                              "kupac": _t["kupac"], "kom_auto": _t.get("kom_auto"),
-                              "osn_auto": _t.get("osn_auto")}
+                if not _lag:
+                    st.markdown('<div class="knjc uk">' + _knj_din(_t["ukupno"])
+                                + '</div>', unsafe_allow_html=True)
+                elif _lag1:
+                    _uk_v = st.text_input(
+                        "uk", value=_uk_p, key="knju_" + _kl,
+                        label_visibility="collapsed", placeholder="sa PDV-om")
+                else:
+                    st.markdown('<div class="knjc uk lagsp"></div>',
+                                unsafe_allow_html=True)
+        if (not _lag) or _lag1:
+            _unos[_t["kljuc"]] = {"kom": _kom_v, "osn": _osn_v, "uk": _uk_v,
+                                  "osn_pre": _osn_p, "uk_pre": _uk_p,
+                                  "lager": (_lag or bool(_t.get("rucno_sis"))),
+                                  "kupac": _t["kupac"], "kom_auto": _t.get("kom_auto"),
+                                  "osn_auto": _t.get("osn_auto")}
     if _pre is not None:
         _zbir(_pre)
     _uc = st.columns([5.9, 1.1, 1.2, 1.0, 1.25], vertical_alignment="center")
@@ -12491,7 +12553,9 @@ def knjizno_zbir(tabela):
     _po_kupcu, _red = {}, []
     for _t in (tabela or []):
         _d = _po_kupcu.setdefault(_t["kupac"], {"kom": 0, "osnovica": 0.0, "pdv": 0.0,
-                                                "ukupno": 0.0})
+                                                "ukupno": 0.0, "kom_ima": False})
+        if _t.get("kom") is not None:
+            _d["kom_ima"] = True
         _d["kom"] += int(_t["kom"] or 0)
         _d["osnovica"] += float(_t["osnovica"] or 0)
         _d["pdv"] += float(_t["pdv"] or 0)
@@ -12532,30 +12596,47 @@ def knjizno_html(tabela, po_kupcu, uk):
         if _pre is not None and _t["kupac"] != _pre:
             _z = po_kupcu[_pre]
             _h.append('<tr class="knj-zbir"><td class="l" colspan="6">' + _h_escape(_pre)
-                      + ' — ukupno</td><td>' + _knj_din(_z["kom"], 0) + '</td><td>'
+                      + ' — ukupno</td><td>' + (_knj_din(_z["kom"], 0) if _z.get("kom_ima", True) else "") + '</td><td>'
                       + _knj_din(_z["osnovica"]) + '</td><td>' + _knj_din(_z["pdv"])
                       + '</td><td>' + _knj_din(_z["ukupno"]) + '</td></tr>')
         _pre = _t["kupac"]
+        # „na lager": nema marže, količine ni PDV-a — samo vrednost bez PDV-a i sa
+        # PDV-om, u dve ćelije spojene preko svih redova (grupa) tog sistema.
+        _lag = (str(_t.get("mod") or "") == "lager")
+        _nap_i = ((' <i>' + _h_escape(_t["napomena"]) + '</i>')
+                  if _t.get("napomena") else '')
         _h.append('<tr' + (' class="knj-ceka"' if _t.get("ceka")
                            else (' class="knj-rucno"' if _t.get("rucno") else '')) + '>'
                   '<td class="sis">' + _h_escape(_t["kupac"]) + '</td>'
-                  '<td class="grp">' + _h_escape(_t["grupa"]) + '</td>'
+                  '<td class="grp">' + _h_escape(_t["grupa"])
+                  + (_nap_i if _lag else '') + '</td>'
                   '<td class="red">' + _knj_din(_t["redovna"], 0) + '</td>'
                   '<td class="akc">' + _h_escape(_t["akcijska"]) + '</td>'
-                  '<td class="red">' + _knj_din(_t["marza"], 0) + '%</td>'
+                  '<td class="red">'
+                  + (("" if _lag else "—") if not _t.get("marza")
+                     else (_knj_din(_t["marza"], 0) + "%")) + '</td>'
                   '<td class="per">' + _h_escape(_knj_period(_t.get("od"), _t.get("do")))
                   + '</td>'
-                  '<td class="red">' + ("—" if _t.get("kom") is None
-                                            else _knj_din(_t["kom"], 0))
-                  + (' <i>' + _h_escape(_t["napomena"]) + '</i>' if _t.get("napomena") else '')
-                  + '</td>'
-                  '<td class="red">' + _knj_din(_t["osnovica"]) + '</td>'
-                  '<td class="red">' + _knj_din(_t["pdv"]) + '</td>'
-                  '<td class="red"><b>' + _knj_din(_t["ukupno"]) + '</b></td></tr>')
+                  '<td class="red">'
+                  + ("" if _lag else ("—" if _t.get("kom") is None
+                                      else _knj_din(_t["kom"], 0)))
+                  + ('' if _lag else _nap_i) + '</td>')
+        if not _lag:
+            _h.append('<td class="red">' + _knj_din(_t["osnovica"]) + '</td>'
+                      '<td class="red">' + _knj_din(_t["pdv"]) + '</td>'
+                      '<td class="red"><b>' + _knj_din(_t["ukupno"]) + '</b></td>')
+        elif _t.get("lager_prvi", True):
+            _rs = (' rowspan="' + str(int(_t.get("lager_n") or 1)) + '"'
+                   ' style="vertical-align:middle;background:#f7f5ff;"')
+            _h.append('<td class="red"' + _rs + '>' + _knj_din(_t["osnovica"]) + '</td>'
+                      '<td class="red"' + _rs + '></td>'
+                      '<td class="red"' + _rs + '><b>' + _knj_din(_t["ukupno"])
+                      + '</b></td>')
+        _h.append('</tr>')
     if _pre is not None:
         _z = po_kupcu[_pre]
         _h.append('<tr class="knj-zbir"><td class="l" colspan="6">' + _h_escape(_pre)
-                  + ' — ukupno</td><td>' + _knj_din(_z["kom"], 0) + '</td><td>'
+                  + ' — ukupno</td><td>' + (_knj_din(_z["kom"], 0) if _z.get("kom_ima", True) else "") + '</td><td>'
                   + _knj_din(_z["osnovica"]) + '</td><td>' + _knj_din(_z["pdv"])
                   + '</td><td>' + _knj_din(_z["ukupno"]) + '</td></tr>')
     _h.append('<tr class="knj-uk"><td class="l" colspan="6">SVE UKUPNO</td><td>'
@@ -12591,7 +12672,9 @@ def knjizno_xlsx(tabela, po_kupcu, uk, mesec_lbl):
     _ukf = _PF("solid", fgColor="FFE699")
 
     def _red_zbir(naziv, z, fill):
-        _ws.append([naziv, "", "", "", "", "", z["kom"], round(z["osnovica"], 2),
+        _ws.append([naziv, "", "", "", "", "",
+                    (z["kom"] if z.get("kom_ima", True) else ""),
+                    round(z["osnovica"], 2),
                     round(z["pdv"], 2), round(z["ukupno"], 2)])
         _rr = _ws.max_row
         for _ci in range(1, len(_kol) + 1):
@@ -12603,16 +12686,23 @@ def knjizno_xlsx(tabela, po_kupcu, uk, mesec_lbl):
                 _c.number_format = "#,##0.00" if _ci > 7 else "#,##0"
 
     _pre = None
+    _mrg = []
     for _t in tabela:
         if _pre is not None and _t["kupac"] != _pre:
             _red_zbir(_pre + " — ukupno", po_kupcu[_pre], _zbf)
         _pre = _t["kupac"]
+        _lag = (str(_t.get("mod") or "") == "lager")
+        _lag1 = _lag and bool(_t.get("lager_prvi", True))
         _ws.append([_t["kupac"], _t["grupa"], _t["redovna"], _t["akcijska"],
-                    round(_t["marza"], 0) / 100.0, _knj_period(_t.get("od"), _t.get("do")),
-                    ("" if _t.get("kom") is None else _t["kom"]),
-                    round(_t["osnovica"], 2), round(_t["pdv"], 2),
-                    round(_t["ukupno"], 2)])
+                    ("" if not _t.get("marza") else round(_t["marza"], 0) / 100.0),
+                    _knj_period(_t.get("od"), _t.get("do")),
+                    ("" if (_lag or _t.get("kom") is None) else _t["kom"]),
+                    ("" if (_lag and not _lag1) else round(_t["osnovica"], 2)),
+                    ("" if _lag else round(_t["pdv"], 2)),
+                    ("" if (_lag and not _lag1) else round(_t["ukupno"], 2))])
         _rr = _ws.max_row
+        if _lag1 and int(_t.get("lager_n") or 1) > 1:
+            _mrg.append((_rr, _rr + int(_t["lager_n"]) - 1))
         for _ci in range(1, len(_kol) + 1):
             _c = _ws.cell(row=_rr, column=_ci)
             _c.border = _bord
@@ -12630,6 +12720,12 @@ def knjizno_xlsx(tabela, po_kupcu, uk, mesec_lbl):
     _red_zbir("SVE UKUPNO", uk, _ukf)
     _ws.freeze_panes = "A2"
     _ws.insert_rows(1)
+    for _r1, _r2 in _mrg:          # „na lager": jedan iznos preko svih grupa sistema
+        for _ci in (8, 9, 10):
+            _ws.merge_cells(start_row=_r1 + 1, start_column=_ci,
+                            end_row=_r2 + 1, end_column=_ci)
+            _ws.cell(row=_r1 + 1, column=_ci).alignment = _AL(horizontal="center",
+                                                              vertical="center")
     _t = _ws.cell(row=1, column=1, value="KNJIŽNO ODOBRENJE · " + str(mesec_lbl))
     _t.font = _F(bold=True, size=13, color="1F4E79", name="Arial")
     _ws2 = _wb.create_sheet("Kako se računa")
@@ -12662,6 +12758,7 @@ def knjizno_snimak(tab, po_kupcu, uk, mesec_naziv, ko, verzija):
                    "pdv": float((uk or {}).get("pdv", 0) or 0),
                    "ukupno": float((uk or {}).get("ukupno", 0) or 0)},
             "po_kupcu": {str(_k): {"kom": int(_v.get("kom", 0) or 0),
+                                   "kom_ima": bool(_v.get("kom_ima", True)),
                                    "osnovica": float(_v.get("osnovica", 0) or 0),
                                    "pdv": float(_v.get("pdv", 0) or 0),
                                    "ukupno": float(_v.get("ukupno", 0) or 0)}
@@ -12857,8 +12954,10 @@ def _knjizno_blok(mesec_key, sel_lbl, podaci, redovi_svi, uloga, ro):
                                       for _s, _z in sorted(_nemoguce.items()))
                        + ("  —  knjižno za njih neće biti dostupno dok ga analitičar "
                           "ne unese." if uloga == "direktor" else
-                          "  —  količinu (ili konačan iznos) upiši u tabeli ispod, u "
-                          "koloni „Količina“ odnosno „Osnovica“; ostalo se računa samo."))
+                          "  —  količinu upiši u tabeli ispod, u koloni „Količina“; kod "
+                          "sistema „na lager“ upiši jedan iznos za ceo sistem, u polje "
+                          "„Osnovica“ (bez PDV-a) ili „Knjižno ukupno“ (sa PDV-om); "
+                          "ostalo se računa samo."))
 
         # ---- količine direktno iz tabele prodaje (Excel) ----
         if uloga == "analitika" and not ro:
@@ -13043,7 +13142,10 @@ def _knjizno_blok(mesec_key, sel_lbl, podaci, redovi_svi, uloga, ro):
                            "u koloni „Količina“; dok je nema, taj iznos NIJE u zbiru.")
             st.caption("Količinu i iznos (osnovicu) kucaš direktno u tabeli, u redu tog "
                        "artikla. Pored kupca stoji oznaka kad sistem nije na automatskom "
-                       "obračunu (ručno / na lager). Kad završiš, klikni „Sačuvaj izmene“ "
+                       "obračunu (ručno / na lager). Kod sistema „na lager“ nema marže ni "
+                       "količina — upiše se samo jedan iznos za ceo sistem, u polje "
+                       "„Osnovica“ (bez PDV-a) ILI u polje „Knjižno ukupno“ (sa PDV-om); "
+                       "ono drugo se izračuna samo. Kad završiš, klikni „Sačuvaj izmene“ "
                        "ispod tabele.")
             with st.form("knj_tab_forma_" + mesec_key, border=False):
                 _unos_t = knjizno_red_ui(_tab, _po_kupcu, _uk, mesec_key)
@@ -13065,13 +13167,21 @@ def _knjizno_blok(mesec_key, sel_lbl, podaci, redovi_svi, uloga, ro):
                     _ka = _v.get("kom_auto")
                     _oa = _v.get("osn_auto")
                     if _v.get("lager"):
+                        # „na lager": iznos je jedan za ceo sistem i može se upisati
+                        # u polje bez PDV-a ILI u polje sa PDV-om — važi ono koje je
+                        # analitičar promenio.
                         _kp = str(_v.get("kupac") or "")
                         _st0 = dict(_nizn.get(_kp) or {})
-                        if _ov is None or float(_ov) <= 0:
-                            _nizn.pop(_kp, None)
-                        else:
+                        _uv = _knj_broj(_v.get("uk"))
+                        if (_knj_izmenjen(_v.get("uk"), _v.get("uk_pre"))
+                                and _uv is not None and float(_uv) > 0):
+                            _st0.update({"iznos": float(_uv), "sa_pdv": True})
+                            _nizn[_kp] = _st0
+                        elif _ov is not None and float(_ov) > 0:
                             _st0.update({"iznos": float(_ov), "sa_pdv": False})
                             _nizn[_kp] = _st0
+                        else:
+                            _nizn.pop(_kp, None)
                         continue
                     if _kv is None:
                         _nk.pop(_kk, None)
