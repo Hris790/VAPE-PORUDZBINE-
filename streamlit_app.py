@@ -11268,6 +11268,8 @@ table.cene-tab tbody tr.knj-zbir td{background:#eef7ee;font-weight:800;color:#14
 table.cene-tab tbody tr.knj-uk td{background:#fff3cd;font-weight:800;color:#78350f;
     border-top:2px solid #f0d089;font-size:13.5px;}
 table.cene-tab tbody tr.knj-rucno td{background:#fff8e6;}
+table.cene-tab tbody tr.knj-ceka td{background:#f3f4f6;color:#8a94a3;}
+table.cene-tab tbody tr.knj-ceka td i{color:#b45309;}
 table.cene-tab td.red i{font-style:normal;font-size:10px;color:#94a3b8;}
 """
 
@@ -11903,7 +11905,12 @@ def knjizno_po_komadu(redovna, akcijska, marza, marza_red=None):
 
 
 def _knj_broj(v):
-    """'690' -> 690.0; '490 +1din' -> None (takav red se računa ručno)."""
+    """'690' -> 690.0; '490 +1din' -> None (takav red se računa ručno).
+    Broj (int/float) se vraća kakav jeste — tačka u njemu nije hiljaditelj."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
     _s = str(v or "").strip().replace(" ", "")
     if not _s:
         return None
@@ -11952,7 +11959,8 @@ def knjizno_kolicine(sales, mesec_key):
             if _idx < len(_k):
                 _novi[str(_sis).strip()] = _novi.get(str(_sis).strip(), 0) + int(_k[_idx] or 0)
     return {"grupe": _grupe, "hqd_novi": _novi, "kupci": sorted(_kupci),
-            "mesec": _naz[_idx], "idx": _idx}
+            "mesec": _naz[_idx], "idx": _idx,
+            "po_artiklu": bool((sales or {}).get("po_artiklu"))}
 
 
 def knjizno_kom(kol, kupac, grupa):
@@ -11995,12 +12003,63 @@ def knjizno_red_potvrdjen(red, danas=None):
 
 
 def knjizno_sistem_rucno(sistem, rucni_sistemi=None):
-    """Da li se za taj sistem iznos knjižnog upisuje ručno (ne računa se sam)."""
+    """Stari zapis: sistem označen da se iznos upisuje ručno (= „na lager")."""
     _n = _knj_norm(sistem)
     for _k, _v in (rucni_sistemi or {}).items():
         if _knj_norm(_k) == _n:
             return bool(_v)
     return False
+
+
+KNJ_MODOVI = ["auto", "rucno", "lager"]
+KNJ_MOD_LBL = {"auto": "automatski (količine iz izveštaja prodaje)",
+               "rucno": "ručne količine (ja upisujem, iznos se računa)",
+               "lager": "na lager (samo konačan iznos, bez količina)"}
+
+
+def knjizno_mod(sistem, modovi=None, rucni_sistemi=None):
+    """Način obračuna za sistem: 'auto' | 'rucno' | 'lager'."""
+    _n = _knj_norm(sistem)
+    for _k, _v in (modovi or {}).items():
+        if _knj_norm(_k) == _n:
+            _m = str(_v or "").strip().lower()
+            return _m if _m in KNJ_MODOVI else "auto"
+    if knjizno_sistem_rucno(sistem, rucni_sistemi):
+        return "lager"
+    return "auto"
+
+
+def knjizno_ceo_mesec(red, mesec_key):
+    """Da li akcija traje ceo mesec (01. do poslednjeg dana). Ako ne traje,
+    mesečna prodaja iz izveštaja ne može da se koristi — količina ide ručno."""
+    if not mesec_key:
+        return True
+    try:
+        _p1, _p2 = _cene_prvi_poslednji(mesec_key)
+    except Exception:
+        return True
+    _od = _cene_d((red or {}).get("od"))
+    _do = _cene_d((red or {}).get("do"))
+    if _od is None or _do is None:
+        return True
+    return (_od <= _p1) and (_do >= _p2)
+
+
+def knjizno_deli_ukuse(kol):
+    """Da li objavljeni izveštaj prodaje uopšte razdvaja nove i stare HQD ukuse."""
+    return bool((kol or {}).get("po_artiklu"))
+
+
+def knjizno_rucna_kolicina(red, grupa, mod, kol, mesec_key):
+    """Da li za taj red količina mora da se upiše ručno — i zašto.
+    Vrati (treba_rucno, razlog)."""
+    if mod == "rucno":
+        return (True, "ručni unos količine")
+    if not knjizno_ceo_mesec(red, mesec_key):
+        return (True, "period akcije nije ceo mesec")
+    if str(grupa) in ("HQD novi ukusi", "HQD stari ukusi") and not knjizno_deli_ukuse(kol):
+        return (True, "izveštaj prodaje ne razdvaja nove ukuse")
+    return (False, "")
 
 
 def knjizno_sistemi_stanje(redovi, danas=None):
@@ -12023,16 +12082,24 @@ def knjizno_sistemi_stanje(redovi, danas=None):
 
 
 def knjizno_tabela(redovi, kol, kupac_sistem, marze=None, rucno=None,
-                   rucni_sistemi=None, rucni_iznosi=None, danas=None):
+                   rucni_sistemi=None, rucni_iznosi=None, danas=None,
+                   modovi=None, kol_rucno=None, osn_rucno=None, mesec_key=None):
     """Redovi obračuna: po kupcu i grupi, sa količinom, osnovicom, PDV-om i ukupno.
 
     Obračunavaju se SAMO potvrđene akcijske cene (POTVRĐENO) — sistem ulazi u
     knjižno tek kad administracija potvrdi cenu.
 
-    `rucno` = {"KUPAC|grupa": {"kom": n, "cena": x, "par": bool}} — za akcije koje
-    nisu obična cena (1+1, „490 + 1 din drugi artikal"…).
-    `rucni_sistemi` = {sistem: True} — sistemi kod kojih se iznos upisuje ručno;
-    `rucni_iznosi`  = {KUPAC: {"iznos": x, "sa_pdv": bool, "napomena": str}}.
+    Način obračuna po sistemu (`modovi` = {sistem: 'auto'|'rucno'|'lager'}):
+      auto   — količine iz izveštaja prodaje, iznos se računa;
+      rucno  — količine upisuje analitičar (`kol_rucno`), iznos se računa iz njih;
+      lager  — nema količina ni artikala, samo konačan iznos (`rucni_iznosi`).
+    Količina ide ručno i kad akcija NE traje ceo mesec (mesečna prodaja tada ne
+    odgovara periodu akcije) i kad izveštaj prodaje ne razdvaja nove HQD ukuse.
+
+    `rucno`     = {"KUPAC|grupa": {"kom": n, "cena": x, "par": bool}} — za akcije
+                  koje nisu obična cena (1+1, „490 + 1 din drugi artikal"…);
+    `kol_rucno` = {"KUPAC|grupa": količina};
+    `osn_rucno` = {"KUPAC|grupa": osnovica} — analitičar je sam ispravio iznos.
     """
     _po_sis = {}
     for _r in _cene_sort(redovi or []):
@@ -12043,69 +12110,121 @@ def knjizno_tabela(redovi, kol, kupac_sistem, marze=None, rucno=None,
         _po_sis.setdefault(str(_r.get("sistem")), []).append(_r)
     _rucno = dict(rucno or {})
     _r_izn = {_knj_norm(_k): _v for _k, _v in (rucni_iznosi or {}).items()}
+    _k_ruc = {str(_k): _v for _k, _v in (kol_rucno or {}).items()}
+    _o_ruc = {str(_k): _v for _k, _v in (osn_rucno or {}).items()}
     _out = []
+
+    def _zapis(kupac, sis, grupa, red, akc_txt, kom, osn, marza, kljuc, r, nap,
+               rucno_f=False, ceka=False, lager=False):
+        _o = float(osn or 0.0)
+        return {"kupac": kupac, "sistem": sis, "grupa": grupa, "redovna": red,
+                "akcijska": akc_txt, "kom": (None if kom is None else int(kom)),
+                "osnovica": _o, "pdv": _o * (KNJ_PDV / 100.0),
+                "ukupno": _o * (1 + KNJ_PDV / 100.0), "marza": marza,
+                "rucno": bool(rucno_f), "ceka": bool(ceka), "rucno_sis": bool(lager),
+                "kljuc": kljuc, "od": (r or {}).get("od", ""), "do": (r or {}).get("do", ""),
+                "napomena": nap}
+
     for _kupac in sorted((kol or {}).get("kupci") or []):
         _sis = (kupac_sistem or {}).get(_kupac)
         if not _sis:
             continue
-        if knjizno_sistem_rucno(_sis, rucni_sistemi):
-            # ručni sistem: iznos upisuje analitika, aplikacija ga samo prikazuje
+        _mod = knjizno_mod(_sis, modovi, rucni_sistemi)
+        if _mod == "lager":
+            # knjižno se izdaje na lager: nema artikala ni količina, samo iznos
             _ri = dict(_r_izn.get(_knj_norm(_kupac)) or {})
             _izn = _knj_broj(_ri.get("iznos"))
             _spdv = bool(_ri.get("sa_pdv"))
             _osn = 0.0 if _izn is None else (
                 (_izn / (1.0 + KNJ_PDV / 100.0)) if _spdv else _izn)
-            _out.append({"kupac": _kupac, "sistem": _sis, "grupa": "— ručno —",
-                         "redovna": 0.0, "akcijska": "", "kom": 0,
-                         "osnovica": _osn, "pdv": _osn * (KNJ_PDV / 100.0),
-                         "ukupno": _osn * (1 + KNJ_PDV / 100.0),
-                         "marza": 0.0, "rucno": True, "rucno_sis": True,
-                         "kljuc": _kupac + "|rucno", "od": "", "do": "",
-                         "napomena": (str(_ri.get("napomena") or "") or
-                                      ("ručno upisan iznos" if _izn is not None
-                                       else "upiši iznos ručno"))})
+            _per = sorted({(str(_r.get("od") or ""), str(_r.get("do") or ""))
+                           for _r in _po_sis.get(_sis, [])})
+            _r0 = ({"od": _per[0][0], "do": _per[0][1]} if len(_per) == 1 else {})
+            _out.append(_zapis(_kupac, _sis, "— na lager —", 0.0, "", None, _osn, 0.0,
+                               _kupac + "|lager", _r0,
+                               (str(_ri.get("napomena") or "")
+                                or ("knjižno na lager — ručno upisan iznos"
+                                    if _izn is not None else
+                                    "knjižno na lager — upiši konačan iznos")),
+                               rucno_f=True, ceka=(_izn is None), lager=True))
             continue
         for _r in _po_sis.get(_sis, []):
             _g = str(_r.get("grupa") or "")
-            _kom = knjizno_kom(kol, _kupac, _g)
             _akc = _knj_broj(_r.get("akcijska"))
             _red = _knj_broj(_r.get("redovna")) or 0.0
             _m = knjizno_marza(_sis, _g, marze)
             _kljuc = _kupac + "|" + _g
             _ruc = _rucno.get(_kljuc) or {}
-            _nap = ""
+            _osn_r = _knj_broj(_o_ruc.get(_kljuc))
+            _akc_txt = str(_r.get("akcijska") or "")
+            # --- akcija koja nije obična cena (1+1 i slično) ---
             if _akc is None:
                 _cena = _knj_broj(_ruc.get("cena"))
                 _kom_r = _knj_broj(_ruc.get("kom"))
                 _par = bool(_ruc.get("par"))
                 if _cena is None or _kom_r is None:
-                    _out.append({"kupac": _kupac, "sistem": _sis, "grupa": _g,
-                                 "redovna": _red, "akcijska": str(_r.get("akcijska") or ""),
-                                 "kom": 0, "osnovica": 0.0, "pdv": 0.0, "ukupno": 0.0,
-                                 "marza": _m, "rucno": True, "kljuc": _kljuc,
-                                 "od": _r.get("od"), "do": _r.get("do"),
-                                 "napomena": "upiši ručno (cena i količina)"})
+                    _out.append(_zapis(_kupac, _sis, _g, _red, _akc_txt, None, 0.0, _m,
+                                       _kljuc, _r, "upiši ručno (cena i količina)",
+                                       rucno_f=True, ceka=True))
                     continue
                 _po = knjizno_po_komadu(_red * (2 if _par else 1), _cena, _m,
                                         knjizno_marza_std(_g))
                 _kom = int(_kom_r)
-                _nap = ("parova" if _par else "kom") + " · ručno"
-                _out.append({"kupac": _kupac, "sistem": _sis, "grupa": _g, "redovna": _red,
-                             "akcijska": str(_r.get("akcijska") or ""), "kom": _kom,
-                             "osnovica": _po["osnovica"] * _kom, "pdv": _po["pdv"] * _kom,
-                             "ukupno": _po["ukupno"] * _kom, "marza": _m, "rucno": True,
-                             "kljuc": _kljuc, "od": _r.get("od"), "do": _r.get("do"),
-                             "napomena": _nap})
+                _osn = _po["osnovica"] * _kom if _osn_r is None else _osn_r
+                _out.append(_zapis(_kupac, _sis, _g, _red, _akc_txt, _kom, _osn, _m,
+                                   _kljuc, _r,
+                                   ("parova" if _par else "kom") + " · ručno"
+                                   + (" · iznos ručno izmenjen" if _osn_r is not None
+                                      else ""),
+                                   rucno_f=True))
                 continue
-            if _kom <= 0:
-                continue
+            # --- obična akcijska cena ---
+            _treba_r, _zasto = knjizno_rucna_kolicina(_r, _g, _mod, kol, mesec_key)
+            if _treba_r:
+                _kom = _knj_broj(_k_ruc.get(_kljuc))
+                if _kom is None:
+                    _out.append(_zapis(_kupac, _sis, _g, _red, _akc_txt, None, 0.0, _m,
+                                       _kljuc, _r, _zasto + " — upiši količinu",
+                                       rucno_f=True, ceka=True))
+                    continue
+                _kom = int(_kom)
+                _nap = _zasto + " · količina ručno"
+            else:
+                _kom = int(knjizno_kom(kol, _kupac, _g) or 0)
+                _nap = "" if _kom > 0 else "nema prodaje u izveštaju za taj artikal"
             _po = knjizno_po_komadu(_red, _akc, _m, knjizno_marza_std(_g))
-            _out.append({"kupac": _kupac, "sistem": _sis, "grupa": _g, "redovna": _red,
-                         "akcijska": str(_r.get("akcijska") or ""), "kom": int(_kom),
-                         "osnovica": _po["osnovica"] * _kom, "pdv": _po["pdv"] * _kom,
-                         "ukupno": _po["ukupno"] * _kom, "marza": _m, "rucno": False,
-                         "kljuc": _kljuc, "od": _r.get("od"), "do": _r.get("do"),
-                         "napomena": _nap})
+            _osn = _po["osnovica"] * _kom if _osn_r is None else _osn_r
+            if _osn_r is not None:
+                _nap = (_nap + " · " if _nap else "") + "iznos ručno izmenjen"
+            _out.append(_zapis(_kupac, _sis, _g, _red, _akc_txt, _kom, _osn, _m,
+                               _kljuc, _r, _nap, rucno_f=bool(_treba_r or _osn_r is not None)))
+    return _out
+
+
+def knjizno_ceka(tabela):
+    """Redovi koji čekaju ručni unos (količinu ili iznos)."""
+    return [_t for _t in (tabela or []) if _t.get("ceka")]
+
+
+def knjizno_sistemi_rucni(redovi, kol, modovi=None, rucni_sistemi=None, mesec_key=None,
+                          danas=None):
+    """Sistemi kod kojih automatski obračun NIJE moguć — i zašto.
+    -> {sistem: razlog}. Koristi se i u direktorskom pregledu."""
+    _out = {}
+    for _r in (redovi or []):
+        if not str(_r.get("akcijska") or "").strip():
+            continue
+        if not knjizno_red_potvrdjen(_r, danas):
+            continue
+        _s = str(_r.get("sistem") or "")
+        _mod = knjizno_mod(_s, modovi, rucni_sistemi)
+        if _mod == "lager":
+            _out[_s] = "knjižno se izdaje na lager — iznos upisuje analitičar"
+            continue
+        _treba, _zasto = knjizno_rucna_kolicina(_r, str(_r.get("grupa") or ""), _mod,
+                                                kol, mesec_key)
+        if _treba and _out.get(_s) is None:
+            _out[_s] = _zasto
     return _out
 
 
@@ -12159,7 +12278,8 @@ def knjizno_html(tabela, po_kupcu, uk):
                       + _knj_din(_z["osnovica"]) + '</td><td>' + _knj_din(_z["pdv"])
                       + '</td><td>' + _knj_din(_z["ukupno"]) + '</td></tr>')
         _pre = _t["kupac"]
-        _h.append('<tr' + (' class="knj-rucno"' if _t.get("rucno") else '') + '>'
+        _h.append('<tr' + (' class="knj-ceka"' if _t.get("ceka")
+                           else (' class="knj-rucno"' if _t.get("rucno") else '')) + '>'
                   '<td class="sis">' + _h_escape(_t["kupac"]) + '</td>'
                   '<td class="grp">' + _h_escape(_t["grupa"]) + '</td>'
                   '<td class="red">' + _knj_din(_t["redovna"], 0) + '</td>'
@@ -12167,7 +12287,8 @@ def knjizno_html(tabela, po_kupcu, uk):
                   '<td class="red">' + _knj_din(_t["marza"], 0) + '%</td>'
                   '<td class="per">' + _h_escape(_knj_period(_t.get("od"), _t.get("do")))
                   + '</td>'
-                  '<td class="red">' + _knj_din(_t["kom"], 0)
+                  '<td class="red">' + ("—" if _t.get("kom") is None
+                                            else _knj_din(_t["kom"], 0))
                   + (' <i>' + _h_escape(_t["napomena"]) + '</i>' if _t.get("napomena") else '')
                   + '</td>'
                   '<td class="red">' + _knj_din(_t["osnovica"]) + '</td>'
@@ -12230,7 +12351,8 @@ def knjizno_xlsx(tabela, po_kupcu, uk, mesec_lbl):
         _pre = _t["kupac"]
         _ws.append([_t["kupac"], _t["grupa"], _t["redovna"], _t["akcijska"],
                     round(_t["marza"], 0) / 100.0, _knj_period(_t.get("od"), _t.get("do")),
-                    _t["kom"], round(_t["osnovica"], 2), round(_t["pdv"], 2),
+                    ("" if _t.get("kom") is None else _t["kom"]),
+                    round(_t["osnovica"], 2), round(_t["pdv"], 2),
                     round(_t["ukupno"], 2)])
         _rr = _ws.max_row
         for _ci in range(1, len(_kol) + 1):
@@ -12450,12 +12572,17 @@ def _knjizno_blok(mesec_key, sel_lbl, podaci, redovi_svi, uloga, ro):
                     except Exception as _e:
                         st.error("Greška: " + str(_e))
         # ---- samo POTVRĐENE cene ulaze u obračun ----
+        _modovi = dict(_knj.get("mod") or {})
+        _kol_ruc = dict(_knj.get("kol") or {})
+        _osn_ruc = dict(_knj.get("osn") or {})
         _stanje = knjizno_sistemi_stanje(redovi_svi)
+        _mod_s = lambda _s0: knjizno_mod(_s0, _modovi, _rucni_sis)
         _sis_pot = sorted([_s for _s, _d in _stanje.items()
-                           if _d["pot"] and not knjizno_sistem_rucno(_s, _rucni_sis)])
+                           if _d["pot"] and _mod_s(_s) != "lager"])
         _sis_cek = sorted([_s for _s, _d in _stanje.items()
-                           if _d["ceka"] and not knjizno_sistem_rucno(_s, _rucni_sis)])
-        _sis_ruc = sorted([_s for _s in _sis_kart if knjizno_sistem_rucno(_s, _rucni_sis)])
+                           if _d["ceka"] and _mod_s(_s) != "lager"])
+        _sis_lag = sorted([_s for _s in _sis_kart if _mod_s(_s) == "lager"])
+        _nemoguce = knjizno_sistemi_rucni(redovi_svi, _kol, _modovi, _rucni_sis, mesec_key)
         st.markdown('<div class="cene-note">Obračunavaju se <b>samo potvrđene akcijske '
                     'cene</b> — sistem ulazi u knjižno tek kad administracija potvrdi cenu. '
                     'Potvrđeno: <b>' + (", ".join(_h_escape(_s) for _s in _sis_pot)
@@ -12463,27 +12590,66 @@ def _knjizno_blok(mesec_key, sel_lbl, podaci, redovi_svi, uloga, ro):
                     + (' Čeka potvrdu (ne računa se još): <b style="color:#b45309;">'
                        + ", ".join(_h_escape(_s) for _s in _sis_cek) + '</b>.'
                        if _sis_cek else '')
-                    + (' Ručni unos: <b>' + ", ".join(_h_escape(_s) for _s in _sis_ruc)
-                       + '</b>.' if _sis_ruc else '') + '</div>',
+                    + (' Na lager: <b>' + ", ".join(_h_escape(_s) for _s in _sis_lag)
+                       + '</b>.' if _sis_lag else '') + '</div>',
                     unsafe_allow_html=True)
-        # ---- sistemi kod kojih se iznos upisuje ručno ----
-        with st.popover("✍️ Sistemi sa ručnim knjižnim ("
-                        + (str(len(_sis_ruc)) if _sis_ruc else "nijedan") + ")", width=600):
-            st.caption("Označi sisteme kod kojih aplikacija NE računa knjižno (dogovor, "
-                       "rabat, drugačiji obračun…) — za njih iznos upisuješ ručno, "
-                       "a ostali se i dalje računaju sami iz potvrđenih cena.")
-            _nov_ruc = {}
-            for _s0 in _sis_kart:
-                _nov_ruc[_s0] = st.checkbox("🖐️ " + _s0 + " — iznos upisujem ručno",
-                                            value=knjizno_sistem_rucno(_s0, _rucni_sis),
-                                            key="knj_rs_" + _knj_norm(_s0), disabled=ro)
-            _nov_izn = {}
-            _kupci_ruc = [_k for _k in (_kol.get("kupci") or [])
-                          if _nov_ruc.get((_veza or {}).get(_k) or "")]
-            if _kupci_ruc:
-                st.markdown('<div style="font-weight:800;font-size:13px;margin:8px 0 2px;">'
-                            'Iznosi po kupcu</div>', unsafe_allow_html=True)
-                for _k0 in sorted(_kupci_ruc):
+        if _nemoguce:
+            st.warning("⚠️ Za ove sisteme automatski obračun NIJE moguć:  "
+                       + "  ·  ".join(_h_escape(_s) + " (" + _h_escape(_z) + ")"
+                                      for _s, _z in sorted(_nemoguce.items()))
+                       + ("  —  knjižno za njih neće biti dostupno dok ga analitičar "
+                          "ne unese." if uloga == "direktor" else
+                          "  —  upiši količine (ili konačan iznos) dole, pa se ostatak "
+                          "računa sam."))
+
+        # ---- način obračuna po sistemu ----
+        if uloga == "analitika" and not ro:
+            with st.popover("⚙️ Način obračuna po sistemu", width=640):
+                st.caption("Automatski — količine se povlače iz izveštaja prodaje. "
+                           "Ručne količine — ja upisujem količinu, aplikacija računa iznos "
+                           "(količine se brišu kad prebaciš sistem ovde). "
+                           "Na lager — nema količina ni artikala, upisuje se samo konačan "
+                           "iznos.")
+                _nov_mod = {}
+                for _s0 in _sis_kart:
+                    _tr = _mod_s(_s0)
+                    _izb = st.radio(_s0, KNJ_MODOVI, horizontal=True,
+                                    index=KNJ_MODOVI.index(_tr),
+                                    format_func=lambda _m: KNJ_MOD_LBL[_m],
+                                    key="knj_mod_" + _knj_norm(_s0))
+                    _nov_mod[_s0] = _izb
+                if st.button("💾 Sačuvaj način obračuna", key="knj_mod_b_" + mesec_key,
+                             type="primary"):
+                    for _s0, _m0 in _nov_mod.items():
+                        if _m0 != _mod_s(_s0):
+                            # promena načina briše ranije upisane količine tog sistema
+                            for _k0 in [_k for _k in list(_kol_ruc)
+                                        if (_veza or {}).get(str(_k0).split("|")[0]) == _s0]:
+                                _kol_ruc.pop(_k0, None)
+                                _osn_ruc.pop(_k0, None)
+                    _modovi = {_s0: _m0 for _s0, _m0 in _nov_mod.items() if _m0 != "auto"}
+                    _knj["mod"] = _modovi
+                    _knj["kol"] = _kol_ruc
+                    _knj["osn"] = _osn_ruc
+                    _knj.pop("rucni_sistemi", None)          # stari zapis se gasi
+                    _rucni_sis = {}
+                    _pod["knjizno"] = _knj
+                    try:
+                        sb_cene_set(mesec_key, _pod)
+                        st.rerun()
+                    except Exception as _e:
+                        st.error("Greška: " + str(_e))
+
+        # ---- knjižno na lager: samo konačan iznos po kupcu ----
+        _kupci_lag = [_k for _k in (_kol.get("kupci") or [])
+                      if _mod_s((_veza or {}).get(_k) or "") == "lager"]
+        if _kupci_lag and uloga == "analitika" and not ro:
+            with st.popover("🏬 Knjižno na lager — iznosi (" + str(len(_kupci_lag)) + ")",
+                            width=620):
+                st.caption("Za ove kupce se knjižno izdaje na lager: nema količina ni "
+                           "artikala — upiši konačan iznos.")
+                _nov_izn = {}
+                for _k0 in sorted(_kupci_lag):
                     _ri0 = dict(_rucni_izn.get(_k0) or {})
                     st.markdown("**" + _h_escape(_k0) + "** · "
                                 + _h_escape(str((_veza or {}).get(_k0) or "")))
@@ -12491,37 +12657,38 @@ def _knjizno_blok(mesec_key, sel_lbl, podaci, redovi_svi, uloga, ro):
                     with _q1:
                         _iv = st.number_input("iznos (RSD)", min_value=0.0, step=100.0,
                                               value=float(_knj_broj(_ri0.get("iznos")) or 0.0),
-                                              key="knj_ri_" + _knj_norm(_k0), disabled=ro)
+                                              key="knj_ri_" + _knj_norm(_k0))
                     with _q2:
                         _pv = st.checkbox("sa PDV-om", value=bool(_ri0.get("sa_pdv")),
-                                          key="knj_rp_" + _knj_norm(_k0), disabled=ro,
+                                          key="knj_rp_" + _knj_norm(_k0),
                                           help="Štikliraj ako je upisani iznos sa PDV-om; "
                                                "inače se računa kao osnovica + 20% PDV.")
                     with _q3:
                         _nv = st.text_input("napomena", value=str(_ri0.get("napomena") or ""),
-                                            key="knj_rn_" + _knj_norm(_k0), disabled=ro,
+                                            key="knj_rn_" + _knj_norm(_k0),
                                             placeholder="npr. po dogovoru sa komercijalom")
                     _nov_izn[_k0] = {"iznos": float(_iv), "sa_pdv": bool(_pv),
                                      "napomena": str(_nv or "")}
-            if (not ro) and st.button("💾 Sačuvaj ručne sisteme", key="knj_rs_b_" + mesec_key):
-                _rucni_sis = {_s0: True for _s0, _v0 in _nov_ruc.items() if _v0}
-                for _k0, _v0 in _nov_izn.items():
-                    if float(_v0.get("iznos") or 0) > 0 or str(_v0.get("napomena") or ""):
-                        _rucni_izn[_k0] = _v0
-                    else:
-                        _rucni_izn.pop(_k0, None)
-                _knj["rucni_sistemi"] = _rucni_sis
-                _knj["rucni_iznosi"] = _rucni_izn
-                _pod["knjizno"] = _knj
-                try:
-                    sb_cene_set(mesec_key, _pod)
-                    st.rerun()
-                except Exception as _e:
-                    st.error("Greška: " + str(_e))
+                if st.button("💾 Sačuvaj iznose", key="knj_lag_b_" + mesec_key,
+                             type="primary"):
+                    for _k0, _v0 in _nov_izn.items():
+                        if float(_v0.get("iznos") or 0) > 0 or str(_v0.get("napomena") or ""):
+                            _rucni_izn[_k0] = _v0
+                        else:
+                            _rucni_izn.pop(_k0, None)
+                    _knj["rucni_iznosi"] = _rucni_izn
+                    _pod["knjizno"] = _knj
+                    try:
+                        sb_cene_set(mesec_key, _pod)
+                        st.rerun()
+                    except Exception as _e:
+                        st.error("Greška: " + str(_e))
+
         _tab = knjizno_tabela(redovi_svi, _kol, _veza, _marze, _rucno,
-                              _rucni_sis, _rucni_izn)
-        _rucni = [_t for _t in _tab if _t.get("rucno") and not _t["kom"]
-                  and not _t.get("rucno_sis")]
+                              _rucni_sis, _rucni_izn, None, _modovi, _kol_ruc, _osn_ruc,
+                              mesec_key)
+        _rucni = [_t for _t in _tab if _t.get("ceka") and not _t.get("rucno_sis")
+                  and "cena i količina" in str(_t.get("napomena") or "")]
         if _rucni and not ro:
             with st.popover("✍️ Akcije koje se ne računaju same (" + str(len(_rucni)) + ")",
                             width=560):
@@ -12557,6 +12724,80 @@ def _knjizno_blok(mesec_key, sel_lbl, podaci, redovi_svi, uloga, ro):
                     + _h_escape(str(_kol.get("mesec") or "")) + ').</div>',
                     unsafe_allow_html=True)
         st.markdown(knjizno_html(_tab, _po_kupcu, _uk), unsafe_allow_html=True)
+
+        # ---- ručni unos količina i ispravka iznosa (samo analitika) ----
+        _ceka_lst = [_t for _t in knjizno_ceka(_tab) if not _t.get("rucno_sis")
+                     and "cena i količina" not in str(_t.get("napomena") or "")]
+        if _ceka_lst:
+            st.warning("✍️ " + str(len(_ceka_lst)) + " red(ova) čeka ručni unos količine — "
+                       "dok se ne upišu, ti iznosi NISU u zbiru.")
+        if uloga == "analitika" and not ro and _tab:
+            _ed = [_t for _t in _tab if not _t.get("rucno_sis")]
+            if _ed:
+                with st.expander("✍️ Ručni unos — količine i ispravka iznosa"
+                                 + (("  ·  " + str(len(_ceka_lst)) + " čeka unos")
+                                    if _ceka_lst else ""),
+                                 expanded=bool(_ceka_lst)):
+                    st.caption("Količinu upisuješ tamo gde aplikacija ne može sama "
+                               "(period akcije nije ceo mesec, ručni sistem, 1+1…). "
+                               "Iznos (osnovicu) možeš da ispraviš u SVAKOM redu — i tamo "
+                               "gde je izračunat sam; ostavi prazno da bi ostao račun "
+                               "aplikacije.")
+                    _df = pd.DataFrame([{
+                        "Kupac": _t["kupac"], "Artikal": _t["grupa"],
+                        "Period": _knj_period(_t.get("od"), _t.get("do")),
+                        "Akcijska": _t["akcijska"],
+                        "Količina": (None if _t.get("kom") is None else int(_t["kom"])),
+                        "Osnovica (ručno)": (float(_osn_ruc[_t["kljuc"]])
+                                             if _t["kljuc"] in _osn_ruc else None),
+                        "Računato": round(float(_t["osnovica"] or 0), 2),
+                        "_k": _t["kljuc"],
+                        "_r": bool(_t.get("rucno") or _t.get("ceka"))} for _t in _ed])
+                    _izm = st.data_editor(
+                        _df, hide_index=True, use_container_width=True,
+                        key="knj_ed_" + mesec_key,
+                        column_config={
+                            "Kupac": st.column_config.TextColumn(disabled=True),
+                            "Artikal": st.column_config.TextColumn(disabled=True),
+                            "Period": st.column_config.TextColumn(disabled=True, width="small"),
+                            "Akcijska": st.column_config.TextColumn(disabled=True,
+                                                                    width="small"),
+                            "Količina": st.column_config.NumberColumn(
+                                min_value=0, step=1, format="%d",
+                                help="Prazno = nije upisano. Kod redova koje aplikacija "
+                                     "računa sama ovde piše povučena količina."),
+                            "Osnovica (ručno)": st.column_config.NumberColumn(
+                                min_value=0.0, step=100.0, format="%.2f",
+                                help="Upiši samo ako hoćeš drugačiji iznos od izračunatog."),
+                            "Računato": st.column_config.NumberColumn(disabled=True,
+                                                                      format="%.2f"),
+                            "_k": None, "_r": None},
+                        num_rows="fixed")
+                    if st.button("💾 Sačuvaj ručni unos", key="knj_ed_b_" + mesec_key,
+                                 type="primary"):
+                        _nk, _no = dict(_kol_ruc), dict(_osn_ruc)
+                        for _i_r, _row in _izm.iterrows():
+                            _kk = str(_row["_k"])
+                            _kv = _row["Količina"]
+                            _ov = _row["Osnovica (ručno)"]
+                            _rucni_red = bool(_row["_r"])
+                            if _rucni_red and _kv is not None and str(_kv) != "nan":
+                                _nk[_kk] = int(_kv)
+                            elif _rucni_red:
+                                _nk.pop(_kk, None)
+                            if _ov is not None and str(_ov) != "nan" and float(_ov) > 0:
+                                _no[_kk] = float(_ov)
+                            else:
+                                _no.pop(_kk, None)
+                        _knj["kol"] = _nk
+                        _knj["osn"] = _no
+                        _pod["knjizno"] = _knj
+                        try:
+                            sb_cene_set(mesec_key, _pod)
+                            st.success("Sačuvano — iznosi su preračunati.")
+                            st.rerun()
+                        except Exception as _e:
+                            st.error("Greška: " + str(_e))
         if _tab:
             _z1, _z2 = st.columns([1.5, 3])
             with _z1:
