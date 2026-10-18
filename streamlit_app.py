@@ -11135,6 +11135,14 @@ table.cene-tab td.per{font-size:12px;color:#475569;white-space:nowrap;}
 table.cene-tab td.odg{text-align:left;font-size:12px;color:#334155;}
 table.cene-tab td.nap{text-align:left;font-size:12px;color:#6b7280;font-style:italic;}
 table.cene-tab tr.sep td{border-top:2px solid #e9e3fb;}
+/* Knjižno: fiksne širine kolona — isto kao u tabeli koju analitika kuca, da stane u ekran */
+table.cene-tab.knjt{table-layout:fixed;}
+table.cene-tab.knjt td{word-break:break-word;}
+table.cene-tab.knjt thead th,table.cene-tab.knjt td.sis,
+table.cene-tab.knjt td.grp,table.cene-tab.knjt td.per{white-space:normal;}
+table.cene-tab.knjt td.red,table.cene-tab.knjt td.akc{white-space:nowrap;}
+table.cene-tab.knjt td i{display:block;font-style:italic;color:#9ca3af;font-size:10.5px;
+    line-height:1.2;margin-top:1px;font-weight:400;}
 /* ceo red govori status: zeleno = potvrđeno, crveno = odbijeno, žuto = čeka */
 table.cene-tab tbody tr.pot{background:#eafbf0;}
 table.cene-tab tbody tr.pot td.grp{box-shadow:inset 3px 0 0 #16a34a;color:#14532d;}
@@ -11254,6 +11262,11 @@ div[class*="st-key-cenered"] [data-testid="stDateInput"] svg{width:14px;height:1
 .cp-osa>div{flex:1;text-align:center;font-size:10px;color:#8a94a3;line-height:1.5;}
 .cp-cena{display:block;font-weight:800;color:#5b21b6;font-size:11px;}
 .cp-cena.bez{color:#b2bac6;font-weight:600;}
+.cp-pf{display:block;font-weight:700;color:#166534;font-size:10.5px;
+    font-variant-numeric:tabular-nums;margin-top:1px;}
+.cp-pf.neg{color:#b91c1c;}
+.cp-pf.nema{color:#cbd5e1;font-weight:500;}
+.cp-pfl{margin-top:8px;font-size:10.5px;color:#8a94a3;line-height:1.4;}
 .cp-leg{display:flex;gap:14px;margin:9px 0 0;font-size:11px;color:#4b5563;}
 .cp-leg i{display:inline-block;width:11px;height:11px;border-radius:3px;background:#c4b5fd;
           margin-right:5px;vertical-align:-1px;}
@@ -11771,6 +11784,49 @@ def cene_pregled(sistem, grupa, sales, kupci_map=None, koliko=6):
             "n_bez": len(_b), "n_nepoznato": sum(1 for _r in _red_lst if _r["stanje"] == "?")}
 
 
+def cene_profit_troskovi(sales):
+    """Spisak vrsta troškova iz izveštaja prodaje -> [(id, naziv)]."""
+    _p = ((sales or {}).get("profit") or {})
+    _l = [( str(_t.get("id") or ""), str(_t.get("naziv") or ""))
+          for _t in (_p.get("troskovi") or []) if _t.get("id")]
+    return [_t for _t in _l if _t[0] != "mkt"]
+
+
+def cene_profit_niz(sales, sistem, mes_keys, dodatni=None):
+    """Profit tog sistema za zadate mesece: profit − marketing − izabrani troškovi.
+
+    Vraća listu istih dužina kao `mes_keys` (None gde nema podatka). Marketing se
+    uvek oduzima; `dodatni` su id-evi ostalih troškova koje je korisnik štiklirao.
+    """
+    _p = ((sales or {}).get("profit") or {})
+    _naz = list(_p.get("nazivi") or [])
+    _sis = (_p.get("po_sistemu") or {}).get(str(sistem))
+    if not _naz or not _sis:
+        return [None] * len(mes_keys or [])
+    _idx = {}
+    for _i, _l in enumerate(_naz):
+        _mk = _cene_mk_od_labela(_l) or _l
+        _idx[str(_mk)] = _i
+    _dod = [str(_d) for _d in (dodatni or [])]
+    _out = []
+    for _mk in (mes_keys or []):
+        _i = _idx.get(str(_mk))
+        if _i is None:
+            _out.append(None)
+            continue
+        try:
+            _v = float((_sis.get("profit") or [])[_i] or 0)
+            _v -= float((_sis.get("mkt") or [])[_i] or 0)
+            for _d in _dod:
+                _niz = _sis.get(_d) or []
+                if _i < len(_niz):
+                    _v -= float(_niz[_i] or 0)
+            _out.append(_v)
+        except Exception:
+            _out.append(None)
+    return _out
+
+
 def _cene_mes_lbl(mesec_key):
     try:
         _g, _m = str(mesec_key).split("-")
@@ -11779,8 +11835,11 @@ def _cene_mes_lbl(mesec_key):
         return str(mesec_key)
 
 
-def cene_pregled_html(p, sistem, grupa, redovna=0):
-    """Sadržaj prozorčića — tri broja, stubići po mesecima i zaključak."""
+def cene_pregled_html(p, sistem, grupa, redovna=0, profit=None, profit_lbl=""):
+    """Sadržaj prozorčića — stubići po mesecima, ispod cena i profit, pa zaključak.
+
+    `profit` je lista istih dužina kao meseci (RSD, None gde nema podatka);
+    `profit_lbl` objašnjava šta je u njemu (koji su troškovi oduzeti)."""
     if not p:
         return ('<div class="cp-nema">Za ovaj sistem i grupu nema prodaje u objavljenom '
                 'izveštaju prodaje. Ako se kupac u izveštaju zove drugačije nego sistem '
@@ -11793,18 +11852,6 @@ def cene_pregled_html(p, sistem, grupa, redovna=0):
               + (("redovna " + format(int(redovna), ",").replace(",", ".") + " · ")
                  if redovna else "")
               + "poslednjih " + str(len(_red)) + " meseci</span></div>")
-    _h.append('<div class="cp-kocke">')
-    _h.append('<div class="cp-k"><div class="cp-m">Sa akcijom</div><div class="cp-v">'
-              + (format(p["pros_akc"], ",").replace(",", ".") if p["pros_akc"] else "—")
-              + ' kom</div><div class="cp-m">prosek · ' + str(p["n_akc"]) + ' mes.</div></div>')
-    _h.append('<div class="cp-k"><div class="cp-m">Bez akcije</div><div class="cp-v">'
-              + (format(p["pros_bez"], ",").replace(",", ".") if p["pros_bez"] else "—")
-              + ' kom</div><div class="cp-m">prosek · ' + str(p["n_bez"]) + ' mes.</div></div>')
-    _rz = p["razlika"]
-    _kl = " plus" if (_rz is not None and _rz > 0) else (" minus" if (_rz is not None and _rz < 0) else "")
-    _h.append('<div class="cp-k' + _kl + '"><div class="cp-m">Razlika</div><div class="cp-v">'
-              + (("+" if _rz > 0 else "") + str(_rz) + "%" if _rz is not None else "—")
-              + '</div><div class="cp-m">akcija vs. redovna</div></div></div>')
     _h.append('<div class="cp-graf">')
     for _r in _red:
         _vis = max(int(round(_r["kom"] * 100.0 / _max)), 3)
@@ -11814,14 +11861,24 @@ def cene_pregled_html(p, sistem, grupa, redovna=0):
                   + format(_r["kom"], ",").replace(",", ".") + '</span>'
                   '<span class="cp-bar" style="height:' + str(_vis) + '%"></span></div>')
     _h.append('</div><div class="cp-osa">')
-    for _r in _red:
+    _pf = list(profit or [])
+    for _i, _r in enumerate(_red):
+        _pv = _pf[_i] if _i < len(_pf) else None
         _h.append('<div>' + _h_escape(_cene_mes_lbl(_r["mesec"]))
                   + '<span class="cp-cena' + ('' if _r["akcija"] else ' bez') + '" title="'
                   + ("mesec pre nego što vodimo akcijske cene — ne znamo da li je bila akcija"
                      if _r["stanje"] == "?" else "")
                   + '">'
-                  + _h_escape(_r["cena"] or "—") + '</span></div>')
+                  + _h_escape(_r["cena"] or "—") + '</span>'
+                  + ('<span class="cp-pf' + (' neg' if (_pv is not None and _pv < 0) else '')
+                     + '">' + _knj_din(_pv, 0) + '</span>'
+                     if _pv is not None else '<span class="cp-pf nema">—</span>')
+                  + '</div>')
     _h.append('</div>')
+    if any(_x is not None for _x in _pf):
+        _h.append('<div class="cp-pfl">Treći red = <b>profit</b> tog meseca (ceo sistem, '
+                  'RSD): ' + _h_escape(profit_lbl or "profit − troškovi marketinga")
+                  + '.</div>')
     _leg = ('<div class="cp-leg"><span><i class="a"></i>mesec sa akcijom</span>'
             '<span><i></i>redovna cena</span>')
     if p.get("n_nepoznato"):
@@ -12785,7 +12842,11 @@ def knjizno_html(tabela, po_kupcu, uk):
     if not tabela:
         return ('<div class="cene-note">Nema šta da se obračuna — ili za taj mesec nema '
                 'akcijskih cena, ili izveštaj prodaje još nije objavljen.</div>')
-    _h = ['<div class="cene-wrap"><table class="cene-tab"><thead><tr>'
+    _h = ['<div class="cene-wrap"><table class="cene-tab knjt">'
+          + "".join('<col style="width:' + _w + '%">' for _w in
+                    ("12.9", "14.4", "7.2", "7.7", "4.8", "9.6", "10.5", "11.5",
+                     "9.6", "11.8"))
+          + '<thead><tr>'
           '<th class="l">Kupac</th><th class="l">Artikal</th><th>Redovna</th>'
           '<th>Akcijska</th><th>Marža</th><th>Period</th><th>Količina</th>'
           '<th>Osnovica</th><th>PDV</th><th>Knjižno ukupno</th></tr></thead><tbody>']
@@ -13172,7 +13233,7 @@ def _knjizno_blok(mesec_key, sel_lbl, podaci, redovi_svi, uloga, ro):
                     + (' Na lager: <b>' + ", ".join(_h_escape(_s) for _s in _sis_lag)
                        + '</b>.' if _sis_lag else '') + '</div>',
                     unsafe_allow_html=True)
-        if _nemoguce:
+        if _nemoguce and uloga == "analitika":
             st.warning("⚠️ Za ove sisteme automatski obračun NIJE moguć:  "
                        + "  ·  ".join(_h_escape(_s) + " (" + _h_escape(_z) + ")"
                                       for _s, _z in sorted(_nemoguce.items()))
@@ -14027,6 +14088,23 @@ def cene_ui(uloga, ugradjeno=False):
                       "Status", "Odgovoran", "Napomena"])
     _poml = 1 if _pok_prod else 0      # pomeraj kolona kad stoji dugme 📊
     _je_admin = (uloga == "admin")
+    # ---- šta ulazi u profit koji se vidi u prozorčiću 📊 ----
+    # (filter stoji IZNAD tabele: da se prozorčić ne zatvara pri svakom štikliranju)
+    _pf_dod, _pf_lbl = [], "profit − troškovi marketinga"
+    if _pok_prod:
+        _tr_sve = cene_profit_troskovi(_sales)
+        if _tr_sve:
+            _pf_dod = st.multiselect(
+                "Profitabilnost u pregledu 📊 — marketing je uvek unutra, ovde dodaj "
+                "ostale troškove",
+                [_t[0] for _t in _tr_sve],
+                format_func=lambda _i: dict(_tr_sve).get(_i, _i),
+                key="cn_pf_glob_" + _mk)
+            if _pf_dod:
+                _pf_lbl += " − " + " − ".join(dict(_tr_sve).get(_d, _d) for _d in _pf_dod)
+        else:
+            st.caption("Profitabilnost u prozorčiću 📊 pojaviće se kad se izveštaj prodaje "
+                       "objavi novom verzijom modula (izvestaj_prodaje.py 3.5).")
     with st.form("cene_form_" + _mk, border=False):
         _hc = st.columns(_SIR, vertical_alignment="center")
         for _i, _n in enumerate(_NASLOVI):
@@ -14074,11 +14152,15 @@ def cene_ui(uloga, ugradjeno=False):
                     with _c[4]:
                         _pg = cene_pregled(_sis, str(_r.get("grupa") or ""), _sales,
                                            _kupci_map)
+                        _pf_niz = (cene_profit_niz(
+                            _sales, _sis, [_x["mesec"] for _x in _pg["redovi"]],
+                            _pf_dod) if _pg else None)
                         with st.popover("📊", width=(560 if _pg else 330),
                                         help="Prodaja i ranije akcije — iz izveštaja prodaje"):
                             st.markdown(cene_pregled_html(
                                 _pg, _sis, str(_r.get("grupa") or ""),
-                                int(_r.get("redovna") or 0)), unsafe_allow_html=True)
+                                int(_r.get("redovna") or 0), _pf_niz, _pf_lbl),
+                                unsafe_allow_html=True)
                 with _c[4 + _poml]:
                     _od_v = st.date_input("od", value=_cene_d(_r.get("od"), _p1),
                                           format="DD.MM.YYYY",
