@@ -12316,6 +12316,149 @@ def knjizno_tabela(redovi, kol, kupac_sistem, marze=None, rucno=None,
     return _out
 
 
+KNJ_RED_CSS = """/* Knjižno: ista tabela kao u prikazu, samo se u dve kolone kuca */
+.knjh{background:linear-gradient(180deg,#7c3aed 0%,#5b21b6 100%);color:#fff;font-size:10.5px;
+      font-weight:800;text-transform:uppercase;letter-spacing:.7px;padding:10px 8px;
+      text-align:center;white-space:nowrap;line-height:1.15;}
+.knjh.l{text-align:left;}
+.knjc{font-size:13px;color:#1f2937;text-align:center;padding:5px 6px;line-height:1.25;}
+.knjc.sis{font-weight:800;color:#312e81;font-size:13.5px;text-align:left;background:#f7f4ff;
+          border-left:4px solid #7c3aed;padding-left:9px;}
+.knjc.grp{text-align:left;font-weight:600;color:#4b5563;}
+.knjc.red{font-variant-numeric:tabular-nums;color:#6b7280;}
+.knjc.akc{font-weight:800;font-variant-numeric:tabular-nums;color:#78350f;background:#fff6c2;
+          border-radius:6px;}
+.knjc.per{font-size:12px;color:#475569;white-space:nowrap;}
+.knjc.izn{font-variant-numeric:tabular-nums;text-align:right;color:#1f2937;}
+.knjc.uk{font-variant-numeric:tabular-nums;text-align:right;font-weight:800;color:#312e81;}
+.knjc .nap{display:block;font-size:10.5px;color:#9ca3af;font-style:italic;line-height:1.15;
+           margin-top:1px;white-space:normal;}
+.knjc .mod{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:999px;
+           font-size:9.5px;font-weight:800;background:#fff7ed;color:#9a3412;
+           border:1px solid #fed7aa;vertical-align:1px;}
+.knjc .mod.lag{background:#eef2ff;color:#3730a3;border-color:#c7d2fe;}
+.knj-zb{background:#f1f7f2;color:#14532d;font-weight:800;font-size:13px;padding:8px 10px;
+        border-top:2px solid #cfe8d6;text-align:right;font-variant-numeric:tabular-nums;}
+.knj-zb.l{text-align:left;}
+.knj-uks{background:#f3eeff;color:#312e81;font-weight:800;font-size:13.5px;padding:9px 10px;
+         border-top:2px solid #ddd6fe;text-align:right;font-variant-numeric:tabular-nums;}
+.knj-uks.l{text-align:left;letter-spacing:.4px;}
+div[class*="st-key-knjred_"]{border-top:1px solid #efeafb;}
+div[class*="st-key-knjred_"]:hover{background:#faf8ff;}
+div[class*="st-key-knjred_"] div[data-testid="stElementContainer"]{margin:0 !important;}
+div[class*="st-key-knjred_"] [data-testid="stTextInputRootElement"]{
+    border:1px solid #e5e7eb !important;background:#fffdf5 !important;border-radius:7px;
+    min-height:0 !important;}
+div[class*="st-key-knjred_"] [data-testid="stTextInputRootElement"]:focus-within{
+    border-color:#7c3aed !important;background:#fff !important;}
+div[class*="st-key-knjred_"] input{font-size:13px !important;text-align:right !important;
+    padding:5px 8px !important;color:#1f2937 !important;
+    font-variant-numeric:tabular-nums;}
+div[class*="st-key-knjred_"] input::placeholder{color:#c4c7cf !important;font-style:italic;}
+div[class*="st-key-knjredceka_"] [data-testid="stTextInputRootElement"]{
+    border-color:#fcd34d !important;background:#fffbeb !important;}
+"""
+
+
+def knjizno_red_ui(tab, po_kupcu, uk, mesec_key):
+    """Ista tabela kao u prikazu — samo što se Količina i Osnovica kucaju u ćeliji.
+    Vraća {kljuc: {"kom": tekst, "osn": tekst, ...}} — ono što je u poljima."""
+    _SIR = [1.35, 1.5, 0.75, 0.8, 0.5, 1.0, 1.1, 1.2, 1.0, 1.25]
+    _NAS = ["Kupac", "Artikal", "Redovna", "Akcijska", "Marža", "Period", "Količina",
+            "Osnovica", "PDV", "Knjižno ukupno"]
+    _MOD_ZN = {"rucno": ("ručno", "mod"), "lager": ("na lager", "mod lag")}
+    st.markdown("<style>" + KNJ_RED_CSS + "</style>", unsafe_allow_html=True)
+    _hc = st.columns(_SIR, vertical_alignment="center")
+    for _i, _n in enumerate(_NAS):
+        with _hc[_i]:
+            st.markdown('<div class="knjh' + (" l" if _i < 2 else "") + '">' + _n
+                        + '</div>', unsafe_allow_html=True)
+
+    def _zbir(_kupac):
+        _z = po_kupcu.get(_kupac) or {}
+        _zc = st.columns([5.9, 1.1, 1.2, 1.0, 1.25], vertical_alignment="center")
+        for _i, (_t, _cl) in enumerate([
+                (_h_escape(_kupac) + " — ukupno", "knj-zb l"),
+                (_knj_din(_z.get("kom", 0), 0), "knj-zb"),
+                (_knj_din(_z.get("osnovica", 0)), "knj-zb"),
+                (_knj_din(_z.get("pdv", 0)), "knj-zb"),
+                (_knj_din(_z.get("ukupno", 0)), "knj-zb")]):
+            with _zc[_i]:
+                st.markdown('<div class="' + _cl + '">' + _t + '</div>',
+                            unsafe_allow_html=True)
+
+    _unos, _pre = {}, None
+    for _t in (tab or []):
+        if _pre is not None and _t["kupac"] != _pre:
+            _zbir(_pre)
+        _pre = _t["kupac"]
+        _kl = _knj_norm(_t["kljuc"])
+        _pref = "knjredceka_" if _t.get("ceka") else "knjred_"
+        with st.container(key=_pref + _kl):
+            _c = st.columns(_SIR, vertical_alignment="center")
+            _mod = str(_t.get("mod") or "auto")
+            _zn = _MOD_ZN.get(_mod)
+            with _c[0]:
+                st.markdown('<div class="knjc sis">' + _h_escape(_t["kupac"])
+                            + (('<span class="' + _zn[1] + '">' + _zn[0] + '</span>')
+                               if _zn else "") + '</div>', unsafe_allow_html=True)
+            with _c[1]:
+                st.markdown('<div class="knjc grp">' + _h_escape(_t["grupa"])
+                            + (('<span class="nap">' + _h_escape(_t["napomena"])
+                                + '</span>') if _t.get("napomena") else "")
+                            + '</div>', unsafe_allow_html=True)
+            with _c[2]:
+                st.markdown('<div class="knjc red">' + _knj_din(_t["redovna"], 0)
+                            + '</div>', unsafe_allow_html=True)
+            with _c[3]:
+                st.markdown('<div class="knjc akc">' + _h_escape(_t["akcijska"] or "—")
+                            + '</div>', unsafe_allow_html=True)
+            with _c[4]:
+                st.markdown('<div class="knjc red">'
+                            + ((str(int(_t["marza"])) + "%") if _t.get("marza") else "—")
+                            + '</div>', unsafe_allow_html=True)
+            with _c[5]:
+                st.markdown('<div class="knjc per">'
+                            + _h_escape(_knj_period(_t.get("od"), _t.get("do")) or "—")
+                            + '</div>', unsafe_allow_html=True)
+            with _c[6]:
+                if _t.get("rucno_sis"):
+                    st.markdown('<div class="knjc red">—</div>', unsafe_allow_html=True)
+                    _kom_v = ""
+                else:
+                    _kom_v = st.text_input(
+                        "kol", value=("" if _t.get("kom") is None
+                                      else _knj_din(_t["kom"], 0)),
+                        key="knjk_" + _kl, label_visibility="collapsed",
+                        placeholder="upiši")
+            with _c[7]:
+                _osn_v = st.text_input(
+                    "osn", value=("" if (_t.get("ceka") and not float(_t["osnovica"] or 0))
+                                  else _knj_din(_t["osnovica"])),
+                    key="knjo_" + _kl, label_visibility="collapsed",
+                    placeholder="upiši iznos")
+            with _c[8]:
+                st.markdown('<div class="knjc izn">' + _knj_din(_t["pdv"]) + '</div>',
+                            unsafe_allow_html=True)
+            with _c[9]:
+                st.markdown('<div class="knjc uk">' + _knj_din(_t["ukupno"]) + '</div>',
+                            unsafe_allow_html=True)
+        _unos[_t["kljuc"]] = {"kom": _kom_v, "osn": _osn_v, "lager": bool(_t.get("rucno_sis")),
+                              "kupac": _t["kupac"], "kom_auto": _t.get("kom_auto"),
+                              "osn_auto": _t.get("osn_auto")}
+    if _pre is not None:
+        _zbir(_pre)
+    _uc = st.columns([5.9, 1.1, 1.2, 1.0, 1.25], vertical_alignment="center")
+    for _i, (_t2, _cl) in enumerate([("SVE UKUPNO", "knj-uks l"),
+                                     (_knj_din(uk.get("kom", 0), 0), "knj-uks"),
+                                     (_knj_din(uk.get("osnovica", 0)), "knj-uks"),
+                                     (_knj_din(uk.get("pdv", 0)), "knj-uks"),
+                                     (_knj_din(uk.get("ukupno", 0)), "knj-uks")]):
+        with _uc[_i]:
+            st.markdown('<div class="' + _cl + '">' + _t2 + '</div>', unsafe_allow_html=True)
+    return _unos
+
+
 def knjizno_ceka(tabela):
     """Redovi koji čekaju ručni unos (količinu ili iznos)."""
     return [_t for _t in (tabela or []) if _t.get("ceka")]
@@ -12895,99 +13038,50 @@ def _knjizno_blok(mesec_key, sel_lbl, podaci, redovi_svi, uloga, ro):
         if not _uredi:
             st.markdown(knjizno_html(_tab, _po_kupcu, _uk), unsafe_allow_html=True)
         else:
-            # ---- JEDNA tabela: i prikaz i unos (količina i iznos se kucaju ovde) ----
             if _ceka_lst:
                 st.warning("✍️ " + str(len(_ceka_lst)) + " red(ova) čeka količinu — upiši je "
-                           "u koloni <b>Količina</b>; dok je nema, taj iznos NIJE u zbiru.",
-                           icon="✍️")
-            st.caption("Količinu i iznos (osnovicu) kucaš direktno u tabeli — u svakom redu. "
-                       "Kolona „Način“ pokazuje da li sistem računa automatski, da li se "
-                       "količine upisuju ručno ili se knjižno izdaje na lager (tada se "
-                       "upisuje samo iznos). Posle izmene klikni „Sačuvaj“.")
-            _MOD_ZN = {"auto": "⚙️ auto", "rucno": "✍️ ručno", "lager": "🏬 na lager"}
-            _df = pd.DataFrame([{
-                "Kupac": _t["kupac"], "Artikal": _t["grupa"],
-                "Način": _MOD_ZN.get(str(_t.get("mod") or "auto"), "⚙️ auto"),
-                "Redovna": float(_t["redovna"] or 0),
-                "Akcijska": str(_t["akcijska"] or ""),
-                "Marža": (str(int(_t["marza"])) + "%") if _t.get("marza") else "",
-                "Period": _knj_period(_t.get("od"), _t.get("do")),
-                "Količina": (None if _t.get("kom") is None else int(_t["kom"])),
-                "Osnovica": round(float(_t["osnovica"] or 0), 2),
-                "PDV": round(float(_t["pdv"] or 0), 2),
-                "Knjižno ukupno": round(float(_t["ukupno"] or 0), 2),
-                "Napomena": str(_t.get("napomena") or ""),
-                "_k": _t["kljuc"], "_kupac": _t["kupac"],
-                "_lager": bool(_t.get("rucno_sis")),
-                "_ka": (-1 if _t.get("kom_auto") is None else int(_t["kom_auto"])),
-                "_oa": (-1.0 if _t.get("osn_auto") is None
-                        else round(float(_t["osn_auto"]), 2))} for _t in _tab])
-            _izm = st.data_editor(
-                _df, hide_index=True, use_container_width=True,
-                key="knj_tab_ed_" + mesec_key, num_rows="fixed",
-                height=min(60 + 36 * len(_tab), 620),
-                column_config={
-                    "Kupac": st.column_config.TextColumn(disabled=True, width="medium"),
-                    "Artikal": st.column_config.TextColumn(disabled=True, width="medium"),
-                    "Način": st.column_config.TextColumn(disabled=True, width="small",
-                                                         help="Menja se u „Način obračuna "
-                                                              "po sistemu“ iznad tabele."),
-                    "Redovna": st.column_config.NumberColumn(disabled=True, format="%.0f",
-                                                             width="small"),
-                    "Akcijska": st.column_config.TextColumn(disabled=True, width="small"),
-                    "Marža": st.column_config.TextColumn(disabled=True, width="small"),
-                    "Period": st.column_config.TextColumn(disabled=True, width="small"),
-                    "Količina": st.column_config.NumberColumn(
-                        min_value=0, step=1, format="%d",
-                        help="Upiši količinu — iznos se odmah preračuna. Prazno = nije "
-                             "upisano (red čeka unos)."),
-                    "Osnovica": st.column_config.NumberColumn(
-                        min_value=0.0, step=100.0, format="%.2f",
-                        help="Možeš da ispraviš iznos i tamo gde je izračunat sam; vrati "
-                             "izračunatu vrednost da bi se opet računao automatski."),
-                    "PDV": st.column_config.NumberColumn(disabled=True, format="%.2f"),
-                    "Knjižno ukupno": st.column_config.NumberColumn(disabled=True,
-                                                                     format="%.2f"),
-                    "Napomena": st.column_config.TextColumn(disabled=True, width="large"),
-                    "_k": None, "_kupac": None, "_lager": None, "_ka": None, "_oa": None})
-            _sv1, _sv2 = st.columns([1.4, 3])
-            with _sv1:
-                _sacuvaj_t = st.button("💾 Sačuvaj izmene u tabeli",
-                                       key="knj_tab_b_" + mesec_key, type="primary",
-                                       use_container_width=True)
-            with _sv2:
-                st.markdown('<div class="cene-note" style="margin-top:8px;">Zbir po kupcu: '
-                            + "  ·  ".join("<b>" + _h_escape(_k) + "</b> "
-                                           + _knj_din(_v["ukupno"])
-                                           for _k, _v in sorted(_po_kupcu.items()))
-                            + '</div>', unsafe_allow_html=True)
+                           "u koloni „Količina“; dok je nema, taj iznos NIJE u zbiru.")
+            st.caption("Količinu i iznos (osnovicu) kucaš direktno u tabeli, u redu tog "
+                       "artikla. Pored kupca stoji oznaka kad sistem nije na automatskom "
+                       "obračunu (ručno / na lager). Kad završiš, klikni „Sačuvaj izmene“ "
+                       "ispod tabele.")
+            with st.form("knj_tab_forma_" + mesec_key, border=False):
+                _unos_t = knjizno_red_ui(_tab, _po_kupcu, _uk, mesec_key)
+                _sv1, _sv2 = st.columns([1.5, 3])
+                with _sv1:
+                    _sacuvaj_t = st.form_submit_button("💾 Sačuvaj izmene", type="primary",
+                                                       use_container_width=True)
+                with _sv2:
+                    st.markdown('<div class="cene-note" style="margin-top:8px;">'
+                                'Prazna „Količina“ = red čeka unos. Iznos se računa sam; '
+                                'ako upišeš svoj, on važi dok ga ne vratiš na izračunatu '
+                                'vrednost.</div>', unsafe_allow_html=True)
             if _sacuvaj_t:
                 _nk, _no = dict(_kol_ruc), dict(_osn_ruc)
                 _nizn = dict(_rucni_izn)
-                for _i_r, _row in _izm.iterrows():
-                    _kk = str(_row["_k"])
-                    _kv, _ov = _row["Količina"], _row["Osnovica"]
-                    _ka = int(_row["_ka"]); _oa = float(_row["_oa"])
-                    _prazno_k = (_kv is None or str(_kv) == "nan")
-                    _prazno_o = (_ov is None or str(_ov) == "nan")
-                    if bool(_row["_lager"]):
-                        _kp = str(_row["_kupac"])
+                for _kk, _v in (_unos_t or {}).items():
+                    _kv = _knj_broj(_v.get("kom"))
+                    _ov = _knj_broj(_v.get("osn"))
+                    _ka = _v.get("kom_auto")
+                    _oa = _v.get("osn_auto")
+                    if _v.get("lager"):
+                        _kp = str(_v.get("kupac") or "")
                         _st0 = dict(_nizn.get(_kp) or {})
-                        if _prazno_o or float(_ov) <= 0:
+                        if _ov is None or float(_ov) <= 0:
                             _nizn.pop(_kp, None)
                         else:
                             _st0.update({"iznos": float(_ov), "sa_pdv": False})
                             _nizn[_kp] = _st0
                         continue
-                    if _prazno_k:
+                    if _kv is None:
                         _nk.pop(_kk, None)
-                    elif _ka < 0 or int(_kv) != _ka:
+                    elif _ka is None or int(_kv) != int(_ka):
                         _nk[_kk] = int(_kv)
                     else:
                         _nk.pop(_kk, None)
-                    if _prazno_o or float(_ov) <= 0:
+                    if _ov is None or float(_ov) <= 0:
                         _no.pop(_kk, None)
-                    elif _oa < 0 or abs(float(_ov) - _oa) > 0.5:
+                    elif _oa is None or abs(float(_ov) - float(_oa)) > 0.5:
                         _no[_kk] = float(_ov)
                     else:
                         _no.pop(_kk, None)
