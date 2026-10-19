@@ -29,6 +29,7 @@ DIREKTOR_PASSWORD_2 = _cfg("DIREKTOR_PASSWORD_2", "vukasin123")    # direktor 2
 DIREKTOR_PASSWORD_3 = _cfg("DIREKTOR_PASSWORD_3", "slobodan321")   # direktor 3
 KOMERCIJALA_PASSWORD = _cfg("KOMERCIJALA_PASSWORD", "komerc2026")     # komercijala 1
 KOMERCIJALA_PASSWORD_2 = _cfg("KOMERCIJALA_PASSWORD_2", "komerc2027")  # komercijala 2
+KNJIG_PASSWORD = _cfg("KNJIG_PASSWORD", "knjiga2026")   # knjigovodstvo (Borislava Protić)
 
 # --- korisnicka imena (prijava: ime + sifra) ---
 APP_KORISNIK          = _cfg("APP_KORISNIK", "analitika")
@@ -39,6 +40,7 @@ DIREKTOR_KORISNIK_2   = _cfg("DIREKTOR_KORISNIK_2", "vukasinkatic")
 DIREKTOR_KORISNIK_3   = _cfg("DIREKTOR_KORISNIK_3", "slobodangajic")
 KOMERCIJALA_KORISNIK  = _cfg("KOMERCIJALA_KORISNIK", "komercijala1")
 KOMERCIJALA_KORISNIK_2 = _cfg("KOMERCIJALA_KORISNIK_2", "komercijala2")
+KNJIG_KORISNIK        = _cfg("KNJIG_KORISNIK", "borislavaprotic")
 
 # --- imena koja se prikazuju i upisuju u dnevnik ---
 ADMIN_IME        = _cfg("ADMIN_IME", "Aleksandra Apatović")
@@ -48,6 +50,7 @@ KOMERCIJALA_IME_2 = _cfg("KOMERCIJALA_IME_2", "Komercijala 2")
 DIREKTOR_IME      = _cfg("DIREKTOR_IME", "Direktor")
 DIREKTOR_IME_2    = _cfg("DIREKTOR_IME_2", "Vukašin Katić")
 DIREKTOR_IME_3    = _cfg("DIREKTOR_IME_3", "Slobodan Gajić")
+KNJIG_IME         = _cfg("KNJIG_IME", "Borislava Protić")
 
 
 def _norm_korisnik(s):
@@ -1571,7 +1574,142 @@ def sb_syx_obrisi(mesec_key):
         except Exception:
             pass
 
-# ---- Izveštaj potraživanja (analitičar uploaduje Excel, administracija dopunjava u aplikaciji, direktor vidi + izvozi) ----
+# =====================================================================
+# KNJIGOVODSTVO — tri mesečna Excel fajla (prevoz, zarade, troškovi)
+# Knjigovođa ih ubacuje po mesecu i sama postavlja očekivani datum
+# (podrazumevano 15. u narednom mesecu). Analitika ih vidi i preuzima.
+# =====================================================================
+KNJIG_SQL_PORUKA = ("Tabela „knjigovodstvo“ još nije napravljena u bazi. U Supabase → "
+                    "SQL Editor pokreni:\n\n"
+                    "create table if not exists knjigovodstvo (\n"
+                    "  mesec text primary key,\n"
+                    "  podaci jsonb not null default '{}'::jsonb,\n"
+                    "  azurirano timestamptz default now()\n);")
+
+# (ključ, naziv na ekranu, kako se fajl zove)
+KNJIG_FAJLOVI = [("prevoz", "Prevoz", "prevoz vape"),
+                 ("zarade", "Zarade", "zarade_vape"),
+                 ("troskovi", "Troškovi", "Troškovi_vape")]
+
+
+def knjig_rok_podrazumevani(mesec_key):
+    """Podrazumevani rok: 15. u narednom mesecu (Septembar 2026 -> 15.10.2026)."""
+    try:
+        _g, _m = int(str(mesec_key)[:4]), int(str(mesec_key)[5:7])
+    except Exception:
+        return ""
+    _m += 1
+    if _m > 12:
+        _m = 1
+        _g += 1
+    return str(_g) + "-" + ("0" + str(_m))[-2:] + "-15"
+
+
+def knjig_fajl_ime(kljuc, mesec_key):
+    """Npr. prevoz + 2026-09 -> „prevoz vape 09-2026.xlsx“."""
+    _n = dict((_k, _f) for _k, _l, _f in KNJIG_FAJLOVI).get(kljuc, kljuc)
+    try:
+        return _n + " " + str(mesec_key)[5:7] + "-" + str(mesec_key)[:4] + ".xlsx"
+    except Exception:
+        return _n + ".xlsx"
+
+
+def sb_knjig_ok():
+    """Da li postoji tabela 'knjigovodstvo'."""
+    cli = _sb()
+    if cli is None:
+        return (False, "Supabase nije podešen.")
+    try:
+        cli.table("knjigovodstvo").select("mesec").limit(1).execute()
+        return (True, "")
+    except Exception as _e:
+        _m = str(_e)
+        if ("does not exist" in _m) or ("PGRST205" in _m) or ("42P01" in _m) or ("schema cache" in _m):
+            return (False, KNJIG_SQL_PORUKA)
+        return (False, "Baza javlja grešku: " + _m)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def sb_knjig_lista():
+    """Svi meseci: [{mesec, rok, rok_ko, rok_at, fajlovi:{kljuc:{filename,ko,at}}}] —
+    BEZ sadržaja fajlova (da se lista brzo učitava)."""
+    cli = _sb()
+    if cli is None:
+        return []
+    try:
+        res = cli.table("knjigovodstvo").select("mesec,podaci").order("mesec", desc=True).execute()
+    except Exception:
+        return []
+    _out = []
+    for _r in (res.data or []):
+        _p = dict(_r.get("podaci") or {})
+        _f = {}
+        for _k, _v in (_p.get("fajlovi") or {}).items():
+            _v = dict(_v or {})
+            _v.pop("b64", None)
+            _f[str(_k)] = _v
+        _out.append({"mesec": _r.get("mesec"), "rok": _p.get("rok") or "",
+                     "rok_ko": _p.get("rok_ko") or "", "rok_at": _p.get("rok_at") or "",
+                     "fajlovi": _f})
+    return _out
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def sb_knjig_get(mesec_key):
+    """Ceo zapis za mesec, sa sadržajem fajlova."""
+    cli = _sb()
+    if cli is None:
+        return {}
+    try:
+        res = cli.table("knjigovodstvo").select("podaci").eq("mesec", mesec_key).limit(1).execute()
+    except Exception:
+        return {}
+    return dict((res.data[0].get("podaci") or {})) if res.data else {}
+
+
+def sb_knjig_set(mesec_key, podaci):
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    cli.table("knjigovodstvo").upsert({"mesec": mesec_key, "podaci": podaci,
+                                       "azurirano": _now().isoformat()},
+                                      on_conflict="mesec").execute()
+    for fn in (sb_knjig_lista, sb_knjig_get):
+        try:
+            fn.clear()
+        except Exception:
+            pass
+
+
+def sb_knjig_fajl_set(mesec_key, kljuc, filename, b64, ko=""):
+    """Upiši jedan fajl i zapamti TAČNO kada je ubačen i ko ga je ubacio."""
+    _p = dict(sb_knjig_get(mesec_key) or {})
+    _f = dict(_p.get("fajlovi") or {})
+    _f[str(kljuc)] = {"filename": str(filename or ""), "b64": b64,
+                      "ko": str(ko or ""), "at": _now().isoformat()}
+    _p["fajlovi"] = _f
+    if not _p.get("rok"):
+        _p["rok"] = knjig_rok_podrazumevani(mesec_key)
+    sb_knjig_set(mesec_key, _p)
+
+
+def sb_knjig_fajl_obrisi(mesec_key, kljuc):
+    _p = dict(sb_knjig_get(mesec_key) or {})
+    _f = dict(_p.get("fajlovi") or {})
+    _f.pop(str(kljuc), None)
+    _p["fajlovi"] = _f
+    sb_knjig_set(mesec_key, _p)
+
+
+def sb_knjig_rok_set(mesec_key, rok, ko=""):
+    _p = dict(sb_knjig_get(mesec_key) or {})
+    _p["rok"] = str(rok or "")
+    _p["rok_ko"] = str(ko or "")
+    _p["rok_at"] = _now().isoformat()
+    sb_knjig_set(mesec_key, _p)
+
+
+# ---- Izveštaj potraživanja (analitičar uploaduje Excel, administracija dopunjava u aplikaciji, direktor vidi + izvezi) ----
 def _potraz_txt(v):
     if v is None:
         return ""
@@ -5542,6 +5680,8 @@ def check_password():
              "komercijala", KOMERCIJALA_IME, ""),
             (_aliasi(KOMERCIJALA_KORISNIK_2, KOMERCIJALA_IME_2), KOMERCIJALA_PASSWORD_2,
              "komercijala", KOMERCIJALA_IME_2, ""),
+            (_aliasi(KNJIG_KORISNIK, KNJIG_IME), KNJIG_PASSWORD,
+             "knjigovodstvo", KNJIG_IME, ""),
         ]
         _nadjen = None
         for _ku, _kp, _rola, _ime, _nalog in _nalozi:
@@ -5560,6 +5700,8 @@ def check_password():
                 st.session_state.komerc_user = _ime
             elif _rola == "direktori":
                 st.session_state.dir_user = _ime or "Direktor"
+            elif _rola == "knjigovodstvo":
+                st.session_state.knjig_user = _ime or "Knjigovodstvo"
             st.rerun()
         else:
             st.error("Pogrešno korisničko ime ili šifra")
@@ -11266,7 +11408,10 @@ div[class*="st-key-cenered"] [data-testid="stDateInput"] svg{width:14px;height:1
     font-variant-numeric:tabular-nums;margin-top:1px;}
 .cp-pf.neg{color:#b91c1c;}
 .cp-pf.nema{color:#cbd5e1;font-weight:500;}
+.cp-pf.prm{color:#4c1d95;}
 .cp-pfl{margin-top:8px;font-size:10.5px;color:#8a94a3;line-height:1.4;}
+.cp-nepot{margin-top:8px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;
+    padding:8px 11px;font-size:11.5px;color:#92400e;line-height:1.45;}
 .cp-leg{display:flex;gap:14px;margin:9px 0 0;font-size:11px;color:#4b5563;}
 .cp-leg i{display:inline-block;width:11px;height:11px;border-radius:3px;background:#c4b5fd;
           margin-right:5px;vertical-align:-1px;}
@@ -11742,19 +11887,25 @@ def cene_pregled(sistem, grupa, sales, kupci_map=None, koliko=6):
     if not _kupci:
         return None
     _n = len(_naz)
-    _kom = [0] * _n; _akc = [0] * _n; _red = [0] * _n
+    _kom = [0] * _n; _akc = [0] * _n; _red = [0] * _n; _prm = [0.0] * _n
     for _k in _kupci:
         for _naziv, _a in (_po_art.get(_k) or {}).items():
             if not _cene_art_u_grupu(_naziv, (_a or {}).get("grupa"), grupa):
                 continue
             _lk = (_a.get("kom") or []); _la = (_a.get("akc") or []); _lr = (_a.get("red") or [])
             for _i in range(_n):
+                _ka = 0
                 if _i < len(_lk):
-                    _kom[_i] += int(_lk[_i] or 0)
-                if _i < len(_la) and float(_la[_i] or 0) > 0:
-                    _akc[_i] = max(_akc[_i], int(round(float(_la[_i]))))
-                if _i < len(_lr) and float(_lr[_i] or 0) > 0:
-                    _red[_i] = max(_red[_i], int(round(float(_lr[_i]))))
+                    _ka = int(_lk[_i] or 0)
+                    _kom[_i] += _ka
+                _ca = float(_la[_i] or 0) if _i < len(_la) else 0.0
+                _cr = float(_lr[_i] or 0) if _i < len(_lr) else 0.0
+                # promet po ceni po kojoj se tog meseca prodavalo (akcijska ako je bilo akcije)
+                _prm[_i] += _ka * (_ca if _ca > 0 else _cr)
+                if _ca > 0:
+                    _akc[_i] = max(_akc[_i], int(round(_ca)))
+                if _cr > 0:
+                    _red[_i] = max(_red[_i], int(round(_cr)))
     if not any(_kom):
         return None
     _red_lst = []
@@ -11767,6 +11918,7 @@ def cene_pregled(sistem, grupa, sales, kupci_map=None, koliko=6):
             _st, _cena = "?", "?"
         _red_lst.append({"mesec": _cene_mk_od_labela(_naz[_i]) or _naz[_i],
                          "kom": int(_kom[_i]), "cena": _cena, "stanje": _st,
+                         "promet": float(_prm[_i] or 0.0),
                          "akcija": (_st == "akc")})
     if not _red_lst:
         return None
@@ -11862,6 +12014,11 @@ def cene_pregled_html(p, sistem, grupa, redovna=0, profit=None, profit_lbl=""):
                   '<span class="cp-bar" style="height:' + str(_vis) + '%"></span></div>')
     _h.append('</div><div class="cp-osa">')
     _pf = list(profit or [])
+    _ima_pf = any(_x is not None for _x in _pf)
+    if not _ima_pf:
+        # nema profitabilnosti u objavljenom izveštaju — pokaži bar promet te grupe
+        _pf = [(_r.get("promet") if _r.get("promet") else None) for _r in _red]
+        profit_lbl = "promet te grupe (količina × cena po kojoj se prodavalo)"
     for _i, _r in enumerate(_red):
         _pv = _pf[_i] if _i < len(_pf) else None
         _h.append('<div>' + _h_escape(_cene_mes_lbl(_r["mesec"]))
@@ -11870,14 +12027,17 @@ def cene_pregled_html(p, sistem, grupa, redovna=0, profit=None, profit_lbl=""):
                      if _r["stanje"] == "?" else "")
                   + '">'
                   + _h_escape(_r["cena"] or "—") + '</span>'
-                  + ('<span class="cp-pf' + (' neg' if (_pv is not None and _pv < 0) else '')
+                  + ('<span class="cp-pf'
+                     + ('' if _ima_pf else ' prm')
+                     + (' neg' if (_ima_pf and _pv is not None and _pv < 0) else '')
                      + '">' + _knj_din(_pv, 0) + '</span>'
                      if _pv is not None else '<span class="cp-pf nema">—</span>')
                   + '</div>')
     _h.append('</div>')
     if any(_x is not None for _x in _pf):
-        _h.append('<div class="cp-pfl">Treći red = <b>profit</b> tog meseca (ceo sistem, '
-                  'RSD): ' + _h_escape(profit_lbl or "profit − troškovi marketinga")
+        _h.append('<div class="cp-pfl">Treći red (RSD): '
+                  + ('<b>profit</b> tog meseca za ceo sistem — ' if _ima_pf else '')
+                  + _h_escape(profit_lbl or "profit − troškovi marketinga")
                   + '.</div>')
     _leg = ('<div class="cp-leg"><span><i class="a"></i>mesec sa akcijom</span>'
             '<span><i></i>redovna cena</span>')
@@ -11896,6 +12056,11 @@ def cene_pregled_html(p, sistem, grupa, redovna=0, profit=None, profit_lbl=""):
     else:
         _t = "U ovih " + str(len(_red)) + " meseci nije bilo akcije na ovoj grupi."
     _h.append('<div class="cp-zak">' + _t + '</div>')
+    if not _ima_pf:
+        _h.append('<div class="cp-nepot">⚠️ <b>Profitabilnost nije dostupna</b> — '
+                  'objavljen je izveštaj prodaje <b>bez troškova</b> (nepotpun '
+                  'izveštaj). Profit po mesecu pojaviće se čim se objavi izveštaj '
+                  'prodaje <b>sa troškovima</b>; do tada je u trećem redu promet.</div>')
     if p["korpa"] == "HQD 1000":
         _h.append('<div class="cp-fus">Novi ukusi (' + _h_escape(", ".join(CENE_HQD_NOVI_UKUSI))
                   + ') se iz izveštaja izdvajaju po nazivu artikla, pa stari i novi ukusi '
@@ -14103,8 +14268,10 @@ def cene_ui(uloga, ugradjeno=False):
             if _pf_dod:
                 _pf_lbl += " − " + " − ".join(dict(_tr_sve).get(_d, _d) for _d in _pf_dod)
         else:
-            st.caption("Profitabilnost u prozorčiću 📊 pojaviće se kad se izveštaj prodaje "
-                       "objavi novom verzijom modula (izvestaj_prodaje.py 3.5).")
+            st.caption("⚠️ Objavljen je izveštaj prodaje bez troškova (nepotpun), pa "
+                       "profitabilnost u prozorčiću 📊 nije dostupna — u trećem redu "
+                       "stoji promet po grupi. Profit i filter troškova pojaviće se čim "
+                       "se objavi izveštaj prodaje sa troškovima.")
     with st.form("cene_form_" + _mk, border=False):
         _hc = st.columns(_SIR, vertical_alignment="center")
         for _i, _n in enumerate(_NASLOVI):
@@ -17583,6 +17750,222 @@ def _direktor_blok_iz_prodaje(sistem, sales):
     return d
 
 
+def _knjig_meseci(koliko=15):
+    """Spisak meseci za izbor — od tekućeg unazad."""
+    _d = _now().date().replace(day=1)
+    _out = []
+    for _ in range(koliko):
+        _out.append(str(_d.year) + "-" + ("0" + str(_d.month))[-2:])
+        _d = (_d - datetime.timedelta(days=1)).replace(day=1)
+    return _out
+
+
+def _knjig_kasni(rok):
+    """Da li je rok prošao (za bojenje)."""
+    try:
+        return _cene_d(rok) < _now().date()
+    except Exception:
+        return False
+
+
+def prikazi_knjigovodstvo():
+    """Ekran knjigovođe: tri kocke za ubacivanje fajlova po mesecu + očekivani datum."""
+    _admin_css()
+    _ko = st.session_state.get("knjig_user") or KNJIG_IME
+    _h1, _h2 = st.columns([4, 1])
+    with _h1:
+        st.markdown('<div style="display:flex;align-items:center;gap:10px;margin:2px 0 14px;">'
+                    '<div style="width:34px;height:34px;border-radius:10px;'
+                    'background:linear-gradient(135deg,#a855f7,#ec4899);"></div>'
+                    '<div><div style="font-size:19px;font-weight:800;color:#1f2430;">'
+                    'Knjigovodstvo</div>'
+                    '<div style="font-size:12.5px;color:#8b8fa0;">' + _h_escape(_ko)
+                    + '</div></div></div>', unsafe_allow_html=True)
+    with _h2:
+        if st.button("Odjava", key="knjig_odjava", use_container_width=True):
+            for _k in ("authenticated", "role", "knjig_user"):
+                st.session_state.pop(_k, None)
+            st.rerun()
+
+    _ok, _por = sb_knjig_ok()
+    if not _ok:
+        st.error(_por)
+        return
+
+    _mes = _knjig_meseci()
+    _c1, _c2 = st.columns([1.2, 2.8])
+    with _c1:
+        _mk = st.selectbox("Mesec", _mes, index=(1 if len(_mes) > 1 else 0),
+                           format_func=mesec_label, key="knjig_mes")
+    _p = dict(sb_knjig_get(_mk) or {})
+    _fajlovi = dict(_p.get("fajlovi") or {})
+    _rok = _p.get("rok") or knjig_rok_podrazumevani(_mk)
+    with _c2:
+        st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+        st.markdown('<div style="font-size:13px;color:#6b7280;">Ubacuju se tri fajla za '
+                    '<b>' + _h_escape(mesec_label(_mk)) + '</b>. Aplikacija pamti tačno '
+                    'kada je koji ubačen.</div>', unsafe_allow_html=True)
+
+    # ---- očekivani datum ----
+    with st.container(border=True):
+        st.markdown('<div style="font-size:15px;font-weight:800;color:#312e81;'
+                    'margin-bottom:2px;">📅 Kada ću poslati izveštaj za '
+                    + _h_escape(mesec_label(_mk)) + '</div>', unsafe_allow_html=True)
+        st.caption("Podrazumevano je 15. u narednom mesecu. Ako znaš da će biti ranije ili "
+                   "kasnije, promeni datum — analitika to odmah vidi.")
+        _r1, _r2, _r3 = st.columns([1.2, 1.2, 2.6])
+        with _r1:
+            _nov = st.date_input("Očekivani datum", value=(_cene_d(_rok)
+                                                           or _now().date()),
+                                 format="DD.MM.YYYY", key="knjig_rok_" + _mk)
+        with _r2:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            if st.button("💾 Sačuvaj datum", key="knjig_rok_b_" + _mk,
+                         use_container_width=True, type="primary"):
+                try:
+                    sb_knjig_rok_set(_mk, _nov.strftime("%Y-%m-%d"), _ko)
+                    st.success("Sačuvano: " + _nov.strftime("%d.%m.%Y."))
+                    st.rerun()
+                except Exception as _e:
+                    st.error("Greška: " + str(_e))
+        with _r3:
+            st.markdown("<div style='height:30px;'></div>", unsafe_allow_html=True)
+            if _p.get("rok"):
+                st.caption("Trenutno upisano: **" + _rok_fmt(_p.get("rok")) + "**"
+                           + (("  ·  upisala " + _h_escape(_ko_kratko(_p.get("rok_ko")))
+                               + " " + _h_escape(_dt_kratko(_p.get("rok_at"))))
+                              if _p.get("rok_ko") else ""))
+            else:
+                st.caption("Još nije upisano — važi podrazumevani **"
+                           + _rok_fmt(_rok) + "**.")
+
+    # ---- tri kocke ----
+    st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+    _kol = st.columns(3)
+    for _i, (_kljuc, _naziv, _) in enumerate(KNJIG_FAJLOVI):
+        _rec = dict(_fajlovi.get(_kljuc) or {})
+        with _kol[_i]:
+            with st.container(border=True):
+                st.markdown('<div style="font-size:16px;font-weight:800;color:#312e81;">'
+                            + _h_escape(_naziv) + '</div>'
+                            '<div style="font-size:12px;color:#9aa0ad;margin-bottom:8px;">'
+                            + _h_escape(knjig_fajl_ime(_kljuc, _mk)) + '</div>',
+                            unsafe_allow_html=True)
+                if _rec.get("at"):
+                    st.markdown('<div style="background:#eafbf0;border:1px solid #bbf7d0;'
+                                'border-radius:10px;padding:8px 11px;font-size:12.5px;'
+                                'color:#14532d;">✅ <b>Ubačeno</b> '
+                                + _h_escape(_dt_kratko(_rec.get("at")))
+                                + '<div style="color:#3f6b4e;margin-top:2px;">'
+                                + _h_escape(_rec.get("filename") or "") + '</div></div>',
+                                unsafe_allow_html=True)
+                else:
+                    st.markdown('<div style="background:#fffbeb;border:1px solid #fde68a;'
+                                'border-radius:10px;padding:8px 11px;font-size:12.5px;'
+                                'color:#92400e;">⏳ Još nije ubačeno</div>',
+                                unsafe_allow_html=True)
+                _f = st.file_uploader("Excel (.xlsx)", type=["xlsx", "xls"],
+                                      key="knjig_up_" + _kljuc + "_" + _mk,
+                                      label_visibility="collapsed")
+                if st.button(("🔄 Zameni fajl" if _rec.get("at") else "📤 Ubaci fajl"),
+                             key="knjig_save_" + _kljuc + "_" + _mk,
+                             use_container_width=True, type="primary",
+                             disabled=(_f is None)):
+                    try:
+                        import base64 as _b64k
+                        sb_knjig_fajl_set(_mk, _kljuc, _f.name,
+                                          _b64k.b64encode(_f.getvalue()).decode("ascii"),
+                                          _ko)
+                        st.success("Ubačeno.")
+                        st.rerun()
+                    except Exception as _e:
+                        st.error("Greška: " + str(_e))
+                if _rec.get("b64") or _rec.get("at"):
+                    with st.popover("⋯", use_container_width=True):
+                        if st.button("🗑 Obriši ubačeni fajl",
+                                     key="knjig_del_" + _kljuc + "_" + _mk,
+                                     use_container_width=True):
+                            try:
+                                sb_knjig_fajl_obrisi(_mk, _kljuc)
+                                st.rerun()
+                            except Exception as _e:
+                                st.error("Greška: " + str(_e))
+
+    _n = sum(1 for _k, _, _ in KNJIG_FAJLOVI if (_fajlovi.get(_k) or {}).get("at"))
+    st.markdown('<div style="margin-top:10px;font-size:13px;color:'
+                + ("#166534" if _n == 3 else "#92400e") + ';">'
+                + ("✅ Sva tri fajla su ubačena za " + _h_escape(mesec_label(_mk)) + "."
+                   if _n == 3 else
+                   "Ubačeno " + str(_n) + " od 3 fajla za " + _h_escape(mesec_label(_mk))
+                   + ".") + '</div>', unsafe_allow_html=True)
+
+
+def knjig_analitika_blok():
+    """Knjigovodstveni fajlovi — ispod pregleda izveštaja kod analitike.
+    Ovo se NE prihvata i NE vraća — samo se vidi i preuzima."""
+    _ok, _por = sb_knjig_ok()
+    st.markdown("<div style='height:18px;border-top:2px solid #ede9fe;margin-top:18px;'>"
+                "</div>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size:15px;font-weight:700;color:#4c1d95;"
+                "margin:2px 0 4px;'>📚 Knjigovodstvo — prevoz, zarade i troškovi</div>",
+                unsafe_allow_html=True)
+    st.caption("Fajlovi koje ubacuje knjigovođa (" + _h_escape(KNJIG_IME) + "). "
+               "Ovo se ne prihvata i ne vraća — samo se vidi kada je stiglo i preuzima.")
+    if not _ok:
+        st.info(_por)
+        return
+    _lst = sb_knjig_lista()
+    if not _lst:
+        st.caption("Knjigovođa još nije ubacila nijedan fajl.")
+        return
+    import base64 as _b64a
+    for _r in _lst[:6]:
+        _mk = _r.get("mesec")
+        _f = dict(_r.get("fajlovi") or {})
+        _n = sum(1 for _k, _, _ in KNJIG_FAJLOVI if (_f.get(_k) or {}).get("at"))
+        _rok = _r.get("rok") or knjig_rok_podrazumevani(_mk)
+        with st.container(border=True):
+            _c1, _c2 = st.columns([2.2, 2.8])
+            with _c1:
+                st.markdown('<div style="font-size:15px;font-weight:800;color:#312e81;">'
+                            + _h_escape(mesec_label(_mk)) + '</div>'
+                            '<div style="font-size:12.5px;color:'
+                            + ("#166534" if _n == 3 else "#92400e") + ';margin-top:2px;">'
+                            + ("✅ sva tri fajla" if _n == 3
+                               else "⏳ " + str(_n) + " od 3 fajla")
+                            + '</div>', unsafe_allow_html=True)
+            with _c2:
+                st.markdown('<div style="font-size:12.5px;color:#475569;margin-top:4px;">'
+                            '📅 Najavila da šalje do <b>' + _rok_fmt(_rok) + '</b>'
+                            + ('  ·  <span style="color:#b45309;">rok je prošao</span>'
+                               if (_n < 3 and _knjig_kasni(_rok)) else '')
+                            + '</div>', unsafe_allow_html=True)
+            _kc = st.columns(3)
+            for _i, (_kljuc, _naziv, _) in enumerate(KNJIG_FAJLOVI):
+                _rec = dict(_f.get(_kljuc) or {})
+                with _kc[_i]:
+                    st.markdown('<div style="font-size:13px;font-weight:700;'
+                                'color:#4b5563;">' + _h_escape(_naziv) + '</div>'
+                                '<div style="font-size:11.5px;color:#9aa0ad;">'
+                                + (("ubačeno " + _h_escape(_dt_kratko(_rec.get("at"))))
+                                   if _rec.get("at") else "nije ubačeno")
+                                + '</div>', unsafe_allow_html=True)
+                    if _rec.get("at"):
+                        _doc = (sb_knjig_get(_mk).get("fajlovi") or {}).get(_kljuc) or {}
+                        if _doc.get("b64"):
+                            try:
+                                st.download_button(
+                                    "⬇️ Preuzmi", _b64a.b64decode(_doc["b64"]),
+                                    file_name=(_doc.get("filename")
+                                               or knjig_fajl_ime(_kljuc, _mk)),
+                                    mime=("application/vnd.openxmlformats-officedocument"
+                                          ".spreadsheetml.sheet"),
+                                    key="knjig_dl_" + _kljuc + "_" + str(_mk),
+                                    use_container_width=True)
+                            except Exception:
+                                st.caption("Greška pri učitavanju.")
+
+
 def prikazi_komercijalu():
     """Pregled za komercijalu (Komercijala 1 / Komercijala 2):
     1) Moja ruta (dan)  2) Objekat — popis i porudžbina  3) Kontrola od administracije."""
@@ -20520,6 +20903,10 @@ if st.session_state.get("role") == "komercijala":
     prikazi_komercijalu()
     st.stop()
 
+if st.session_state.get("role") == "knjigovodstvo":
+    prikazi_knjigovodstvo()
+    st.stop()
+
 # --- od ovde nadole ide ANALITIČKI deo (pun pristup) ---
 
 WMA_WEIGHTS = np.array([0.03, 0.07, 0.12, 0.28, 0.50])
@@ -22053,6 +22440,7 @@ with tab_zav:
 
 with tab_prim:
     prikazi_primljene()
+    knjig_analitika_blok()
 
 with tab_obj:
     with st.container(border=True):
