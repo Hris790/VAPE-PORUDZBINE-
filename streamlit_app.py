@@ -17909,17 +17909,27 @@ def knjig_analitika_blok():
     st.markdown("<div style='font-size:15px;font-weight:700;color:#4c1d95;"
                 "margin:2px 0 4px;'>📚 Knjigovodstvo — prevoz, zarade i troškovi</div>",
                 unsafe_allow_html=True)
-    st.caption("Fajlovi koje ubacuje knjigovođa (" + _h_escape(KNJIG_IME) + "). "
-               "Ovo se ne prihvata i ne vraća — samo se vidi kada je stiglo i preuzima.")
+    _mes_c = str(st.session_state.get("_prim_knj_mes") or "")
+    st.caption("Fajlovi koje ubacuje knjigovođa (" + _h_escape(KNJIG_IME) + ") — "
+               + (("za <b>" + _h_escape(mesec_label(_mes_c)) + "</b>")
+                  if _mes_c else "svi meseci")
+               + ". Ovo se ne prihvata i ne vraća — samo se vidi kada je stiglo i "
+                 "preuzima.", unsafe_allow_html=True)
     if not _ok:
         st.info(_por)
         return
     _lst = sb_knjig_lista()
+    _mes_f = str(st.session_state.get("_prim_knj_mes") or "")
+    if _mes_f:
+        # vezano za mesec izabranog perioda — izveštaj stoji samo u svom mesecu
+        _lst = [_r for _r in _lst if str(_r.get("mesec")) == _mes_f]
     if not _lst:
-        st.caption("Knjigovođa još nije ubacila nijedan fajl.")
+        st.caption(("Za " + mesec_label(_mes_f) + " knjigovođa još nije ubacila nijedan "
+                    "fajl.") if _mes_f else
+                   "Knjigovođa još nije ubacila nijedan fajl.")
         return
     import base64 as _b64a
-    for _r in _lst[:6]:
+    for _r in (_lst if _mes_f else _lst[:6]):
         _mk = _r.get("mesec")
         _f = dict(_r.get("fajlovi") or {})
         _n = sum(1 for _k, _, _ in KNJIG_FAJLOVI if (_f.get(_k) or {}).get("at"))
@@ -22236,6 +22246,7 @@ div[data-testid="stVerticalBlockBorderWrapper"] {
 
 def prikazi_primljene():
     """Izveštaji koje je administracija prosledila — pregled, prihvatanje i vraćanje."""
+    st.session_state["_prim_knj_mes"] = ""      # mesec za blok knjigovodstva ispod
     st.markdown("<div style='font-size:15px;font-weight:700;color:#4c1d95;"
                 "margin:2px 0 8px;'>📥 Izveštaji prosleđeni na pregled</div>",
                 unsafe_allow_html=True)
@@ -22266,6 +22277,10 @@ def prikazi_primljene():
                                       "⛔ Vraćeno"], index=0, horizontal=True,
                           key="prim_stat")
 
+    # knjigovodstveni fajlovi ispod se vezuju za MESEC izabranog perioda
+    st.session_state["_prim_knj_mes"] = ("" if _sel_p == "Svi periodi"
+                                         else (_prikup_mes(_per[_lbl.index(_sel_p)])
+                                               if _sel_p in _lbl else ""))
     _u_per = [r for r in _sve
               if _sel_p == "Svi periodi" or _prikup_period_lbl(r["mesec"]) == _sel_p]
     _ceka = [r for r in _u_per if not (r.get("odluka") or {}).get("status")]
