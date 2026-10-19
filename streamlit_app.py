@@ -252,6 +252,11 @@ def sb_objavi_izvestaj_prodaje(html, xlsx_b64, mesec_label, prodaja_json=""):
         sb_ucitaj_izvestaj_prodaje.clear()
     except Exception:
         pass
+    # polumesečni izveštaj za te mesece više nije potreban — sam se briše
+    try:
+        sb_polu_ocisti(prodaja_json or "")
+    except Exception:
+        pass
 
 
 @st.cache_data(ttl=60)
@@ -877,11 +882,13 @@ def poziv_aktivan():
 
 def poziv_start(mesec_key, sistem, idk, tel, ko=""):
     """Klik na slušalicu: pokreni štopericu. Poziv se NE beleži odmah —
-    beleži se na „Završi poziv“ i samo ako je trajao duže od POZIV_MIN_SEK."""
+    beleži se sam, na prvi sledeći klik, i samo ako je trajao duže od POZIV_MIN_SEK."""
     poziv_zavrsi()                         # ako je neki ostao otvoren — zatvori ga
     st.session_state["poz_akt"] = {"mesec": str(mesec_key), "sistem": str(sistem),
                                    "idk": int(idk), "ko": ko or "", "tel": str(tel or ""),
                                    "t0": _now().isoformat()}
+    # ovaj i sledeći iscrtavanje ekrana NE zatvaraju poziv (tek sledeći klik)
+    st.session_state["poz_nov"] = True
     st.session_state.pop("poz_rez", None)
 
 
@@ -916,8 +923,34 @@ def poziv_zavrsi(odustani=False):
     return _rez
 
 
+def poziv_auto_zatvori():
+    """Poziv se SAM zatvara i beleži — bez klika na „završi“.
+
+    Kad se klikne na slušalicu, otvori se pozivanje i krene štoperica. Ona kuca
+    u pregledaču i ne zahteva ništa od administracije. Čim se posle razgovora
+    vrati u aplikaciju i klikne bilo šta (sledeći objekat, sačuvaj status…),
+    ovo izmeri trajanje i upiše poziv u dnevnik."""
+    if not poziv_aktivan():
+        return None
+    if st.session_state.pop("poz_nov", None):
+        return None                        # ovo je iscrtavanje odmah posle klika
+    _r = poziv_zavrsi()
+    try:
+        if isinstance(_r, dict):
+            _tt = _trajanje_txt(_r.get("trajanje"))
+            if _r.get("upisan"):
+                st.toast("📞 Poziv je zabeležen"
+                         + (" · trajao je " + _tt if _tt else ""), icon="✅")
+            elif _tt:
+                st.toast("📞 Poziv je trajao " + _tt + " — kraće od "
+                         + str(POZIV_MIN_SEK) + " s, nije zabeležen")
+    except Exception:
+        pass
+    return _r
+
+
 def poziv_strip(mesec_key, sistem, idk, naziv=""):
-    """Traka poziva u toku za OVAJ objekat: štoperica + „Završi poziv" / „Odustani".
+    """Traka poziva u toku za OVAJ objekat: štoperica (meri sama) + „Poništi poziv".
     Ako je u toku poziv za drugi objekat — tiho se zatvori (izmeri i upiše).
     Vrati True ako je poziv za ovaj objekat u toku."""
     _a = poziv_aktivan()
@@ -939,19 +972,19 @@ def poziv_strip(mesec_key, sistem, idk, naziv=""):
             'Math.floor(Date.now()/1000)-t0);var m=Math.floor(d/60),s=d%60;'
             'document.getElementById("poz_sw").textContent=("0"+m).slice(-2)+":"+("0"+s).slice(-2);}'
             '_tick();setInterval(_tick,1000);</script>', height=28)
-        _z1, _z2, _z3 = st.columns([1.7, 1.3, 2.4])
-        with _z1:
-            if st.button("✅ Završi poziv i zabeleži", key="pozend_" + _kp,
-                         type="primary", use_container_width=True):
-                poziv_zavrsi()
-                st.rerun()
+        _z2, _z3 = st.columns([1.3, 4.1])
         with _z2:
-            if st.button("✖ Odustani", key="pozcan_" + _kp, use_container_width=True):
+            if st.button("✖ Poništi poziv", key="pozcan_" + _kp,
+                         use_container_width=True,
+                         help="Samo ako je broj pogrešno okrenut — poziv se tada ne "
+                              "beleži."):
                 poziv_zavrsi(odustani=True)
                 st.rerun()
         with _z3:
-            st.caption("Poziv kraći od " + str(POZIV_MIN_SEK) + " s se ne beleži "
-                       "(pogrešno okrenut broj, odmah prekinuto).")
+            st.caption("Razgovaraj mirno — štoperica radi sama. Poziv se zabeleži čim se "
+                       "vratiš u aplikaciju i klikneš bilo šta (sledeći objekat, Sačuvaj "
+                       "status…). Pozivi kraći od " + str(POZIV_MIN_SEK) + " s se ne "
+                       "beleže.")
         return True
     _r = st.session_state.get("poz_rez")
     if isinstance(_r, dict) and int(_r.get("idk") or -1) == int(idk):
@@ -1707,6 +1740,222 @@ def sb_knjig_rok_set(mesec_key, rok, ko=""):
     _p["rok_ko"] = str(ko or "")
     _p["rok_at"] = _now().isoformat()
     sb_knjig_set(mesec_key, _p)
+
+
+# =====================================================================
+# POLUMESEČNI IZVEŠTAJ PRODAJE
+# Analitičar ubaci tabelu sa prodajom za pola meseca — samo za sisteme koji
+# su do tada poslali podatke. Direktori to vide kao posebnu karticu unutar
+# „Izveštaj prodaje". Čim se objavi pun izveštaj prodaje koji pokriva taj
+# mesec, polumesečni se SAM briše (više nije potreban).
+# =====================================================================
+POLU_SQL_PORUKA = ("Tabela „polumesecni“ još nije napravljena u bazi. U Supabase → "
+                   "SQL Editor pokreni:\n\n"
+                   "create table if not exists polumesecni (\n"
+                   "  period text primary key,\n"
+                   "  podaci jsonb not null default '{}'::jsonb,\n"
+                   "  azurirano timestamptz default now()\n);")
+
+POLU_POLA = {"P1": "prva polovina (01–15)", "P2": "druga polovina (16–kraj)"}
+
+
+def polu_period_lbl(period):
+    """'2026-10:P1' -> 'Oktobar 2026 · prva polovina (01–15)'."""
+    _mk = str(period or "").split(":")[0]
+    _p = str(period or "").split(":")[-1]
+    return mesec_label(_mk) + " · " + POLU_POLA.get(_p, _p)
+
+
+def polu_do_datuma(mesec_key, pola):
+    """Podrazumevani datum zaključno sa: 15. ili poslednji dan meseca."""
+    try:
+        _g, _m = int(str(mesec_key)[:4]), int(str(mesec_key)[5:7])
+    except Exception:
+        return ""
+    if str(pola) == "P1":
+        return str(_g) + "-" + ("0" + str(_m))[-2:] + "-15"
+    import calendar as _cal
+    return (str(_g) + "-" + ("0" + str(_m))[-2:] + "-"
+            + str(_cal.monthrange(_g, _m)[1]))
+
+
+def polu_redovi_iz_tabele(iz_tabele):
+    """Iz pročitane tabele napravi redove po sistemu (grupe + ukupno)."""
+    _g = dict((iz_tabele or {}).get("grupe") or {})
+    _novi = dict((iz_tabele or {}).get("hqd_novi") or {})
+    _sis = sorted({_k[0] for _k in _g})
+    _out = []
+    for _s in _sis:
+        _hqd = sum(_v for (_s2, _gr), _v in _g.items()
+                   if _s2 == _s and cene_grupa_korpa(_cene_korpa_artikla(_gr)
+                                                     or _gr) == "HQD 1000")
+        _nerd = sum(_v for (_s2, _gr), _v in _g.items()
+                    if _s2 == _s and (_cene_korpa_artikla(_gr) or _gr) == "NERD 2000")
+        _syx = sum(_v for (_s2, _gr), _v in _g.items()
+                   if _s2 == _s and (_cene_korpa_artikla(_gr) or _gr) == "SYX")
+        _nov = int(_novi.get(_s, 0) or 0)
+        _out.append({"sistem": _s, "hqd_novi": _nov,
+                     "hqd_stari": max(_hqd - _nov, 0), "nerd": _nerd, "syx": _syx,
+                     "ukupno": _hqd + _nerd + _syx})
+    return _out
+
+
+def sb_polu_ok():
+    cli = _sb()
+    if cli is None:
+        return (False, "Supabase nije podešen.")
+    try:
+        cli.table("polumesecni").select("period").limit(1).execute()
+        return (True, "")
+    except Exception as _e:
+        _m = str(_e)
+        if ("does not exist" in _m) or ("PGRST205" in _m) or ("42P01" in _m) or ("schema cache" in _m):
+            return (False, POLU_SQL_PORUKA)
+        return (False, "Baza javlja grešku: " + _m)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def sb_polu_lista():
+    """Svi polumesečni izveštaji — bez Excel priloga (lista se brzo učitava)."""
+    cli = _sb()
+    if cli is None:
+        return []
+    try:
+        res = cli.table("polumesecni").select("period,podaci").order("period", desc=True).execute()
+    except Exception:
+        return []
+    _out = []
+    for _r in (res.data or []):
+        _p = dict(_r.get("podaci") or {})
+        _p.pop("xlsx_b64", None)
+        _p["period"] = _r.get("period")
+        _out.append(_p)
+    return _out
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def sb_polu_get(period):
+    cli = _sb()
+    if cli is None:
+        return {}
+    try:
+        res = cli.table("polumesecni").select("podaci").eq("period", period).limit(1).execute()
+    except Exception:
+        return {}
+    return dict((res.data[0].get("podaci") or {})) if res.data else {}
+
+
+def sb_polu_set(period, podaci):
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    cli.table("polumesecni").upsert({"period": period, "podaci": podaci,
+                                     "azurirano": _now().isoformat()},
+                                    on_conflict="period").execute()
+    for fn in (sb_polu_lista, sb_polu_get):
+        try:
+            fn.clear()
+        except Exception:
+            pass
+
+
+def sb_polu_obrisi(period):
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen.")
+    cli.table("polumesecni").delete().eq("period", period).execute()
+    for fn in (sb_polu_lista, sb_polu_get):
+        try:
+            fn.clear()
+        except Exception:
+            pass
+
+
+def polu_direktor_blok(lista=None):
+    """Kartica za direktore: koji su sistemi poslali podatke za pola meseca."""
+    _lst = lista if lista is not None else sb_polu_lista()
+    if not _lst:
+        st.info("Trenutno nema polumesečnog izveštaja.")
+        return
+    st.caption("Prodaja za deo meseca koji je u toku — <b>samo za sisteme koji su do "
+               "tada poslali podatke</b>. Ova kartica nestaje čim se objavi pun izveštaj "
+               "prodaje koji pokriva taj mesec.", unsafe_allow_html=True)
+    for _r in _lst:
+        _red = list(_r.get("redovi") or [])
+        with st.container(border=True):
+            _c1, _c2 = st.columns([2.4, 2.6])
+            with _c1:
+                st.markdown('<div style="font-size:16px;font-weight:800;color:#312e81;">'
+                            + _h_escape(polu_period_lbl(_r.get("period"))) + '</div>'
+                            '<div style="font-size:12.5px;color:#6b7280;margin-top:2px;">'
+                            'prodaja zaključno sa <b>' + _rok_fmt(_r.get("do_datuma"))
+                            + '</b></div>', unsafe_allow_html=True)
+            with _c2:
+                st.markdown('<div style="font-size:12.5px;color:#475569;margin-top:6px;">'
+                            'Poslalo <b>' + str(len(_red)) + '</b> sistema  ·  ukupno <b>'
+                            + _knj_din(sum(int(_x.get("ukupno") or 0) for _x in _red), 0)
+                            + '</b> kom  ·  objavljeno '
+                            + _h_escape(_dt_kratko(_r.get("at"))) + '</div>',
+                            unsafe_allow_html=True)
+            if _r.get("napomena"):
+                st.markdown('<div style="background:#fffbeb;border:1px solid #fde68a;'
+                            'border-radius:10px;padding:8px 12px;font-size:12.5px;'
+                            'color:#92400e;margin:4px 0 8px;">📝 '
+                            + _h_escape(_r.get("napomena")) + '</div>',
+                            unsafe_allow_html=True)
+            if _red:
+                _df = pd.DataFrame([{"Sistem": _x.get("sistem"),
+                                     "HQD stari": int(_x.get("hqd_stari") or 0),
+                                     "HQD novi": int(_x.get("hqd_novi") or 0),
+                                     "NERD 2000": int(_x.get("nerd") or 0),
+                                     "SYX": int(_x.get("syx") or 0),
+                                     "Ukupno": int(_x.get("ukupno") or 0)}
+                                    for _x in _red])
+                st.dataframe(_df, hide_index=True, use_container_width=True)
+            _doc = sb_polu_get(_r.get("period")) or {}
+            if _doc.get("xlsx_b64"):
+                try:
+                    import base64 as _b64q
+                    st.download_button("⬇️ Preuzmi tabelu",
+                                       _b64q.b64decode(_doc["xlsx_b64"]),
+                                       file_name=(_doc.get("filename")
+                                                  or "polumesecni.xlsx"),
+                                       mime=("application/vnd.openxmlformats-officedocument"
+                                             ".spreadsheetml.sheet"),
+                                       key="polu_dl_" + str(_r.get("period")))
+                except Exception:
+                    pass
+
+
+def polu_meseci_iz_izvestaja(prodaja_json):
+    """Koje mesece pokriva objavljeni izveštaj prodaje -> ['2026-09', ...]."""
+    import json as _json
+    try:
+        _d = _json.loads(prodaja_json or "{}")
+    except Exception:
+        return []
+    _out = []
+    for _l in (_d.get("nazivi") or []):
+        _mk = _cene_mk_od_labela(_l)
+        if _mk:
+            _out.append(_mk)
+    return _out
+
+
+def sb_polu_ocisti(prodaja_json):
+    """Obriši polumesečne izveštaje za mesece koje novi izveštaj prodaje pokriva."""
+    _mes = set(polu_meseci_iz_izvestaja(prodaja_json))
+    if not _mes:
+        return []
+    _obr = []
+    try:
+        for _r in sb_polu_lista():
+            if str(_r.get("mesec") or "") in _mes:
+                sb_polu_obrisi(_r.get("period"))
+                _obr.append(_r.get("period"))
+    except Exception:
+        pass
+    return _obr
 
 
 # ---- Izveštaj potraživanja (analitičar uploaduje Excel, administracija dopunjava u aplikaciji, direktor vidi + izvezi) ----
@@ -2488,8 +2737,8 @@ def knez_admin_ui():
                 pass
 
     def _knez_poziv(_idk, _tel):
-        """Klik na slušalicu = pokreni pozivanje i štopericu. Poziv se beleži na
-        „Završi poziv“ i samo ako je trajao duže od 5 s."""
+        """Klik na slušalicu = pokreni pozivanje i štopericu. Poziv se sam zabeleži
+        na prvi sledeći klik u aplikaciji, i samo ako je trajao duže od 5 s."""
         poziv_start(mesec_key, KNEZ_SIS, int(_idk), _tel,
                     st.session_state.get("admin_user", "Administracija"))
         st.session_state["_knez_dial_" + str(_idk)] = _tel
@@ -2588,9 +2837,10 @@ def knez_admin_ui():
                               key="knez_call_" + str(mesec_key) + "_" + str(_idk),
                               use_container_width=True, disabled=(not _tel_c),
                               on_click=_knez_poziv, args=(_idk, _tel_c),
-                              help="Klik pokreće poziv i štopericu. Kad završiš razgovor, "
-                                   "klikni „Završi poziv i zabeleži“ — upisuje se vreme i "
-                                   "trajanje. Pozivi kraći od 5 s se ne beleže.")
+                              help="Klik otvara pozivanje i pokreće štopericu. Razgovor "
+                                   "ne moraš nigde da zatvaraš — poziv se sam zabeleži "
+                                   "(vreme i trajanje) čim se vratiš u aplikaciju i "
+                                   "klikneš bilo šta. Pozivi kraći od 5 s se ne beleže.")
                 with _b2:
                     st.button("✉️ Pošalji mejl",
                               key="knez_send1_" + str(mesec_key) + "_" + str(_idk),
@@ -11944,11 +12194,60 @@ def cene_profit_troskovi(sales):
     return [_t for _t in _l if _t[0] != "mkt"]
 
 
-def cene_profit_niz(sales, sistem, mes_keys, dodatni=None):
-    """Profit tog sistema za zadate mesece: profit − marketing − izabrani troškovi.
+def cene_grupa_udeo(sales, sistem, grupa, kupci_map=None):
+    """Koliko ta grupa „nosi" u sistemu, po mesecima.
+
+    Izveštaj prodaje daje profit i troškove <b>po sistemu</b>, a u kartici cena
+    gleda se jedna grupa. Zato se:
+      • bruto profit deli po <b>učešću grupe u prometu</b> tog meseca;
+      • troškovi se dele po <b>broju različitih artikala</b> koje u toj grupi
+        prodajemo tom sistemu (trošak marketinga, vozila, plata… ne zavisi od
+        toga koliko je grupa skupa, nego koliko artikala se vodi).
+
+    Vraća {mesec_key: {"pr": udeo u prometu, "ar": udeo u broju artikala}}.
+    """
+    _naz = list((sales or {}).get("nazivi") or [])
+    _po_art = ((sales or {}).get("po_artiklu") or {})
+    if not _naz or not _po_art:
+        return {}
+    _veza = knjizno_kupac_sistem(sorted(((sales or {}).get("po_sistemu") or _po_art).keys()),
+                                 [sistem], kupci_map)
+    _kupci = [_k for _k, _s in (_veza or {}).items() if _s == sistem]
+    if not _kupci:
+        return {}
+    _n = len(_naz)
+    _ps = [0.0] * _n; _pg = [0.0] * _n          # promet sistema / te grupe
+    _as = [0] * _n; _ag = [0] * _n              # broj različitih artikala
+    for _k in _kupci:
+        for _naziv, _a in (_po_art.get(_k) or {}).items():
+            _u = _cene_art_u_grupu(_naziv, (_a or {}).get("grupa"), grupa)
+            _lk = (_a.get("kom") or []); _la = (_a.get("akc") or []); _lr = (_a.get("red") or [])
+            for _i in range(_n):
+                _ka = int(_lk[_i] or 0) if _i < len(_lk) else 0
+                if _ka <= 0:
+                    continue
+                _ca = float(_la[_i] or 0) if _i < len(_la) else 0.0
+                _cr = float(_lr[_i] or 0) if _i < len(_lr) else 0.0
+                _v = _ka * (_ca if _ca > 0 else _cr)
+                _ps[_i] += _v; _as[_i] += 1
+                if _u:
+                    _pg[_i] += _v; _ag[_i] += 1
+    _out = {}
+    for _i in range(_n):
+        _mk = _cene_mk_od_labela(_naz[_i]) or _naz[_i]
+        _out[str(_mk)] = {"pr": ((_pg[_i] / _ps[_i]) if _ps[_i] > 0 else None),
+                          "ar": ((float(_ag[_i]) / _as[_i]) if _as[_i] > 0 else None),
+                          "n_art": _ag[_i], "n_art_sis": _as[_i]}
+    return _out
+
+
+def cene_profit_niz(sales, sistem, mes_keys, dodatni=None, grupa=None, kupci_map=None):
+    """Profit za zadate mesece: profit − marketing − izabrani troškovi.
 
     Vraća listu istih dužina kao `mes_keys` (None gde nema podatka). Marketing se
     uvek oduzima; `dodatni` su id-evi ostalih troškova koje je korisnik štiklirao.
+    Ako se zada `grupa`, račun se svodi na tu grupu (vidi `cene_grupa_udeo`):
+    bruto profit po učešću u prometu, troškovi po broju različitih artikala.
     """
     _p = ((sales or {}).get("profit") or {})
     _naz = list(_p.get("nazivi") or [])
@@ -11960,20 +12259,28 @@ def cene_profit_niz(sales, sistem, mes_keys, dodatni=None):
         _mk = _cene_mk_od_labela(_l) or _l
         _idx[str(_mk)] = _i
     _dod = [str(_d) for _d in (dodatni or [])]
+    _ud = cene_grupa_udeo(sales, sistem, grupa, kupci_map) if grupa else {}
     _out = []
     for _mk in (mes_keys or []):
         _i = _idx.get(str(_mk))
         if _i is None:
             _out.append(None)
             continue
+        _upr = _uar = 1.0
+        if grupa:
+            _u = _ud.get(str(_mk)) or {}
+            _upr, _uar = _u.get("pr"), _u.get("ar")
+            if _upr is None or _uar is None:
+                _out.append(None)
+                continue
         try:
-            _v = float((_sis.get("profit") or [])[_i] or 0)
-            _v -= float((_sis.get("mkt") or [])[_i] or 0)
+            _v = float((_sis.get("profit") or [])[_i] or 0) * float(_upr)
+            _t = float((_sis.get("mkt") or [])[_i] or 0)
             for _d in _dod:
                 _niz = _sis.get(_d) or []
                 if _i < len(_niz):
-                    _v -= float(_niz[_i] or 0)
-            _out.append(_v)
+                    _t += float(_niz[_i] or 0)
+            _out.append(_v - _t * float(_uar))
         except Exception:
             _out.append(None)
     return _out
@@ -12035,10 +12342,15 @@ def cene_pregled_html(p, sistem, grupa, redovna=0, profit=None, profit_lbl=""):
                   + '</div>')
     _h.append('</div>')
     if any(_x is not None for _x in _pf):
-        _h.append('<div class="cp-pfl">Treći red (RSD): '
-                  + ('<b>profit</b> tog meseca za ceo sistem — ' if _ima_pf else '')
-                  + _h_escape(profit_lbl or "profit − troškovi marketinga")
-                  + '.</div>')
+        if _ima_pf:
+            _h.append('<div class="cp-pfl">Treći red (RSD): <b>profit te grupe</b> tog '
+                      'meseca — bruto profit sistema podeljen po <b>učešću grupe u '
+                      'prometu</b>, minus ' + _h_escape(profit_lbl or "troškovi marketinga")
+                      + ' podeljeni po <b>broju različitih artikala</b> koje toj grupi '
+                      'prodajemo.</div>')
+        else:
+            _h.append('<div class="cp-pfl">Treći red (RSD): '
+                      + _h_escape(profit_lbl or "promet te grupe") + '.</div>')
     _leg = ('<div class="cp-leg"><span><i class="a"></i>mesec sa akcijom</span>'
             '<span><i></i>redovna cena</span>')
     if p.get("n_nepoznato"):
@@ -14255,7 +14567,7 @@ def cene_ui(uloga, ugradjeno=False):
     _je_admin = (uloga == "admin")
     # ---- šta ulazi u profit koji se vidi u prozorčiću 📊 ----
     # (filter stoji IZNAD tabele: da se prozorčić ne zatvara pri svakom štikliranju)
-    _pf_dod, _pf_lbl = [], "profit − troškovi marketinga"
+    _pf_dod, _pf_lbl = [], "troškovi marketinga"
     if _pok_prod:
         _tr_sve = cene_profit_troskovi(_sales)
         if _tr_sve:
@@ -14266,7 +14578,8 @@ def cene_ui(uloga, ugradjeno=False):
                 format_func=lambda _i: dict(_tr_sve).get(_i, _i),
                 key="cn_pf_glob_" + _mk)
             if _pf_dod:
-                _pf_lbl += " − " + " − ".join(dict(_tr_sve).get(_d, _d) for _d in _pf_dod)
+                _pf_lbl += " + " + " + ".join(dict(_tr_sve).get(_d, _d).lower()
+                                              for _d in _pf_dod)
         else:
             st.caption("⚠️ Objavljen je izveštaj prodaje bez troškova (nepotpun), pa "
                        "profitabilnost u prozorčiću 📊 nije dostupna — u trećem redu "
@@ -14321,7 +14634,8 @@ def cene_ui(uloga, ugradjeno=False):
                                            _kupci_map)
                         _pf_niz = (cene_profit_niz(
                             _sales, _sis, [_x["mesec"] for _x in _pg["redovi"]],
-                            _pf_dod) if _pg else None)
+                            _pf_dod, grupa=str(_r.get("grupa") or ""),
+                            kupci_map=_kupci_map) if _pg else None)
                         with st.popover("📊", width=(560 if _pg else 330),
                                         help="Prodaja i ranije akcije — iz izveštaja prodaje"):
                             st.markdown(cene_pregled_html(
@@ -14566,6 +14880,10 @@ def cene_ui(uloga, ugradjeno=False):
 def prikazi_administraciju(ugradjeno=False):
     """ugradjeno=True — isti ekran, ali ubačen u drugu karticu (direktorski pregled):
     bez podešavanja stranice i bez dugmadi Odjava / Ažuriraj iz admina / Predaj."""
+    # Poziv koji je bio u toku se SAM zatvara i beleži na prvi sledeći klik —
+    # administracija ne klikće „završi poziv".
+    if not ugradjeno:
+        poziv_auto_zatvori()
     if not ugradjeno:
         st.set_page_config(page_title="VAPE — Porudžbine", page_icon="📦",
                            layout="wide", initial_sidebar_state="collapsed")
@@ -16699,9 +17017,10 @@ div[data-stale="true"] { opacity: 1 !important; }
             with _cbtn1:
                 if st.button("📞 Pozovi " + _tel_raw, key="callbtn_" + str(sel_id),
                              use_container_width=True,
-                             help="Pokreće poziv i štopericu. Kad završiš razgovor, klikni "
-                                  "„Završi poziv i zabeleži“ — upisuje se i vreme i trajanje. "
-                                  "Pozivi kraći od 5 s se ne beleže."):
+                             help="Otvara pozivanje i pokreće štopericu. Razgovor ne "
+                                  "moraš nigde da zatvaraš — poziv se sam zabeleži (vreme "
+                                  "i trajanje) čim se vratiš u aplikaciju i klikneš bilo "
+                                  "šta. Pozivi kraći od 5 s se ne beleže."):
                     poziv_start(mesec_key, sistem, sel_id, _tel_clean,
                                 st.session_state.get("admin_user", "Administracija"))
                     st.session_state["_dial_" + str(sel_id)] = _tel_clean
@@ -20891,7 +21210,21 @@ def prikazi_direktore():
             _corner += '</div></div>'
             st.markdown(_corner, unsafe_allow_html=True)
         import streamlit.components.v1 as _components
-        _components.html(_izv["html"], height=2600, scrolling=True)
+        # --- polumesečni izveštaj: posebna kartica, samo dok postoji ---
+        _plst = []
+        try:
+            _plst = sb_polu_lista()
+        except Exception:
+            _plst = []
+        if _plst:
+            _ptab = st.tabs(["📊 Izveštaj prodaje",
+                             "🕐 Polumesečni izveštaj (" + str(len(_plst)) + ")"])
+            with _ptab[0]:
+                _components.html(_izv["html"], height=2600, scrolling=True)
+            with _ptab[1]:
+                polu_direktor_blok(_plst)
+        else:
+            _components.html(_izv["html"], height=2600, scrolling=True)
         return
 
 
@@ -22749,6 +23082,100 @@ with tab_obj:
                                 st.error("Greška pri čuvanju: " + str(_e))
                 except Exception as _e:
                     st.error("Ne mogu da pročitam fajl: " + str(_e))
+
+    # ---------------- POLUMESEČNI IZVEŠTAJ PRODAJE ----------------
+    with st.container(border=True):
+        st.markdown('<div class="obj-title">🕐 Polumesečni izveštaj prodaje</div>',
+                    unsafe_allow_html=True)
+        st.caption("Za mesec koji je u toku: ubaci tabelu sa prodajom do danas — samo za "
+                   "sisteme koji su poslali podatke. Direktori to vide kao posebnu "
+                   "karticu unutar „Izveštaj prodaje“. Čim objaviš pun izveštaj prodaje "
+                   "koji pokriva taj mesec, polumesečni se sam briše.")
+        _pok, _ppor = sb_polu_ok()
+        if not _pok:
+            st.info(_ppor)
+        else:
+            _pt = datetime.date.today()
+            _popts = []
+            for _i in range(4):
+                _y, _m2 = _pt.year, _pt.month - _i
+                while _m2 <= 0:
+                    _m2 += 12
+                    _y -= 1
+                _popts.append(str(_y) + "-" + ("0" + str(_m2))[-2:])
+            _pc1, _pc2, _pc3 = st.columns([1.2, 1.4, 1.4])
+            with _pc1:
+                _pmk = st.selectbox("Mesec", _popts, format_func=mesec_label,
+                                    key="polu_mes")
+            with _pc2:
+                _ppol = st.radio("Period", ["P1", "P2"], horizontal=True,
+                                 format_func=lambda _p: POLU_POLA[_p], key="polu_pola")
+            with _pc3:
+                _pdo = st.date_input("Prodaja zaključno sa",
+                                     value=(_cene_d(polu_do_datuma(_pmk, _ppol))
+                                            or _pt),
+                                     format="DD.MM.YYYY", key="polu_do")
+            _pfile = st.file_uploader("Tabela sistemi (.xlsx) — samo sistemi koji su "
+                                      "poslali podatke", type=["xlsx"], key="polu_up")
+            _pnap = st.text_input("Napomena za direktore (opciono)", key="polu_nap",
+                                  placeholder="npr. nedostaju 3M i AMAN — javili da "
+                                              "kasne")
+            _pper = str(_pmk) + ":" + str(_ppol)
+            if _pfile is not None:
+                _pproc = knjizno_kol_iz_tabele(_pfile, _pmk)
+                if _pproc.get("greska"):
+                    st.error(_pproc["greska"])
+                else:
+                    _pred = polu_redovi_iz_tabele(_pproc)
+                    st.success("Pročitano: " + str(_pproc["redova"]) + " redova  ·  "
+                               + str(len(_pred)) + " sistema  ·  ukupno "
+                               + _knj_din(sum(_r["ukupno"] for _r in _pred), 0) + " kom")
+                    st.dataframe(pd.DataFrame(
+                        [{"Sistem": _r["sistem"], "HQD stari": _r["hqd_stari"],
+                          "HQD novi": _r["hqd_novi"], "NERD 2000": _r["nerd"],
+                          "SYX": _r["syx"], "Ukupno": _r["ukupno"]} for _r in _pred]),
+                        hide_index=True, use_container_width=True)
+                    if st.button("📤 Objavi polumesečni izveštaj za direktore",
+                                 key="polu_save", type="primary",
+                                 use_container_width=True):
+                        try:
+                            import base64 as _b64p
+                            sb_polu_set(_pper, {
+                                "mesec": _pmk, "pola": _ppol,
+                                "do_datuma": _pdo.strftime("%Y-%m-%d"),
+                                "filename": _pfile.name,
+                                "xlsx_b64": _b64p.b64encode(_pfile.getvalue()).decode("ascii"),
+                                "redovi": _pred, "sistemi": [_r["sistem"] for _r in _pred],
+                                "redova": int(_pproc.get("redova") or 0),
+                                "napomena": _pnap.strip(),
+                                "ko": "Analitika", "at": _now().isoformat()})
+                            st.success("Objavljeno — direktori vide karticu "
+                                       "„Polumesečni izveštaj“.")
+                            st.rerun()
+                        except Exception as _e:
+                            st.error("Greška: " + str(_e))
+            _plst = sb_polu_lista()
+            if _plst:
+                st.markdown("<div style='margin-top:8px;font-size:12px;"
+                            "text-transform:uppercase;letter-spacing:.5px;color:#9aa0ad;"
+                            "font-weight:700;'>Objavljeni polumesečni izveštaji</div>",
+                            unsafe_allow_html=True)
+                for _r in _plst:
+                    _q1, _q2, _q3 = st.columns([2.4, 2.6, 1])
+                    with _q1:
+                        st.markdown("**" + polu_period_lbl(_r.get("period")) + "**")
+                    with _q2:
+                        st.caption(str(len(_r.get("sistemi") or [])) + " sistema  ·  "
+                                   "zaključno sa " + _rok_fmt(_r.get("do_datuma"))
+                                   + "  ·  " + _dt_kratko(_r.get("at")))
+                    with _q3:
+                        if st.button("Obriši", key="polu_del_" + str(_r.get("period")),
+                                     use_container_width=True):
+                            try:
+                                sb_polu_obrisi(_r.get("period"))
+                                st.rerun()
+                            except Exception as _e:
+                                st.error("Greška: " + str(_e))
 
     with st.container(border=True):
         st.markdown('<div class="obj-title">📊 Izveštaj prodaje (za direktore)</div>', unsafe_allow_html=True)
