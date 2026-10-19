@@ -12344,8 +12344,9 @@ def cene_pregled_html(p, sistem, grupa, redovna=0, profit=None, profit_lbl=""):
     if any(_x is not None for _x in _pf):
         if _ima_pf:
             _h.append('<div class="cp-pfl">Treći red (RSD): <b>profit te grupe</b> tog '
-                      'meseca — bruto profit sistema podeljen po <b>učešću grupe u '
-                      'prometu</b>, minus ' + _h_escape(profit_lbl or "troškovi marketinga")
+                      'meseca — račun <b>po odjavi</b>, isti kao u tabeli „Uspešnost '
+                      'akcije“: profit sistema podeljen po <b>učešću grupe u prometu</b>, '
+                      'minus ' + _h_escape(profit_lbl or "troškovi marketinga")
                       + ' podeljeni po <b>broju različitih artikala</b> koje toj grupi '
                       'prodajemo.</div>')
         else:
