@@ -16,8 +16,8 @@ Glavna funkcija:
 
 # Oznaka verzije modula — vidi se u aplikaciji (Objava izveštaja → Izveštaj prodaje),
 # da se odmah zna da li je na GitHub-u najnoviji fajl.
-VERZIJA = ("3.5 · 18.10.2026 (sažetak nosi i profitabilnost po sistemu i mesecu — "
-           "plus ID artikla — po njemu se prepoznaju novi HQD ukusi)")
+VERZIJA = ("3.6 · 19.10.2026 (profit u sažetku je PO ODJAVI — isti račun kao tabela "
+           "Uspešnost akcije; plus ID artikla, po njemu se prepoznaju novi HQD ukusi)")
 
 import calendar
 import html as html_mod
@@ -1756,13 +1756,17 @@ Meseci: <b id="mesec-count">{num_s}/{num_s}</b> ▾</button>
     # ---------- profitabilnost po sistemu i mesecu ----------
     # Koristi se u kartici „Cene i akcije": ispod svakog meseca se vidi profit
     # (prvo samo sa troškovima marketinga, pa se ostali troškovi dodaju filterom).
+    # Uzima se račun iz tabele „Uspešnost akcije" (drv_data_js) — PO ODJAVI i za
+    # sve mesece, isti brojevi koje direktori tamo vide; „Profitabilnost" je drugi
+    # račun (po fakturi za deo sistema) i ne koristi se ovde.
     try:
         summary["profit"] = {
-            "nazivi": list(nazivi_profit),
+            "nazivi": list(nazivi_drv),
+            "osnov": "po odjavi (Uspešnost akcije)",
             "troskovi": [{"id": _i, "naziv": _n}
                          for _i, _n in zip(trosak_ids_list, trosak_names_list)],
             "po_sistemu": {str(_s): {str(_k): list(_v)
-                                     for _k, _v in (profit_data_js.get(_s) or {}).items()}
+                                     for _k, _v in (drv_data_js.get(_s) or {}).items()}
                            for _s in sistemi_lista}}
     except Exception:
         summary["profit"] = {}
