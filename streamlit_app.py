@@ -1871,6 +1871,155 @@ def sb_polu_obrisi(period):
             pass
 
 
+POLU_MES_KR = {1: "jan", 2: "feb", 3: "mar", 4: "apr", 5: "maj", 6: "jun", 7: "jul",
+               8: "avg", 9: "sep", 10: "okt", 11: "nov", 12: "dec"}
+POLU_CSS = """
+<style>
+table.polu-t{width:100%;border-collapse:collapse;font-size:12.5px;
+  font-variant-numeric:tabular-nums;}
+table.polu-t th,table.polu-t td{padding:5px 8px;border-bottom:1px solid #eef0f4;
+  text-align:right;white-space:nowrap;}
+table.polu-t th:first-child,table.polu-t td:first-child{text-align:left;}
+table.polu-t thead th{background:#f3f0ff;color:#4c1d95;font-weight:700;font-size:11.5px;
+  text-transform:uppercase;letter-spacing:.4px;border-bottom:2px solid #ddd6fe;
+  position:sticky;top:0;}
+table.polu-t th.pnov,table.polu-t td.pnov{background:#f5f3ff;color:#4c1d95;font-weight:700;}
+table.polu-t th.puk,table.polu-t td.puk{border-left:2px solid #ddd6fe;font-weight:700;}
+table.polu-t tr.psr td{font-weight:800;color:#1f2937;background:#fbfbfe;}
+table.polu-t tr.pgr td{color:#6b7280;font-weight:500;}
+table.polu-t tr.pgr td:first-child{padding-left:30px;font-style:italic;}
+table.polu-t tbody.psy tr.pgr{display:none;}
+table.polu-t tbody.psy:has(input.ptg:checked) tr.pgr{display:table-row;}
+table.polu-t input.ptg{display:none;}
+table.polu-t label.plb{cursor:pointer;display:inline-flex;align-items:center;gap:7px;}
+table.polu-t .ppm{display:inline-block;width:15px;height:15px;line-height:13px;
+  text-align:center;border:1px solid #c4b5fd;border-radius:4px;color:#6d28d9;
+  font-weight:700;font-size:12px;background:#fff;}
+table.polu-t .ppm::before{content:"+";}
+table.polu-t tbody.psy:has(input.ptg:checked) .ppm::before{content:"\\2212";}
+table.polu-t td.pprazno{color:#cbd5e1;}
+table.polu-t td.pnula{color:#d4d8e0;}
+.polu-okv{border:1px solid #e9e7f5;border-radius:12px;overflow:auto;max-height:620px;}
+.polu-leg{font-size:11.5px;color:#8b90a0;margin:6px 2px 0;}
+</style>
+"""
+
+
+def polu_tabela_html(zapis, sales, ns=""):
+    """Količine po sistemima i mesecima tekuće godine — isti oblik kao tabela
+    „Prodaja" iz izveštaja: red je sistem, na „+" se otvaraju grupe.
+
+    Meseci do polumeseca dolaze iz objavljenog izveštaja prodaje, a poslednja
+    kolona je ovaj polumesečni izveštaj — sistem koji ga nije poslao tu je prazan.
+    """
+    _per = str((zapis or {}).get("period") or "")
+    _mk = str((zapis or {}).get("mesec") or _per.split(":")[0])
+    try:
+        _god = int(_mk.split("-")[0]); _mes = int(_mk.split("-")[1])
+    except Exception:
+        return ""
+    _pola = str((zapis or {}).get("pola") or "P1")
+    _nov_lbl = (POLU_MES_KR.get(_mes, str(_mes))
+                + (" 01–15" if _pola == "P1" else " 16–kraj"))
+
+    # ---- raniji meseci iz objavljenog izveštaja prodaje ----
+    _naz = list((sales or {}).get("nazivi") or [])
+    _idx = {}
+    for _i, _l in enumerate(_naz):
+        _k = _cene_mk_od_labela(_l) or ""
+        if _k:
+            _idx[_k] = _i
+    _meseci = list(range(1, _mes + 1))
+    _po_sis = ((sales or {}).get("po_sistemu") or {})
+
+    def _iz_izv(_sis, _grupa, _m):
+        _i = _idx.get(str(_god) + "-" + ("0" + str(_m))[-2:])
+        if _i is None:
+            return None
+        _g = ((_po_sis.get(_sis) or {}).get("grupe") or {}).get(_grupa)
+        if not _g or _i >= len(_g):
+            return None
+        return int(_g[_i] or 0)
+
+    # ---- polumesečni: grupe iz zapisa ----
+    _polu = {}
+    for _r in ((zapis or {}).get("redovi") or []):
+        _s = str(_r.get("sistem") or "")
+        _polu[_s] = {"HQD 1000": int(_r.get("hqd_stari") or 0) + int(_r.get("hqd_novi") or 0),
+                     "NERD 2000": int(_r.get("nerd") or 0),
+                     "SYX": int(_r.get("syx") or 0),
+                     "_stari": int(_r.get("hqd_stari") or 0),
+                     "_novi": int(_r.get("hqd_novi") or 0)}
+
+    _sistemi = sorted(set(list(_po_sis.keys()) + list(_polu.keys())))
+    if not _sistemi:
+        return ""
+
+    def _fmt(_v, _nov=False):
+        _cl = (["pnov"] if _nov else [])
+        if _v is None:
+            _cl.append("pprazno"); _t = "·"
+        elif not int(_v):
+            _cl.append("pnula"); _t = "0"
+        else:
+            _t = format(int(_v), ",").replace(",", ".")
+        return ("<td" + (' class="' + " ".join(_cl) + '"' if _cl else "") + ">"
+                + _t + "</td>")
+
+    _h = [POLU_CSS, '<div class="polu-okv"><table class="polu-t"><thead><tr>'
+          '<th>Sistem / grupa</th>']
+    for _m in _meseci:
+        _zadnji = (_m == _mes)
+        _h.append('<th class="' + ("pnov" if _zadnji else "") + '">'
+                  + _h_escape(_nov_lbl if _zadnji else POLU_MES_KR.get(_m, str(_m)))
+                  + '</th>')
+    _h.append('<th class="puk">Ukupno</th></tr></thead>')
+
+    for _si, _s in enumerate(_sistemi):
+        _grupe = sorted(set(list(((_po_sis.get(_s) or {}).get("grupe") or {}).keys())
+                            + [_g for _g, _v in (_polu.get(_s) or {}).items()
+                               if not _g.startswith("_") and _v]))
+        if not _grupe:
+            continue
+        _mat = {}
+        for _g in _grupe:
+            _red = []
+            for _m in _meseci:
+                if _m == _mes:
+                    _red.append((_polu.get(_s) or {}).get(_g) if _s in _polu else None)
+                else:
+                    _red.append(_iz_izv(_s, _g, _m))
+            _mat[_g] = _red
+        _zbir = []
+        for _j in range(len(_meseci)):
+            _v = [_mat[_g][_j] for _g in _grupe if _mat[_g][_j] is not None]
+            _zbir.append(sum(_v) if _v else None)
+        _uk = sum(_x for _x in _zbir if _x is not None)
+        _kid = "pt" + "".join(_c for _c in _knj_norm(str(ns) + _per + _s)
+                              if _c.isalnum())
+        _h.append('<tbody class="psy"><tr class="psr"><td>'
+                  '<label class="plb" for="' + _kid + '">'
+                  '<input class="ptg" type="checkbox" id="' + _kid + '">'
+                  '<span class="ppm"></span>' + _h_escape(_s) + '</label></td>')
+        for _j, _m in enumerate(_meseci):
+            _h.append(_fmt(_zbir[_j], _m == _mes))
+        _h.append('<td class="puk">' + format(int(_uk), ",").replace(",", ".")
+                  + '</td></tr>')
+        for _g in _grupe:
+            _h.append('<tr class="pgr"><td>' + _h_escape(_g) + '</td>')
+            for _j, _m in enumerate(_meseci):
+                _h.append(_fmt(_mat[_g][_j], _m == _mes))
+            _gu = sum(_x for _x in _mat[_g] if _x is not None)
+            _h.append('<td class="puk">' + format(int(_gu), ",").replace(",", ".")
+                      + '</td></tr>')
+        _h.append('</tbody>')
+    _h.append('</table></div>')
+    _h.append('<div class="polu-leg">Klik na <b>+</b> otvara grupe artikala.  ·  '
+              '<b>·</b> znači da za taj mesec nemamo podatak — sistem nije poslao '
+              'polumesečne količine.</div>')
+    return "".join(_h)
+
+
 def polu_direktor_blok(lista=None):
     """Kartica za direktore: koji su sistemi poslali podatke za pola meseca."""
     _lst = lista if lista is not None else sb_polu_lista()
@@ -1904,14 +2053,22 @@ def polu_direktor_blok(lista=None):
                             + _h_escape(_r.get("napomena")) + '</div>',
                             unsafe_allow_html=True)
             if _red:
-                _df = pd.DataFrame([{"Sistem": _x.get("sistem"),
-                                     "HQD stari": int(_x.get("hqd_stari") or 0),
-                                     "HQD novi": int(_x.get("hqd_novi") or 0),
-                                     "NERD 2000": int(_x.get("nerd") or 0),
-                                     "SYX": int(_x.get("syx") or 0),
-                                     "Ukupno": int(_x.get("ukupno") or 0)}
-                                    for _x in _red])
-                st.dataframe(_df, hide_index=True, use_container_width=True)
+                try:
+                    _sal = cene_izvestaj_podaci()
+                except Exception:
+                    _sal = {}
+                _tab = polu_tabela_html(_r, _sal, ns=str(_r.get("period") or ""))
+                if _tab:
+                    st.markdown(_tab, unsafe_allow_html=True)
+                else:
+                    st.dataframe(pd.DataFrame(
+                        [{"Sistem": _x.get("sistem"),
+                          "HQD stari": int(_x.get("hqd_stari") or 0),
+                          "HQD novi": int(_x.get("hqd_novi") or 0),
+                          "NERD 2000": int(_x.get("nerd") or 0),
+                          "SYX": int(_x.get("syx") or 0),
+                          "Ukupno": int(_x.get("ukupno") or 0)} for _x in _red]),
+                        hide_index=True, use_container_width=True)
             _doc = sb_polu_get(_r.get("period")) or {}
             if _doc.get("xlsx_b64"):
                 try:
