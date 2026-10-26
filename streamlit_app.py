@@ -12294,11 +12294,13 @@ def _cene_mes_lbl(mesec_key):
         return str(mesec_key)
 
 
-def cene_pregled_html(p, sistem, grupa, redovna=0, profit=None, profit_lbl=""):
+def cene_pregled_html(p, sistem, grupa, redovna=0, profit=None, profit_lbl="", osnov=""):
     """Sadržaj prozorčića — stubići po mesecima, ispod cena i profit, pa zaključak.
 
     `profit` je lista istih dužina kao meseci (RSD, None gde nema podatka);
-    `profit_lbl` objašnjava šta je u njemu (koji su troškovi oduzeti)."""
+    `profit_lbl` objašnjava šta je u njemu (koji su troškovi oduzeti);
+    `osnov` je oznaka iz izveštaja prodaje po čemu je profit računat — ako je
+    prazna, objavljen je izveštaj iz starijeg modula (profit po fakturi)."""
     if not p:
         return ('<div class="cp-nema">Za ovaj sistem i grupu nema prodaje u objavljenom '
                 'izveštaju prodaje. Ako se kupac u izveštaju zove drugačije nego sistem '
@@ -12344,11 +12346,17 @@ def cene_pregled_html(p, sistem, grupa, redovna=0, profit=None, profit_lbl=""):
     if any(_x is not None for _x in _pf):
         if _ima_pf:
             _h.append('<div class="cp-pfl">Treći red (RSD): <b>profit te grupe</b> tog '
-                      'meseca — račun <b>po odjavi</b>, isti kao u tabeli „Uspešnost '
-                      'akcije“: profit sistema podeljen po <b>učešću grupe u prometu</b>, '
+                      'meseca — račun <b>' + _h_escape(osnov or "po fakturi")
+                      + '</b>: profit sistema podeljen po <b>učešću grupe u prometu</b>, '
                       'minus ' + _h_escape(profit_lbl or "troškovi marketinga")
                       + ' podeljeni po <b>broju različitih artikala</b> koje toj grupi '
                       'prodajemo.</div>')
+            if not osnov:
+                _h.append('<div class="cp-nepot">⚠️ <b>Profit je iz starijeg izveštaja</b> '
+                          '— računat je po fakturi i nekim sistemima ispada 0. Da bi bio '
+                          '<b>po odjavi</b> (isti kao u tabeli „Uspešnost akcije“), '
+                          'objavi izveštaj prodaje ponovo — potreban je modul '
+                          'izvestaj_prodaje.py verzije 3.6 ili novije.</div>')
         else:
             _h.append('<div class="cp-pfl">Treći red (RSD): '
                       + _h_escape(profit_lbl or "promet te grupe") + '.</div>')
@@ -14569,8 +14577,13 @@ def cene_ui(uloga, ugradjeno=False):
     # ---- šta ulazi u profit koji se vidi u prozorčiću 📊 ----
     # (filter stoji IZNAD tabele: da se prozorčić ne zatvara pri svakom štikliranju)
     _pf_dod, _pf_lbl = [], "troškovi marketinga"
+    _pf_osnov = str(((_sales or {}).get("profit") or {}).get("osnov") or "")
     if _pok_prod:
         _tr_sve = cene_profit_troskovi(_sales)
+        if _tr_sve and not _pf_osnov:
+            st.caption("⚠️ Profit u prozorčiću 📊 je iz starijeg izveštaja (po fakturi). "
+                       "Objavi izveštaj prodaje ponovo — sa modulom izvestaj_prodaje.py "
+                       "3.6 ili novijim — da bi bio po odjavi, kao u „Uspešnost akcije“.")
         if _tr_sve:
             _pf_dod = st.multiselect(
                 "Profitabilnost u pregledu 📊 — marketing je uvek unutra, ovde dodaj "
@@ -14641,7 +14654,8 @@ def cene_ui(uloga, ugradjeno=False):
                                         help="Prodaja i ranije akcije — iz izveštaja prodaje"):
                             st.markdown(cene_pregled_html(
                                 _pg, _sis, str(_r.get("grupa") or ""),
-                                int(_r.get("redovna") or 0), _pf_niz, _pf_lbl),
+                                int(_r.get("redovna") or 0), _pf_niz, _pf_lbl,
+                                _pf_osnov),
                                 unsafe_allow_html=True)
                 with _c[4 + _poml]:
                     _od_v = st.date_input("od", value=_cene_d(_r.get("od"), _p1),
