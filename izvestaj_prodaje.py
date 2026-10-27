@@ -1699,7 +1699,7 @@ Meseci: <b id="mesec-count">{num_s}/{num_s}</b> ▾</button>
                                xls_prodaja=xls_prodaja, potpun=potpun,
                                mesec_lbl=poslednji_naziv,
                                palete=grupa_palete)
-    summary = {"nazivi": nazivi, "po_sistemu": {}}
+    summary = {"nazivi": nazivi, "po_sistemu": {}, "modul": VERZIJA}
     for sistem in sistemi_lista:
         grupe = prodaja_data_js.get(sistem, {})
         total = [0] * num_s
