@@ -248,10 +248,11 @@ def sb_objavi_izvestaj_prodaje(html, xlsx_b64, mesec_label, prodaja_json=""):
         # kolona prodaja_json možda ne postoji -> sačuvaj bez nje
         payload.pop("prodaja_json", None)
         cli.table("izvestaj_prodaje").upsert(payload, on_conflict="kljuc").execute()
-    try:
-        sb_ucitaj_izvestaj_prodaje.clear()
-    except Exception:
-        pass
+    for _fn in (sb_ucitaj_izvestaj_prodaje, cene_izvestaj_podaci):
+        try:
+            _fn.clear()
+        except Exception:
+            pass
     # polumesečni izveštaj za te mesece više nije potreban — sam se briše
     try:
         sb_polu_ocisti(prodaja_json or "")
@@ -1268,6 +1269,71 @@ def sb_auto_zavrsi(mesec_key, sistem, idk, razlog="", napomena="", ko=""):
             "dnevnik": _dn, "azurirano": _now().isoformat()}
     cli.table("obrada").upsert(_row, on_conflict="mesec,sistem,idk").execute()
     return True
+
+
+AUTO_ZAV_TRAJNI = "zatvoren objekat"     # jedini razlog koji se prenosi na naredne mesece
+
+
+def sb_auto_zav_zatvoreni_ranije(mesec_key, sistem):
+    """Objekti koje smo u nekom RANIJEM mesecu označili kao „zatvoren objekat".
+
+    Gleda se poslednji mesec u kome taj objekat uopšte ima zapis: ako je tada bio
+    zatvoren, zatvoren je i dalje; ako je u međuvremenu vraćen, nije.
+    Vraća {idk: mesec_u_kome_je_oznacen}.
+    """
+    cli = _sb()
+    if cli is None:
+        return {}
+    try:
+        res = (cli.table("obrada").select("mesec,idk,dnevnik")
+               .eq("sistem", sistem).lt("mesec", str(mesec_key)).execute())
+    except Exception:
+        return {}
+    _zadnji = {}
+    for _r in (res.data or []):
+        try:
+            _i = int(_r.get("idk"))
+        except Exception:
+            continue
+        _m = str(_r.get("mesec") or "")
+        if _m > str(_zadnji.get(_i, ("",))[0]):
+            _zadnji[_i] = (_m, dict(_r.get("dnevnik") or {}))
+    _out = {}
+    for _i, (_m, _dn) in _zadnji.items():
+        _az = dict((_dn.get("auto_zavrseno")) or {})
+        if _az and str(_az.get("razlog") or "") == AUTO_ZAV_TRAJNI:
+            _out[_i] = _m
+    return _out
+
+
+def sb_auto_zav_prenesi(mesec_key, sistem, idk_u_mesecu, obrada=None, ko="automatski"):
+    """Prenesi oznaku „zatvoren objekat" na izabrani mesec.
+
+    Prenose se samo objekti koji su zatvoreni u nekom ranijem mesecu, a u ovom
+    mesecu nisu ni označeni ni ručno vraćeni. Vraća broj prenetih.
+    """
+    _ranije = sb_auto_zav_zatvoreni_ranije(mesec_key, sistem)
+    if not _ranije:
+        return 0
+    _obr = obrada if obrada is not None else (sb_load_obrada(mesec_key, sistem) or {})
+    _n = 0
+    for _i in (idk_u_mesecu or []):
+        _i = int(_i)
+        if _i not in _ranije:
+            continue
+        _v = _obr.get(_i, {}) or {}
+        _dn = (_v.get("dnevnik") or {})
+        if _dn.get("auto_zavrseno") or _dn.get("auto_zavrseno_skinuto"):
+            continue                      # već je označen ili ga je neko ručno vratio
+        if (_dn.get("trebovao_posle_starta") or (_v.get("trebovali_tip") or "")):
+            continue                      # objekat je poručio — ne diraj ga
+        try:
+            sb_auto_zavrsi(mesec_key, sistem, _i, AUTO_ZAV_TRAJNI,
+                           "preneto sa " + mesec_label(_ranije[_i]), ko)
+            _n += 1
+        except Exception:
+            pass
+    return _n
 
 
 def sb_auto_zavrsi_skini(mesec_key, sistem, idk, ko=""):
@@ -12401,6 +12467,15 @@ def cene_grupa_udeo(sales, sistem, grupa, kupci_map=None):
     return _out
 
 
+def _izp_verzija():
+    """Koja je verzija modula izvestaj_prodaje.py u ovom trenutku na GitHub-u."""
+    try:
+        import izvestaj_prodaje as _m
+        return str(getattr(_m, "VERZIJA", "") or "bez oznake verzije")
+    except Exception:
+        return "modul nije učitan"
+
+
 def cene_profit_grupa_niz(sales, sistem, grupa, mes_keys, dodatni=None, redovne=False):
     """Profit te grupe — isti račun kao u ručnom pivotu.
 
@@ -14491,6 +14566,60 @@ def _knjizno_blok(mesec_key, sel_lbl, podaci, redovi_svi, uloga, ro):
                     st.error("Greška: " + str(_e))
 
 
+def auto_zav_xlsx(redovi, sistem, mesec_lbl):
+    """Excel spiska „Objekti koji se ne zovu" — ceo spisak za mesec i sistem."""
+    import io as _io
+    from openpyxl import Workbook as _WB
+    from openpyxl.styles import (Font as _F, PatternFill as _PF, Alignment as _AL,
+                                 Border as _BD, Side as _SD)
+    from openpyxl.utils import get_column_letter as _GL
+    _wb = _WB(); _ws = _wb.active; _ws.title = "Ne zovu se"
+    _thin = _SD(style="thin", color="E5E0F0")
+    _bord = _BD(left=_thin, right=_thin, top=_thin, bottom=_thin)
+    _kol = [("ID komitenta", 13, "center"), ("Naziv objekta", 46, "left"),
+            ("Mesto", 20, "left"), ("Hitnost", 12, "center"),
+            ("Status", 14, "center"), ("Razlog", 24, "left"),
+            ("Napomena", 30, "left"), ("Ko je označio", 18, "left"),
+            ("Kada", 18, "center")]
+    _n = len(_kol)
+    _ws.merge_cells("A1:" + _GL(_n) + "1")
+    _t = _ws["A1"]
+    _t.value = "Objekti koji se ne zovu · " + str(sistem) + " · " + str(mesec_lbl)
+    _t.font = _F(bold=True, size=13, color="3730A3")
+    _t.alignment = _AL(horizontal="left", vertical="center")
+    _ws.row_dimensions[1].height = 22
+    _ws.append([])
+    _ws.append([_h for _h, _w, _a in _kol])
+    _hf = _PF("solid", fgColor="EDE9FE")
+    for _ci in range(1, _n + 1):
+        _c = _ws.cell(row=3, column=_ci)
+        _c.font = _F(bold=True, size=10, color="4C1D95"); _c.fill = _hf
+        _c.alignment = _AL(horizontal="center", vertical="center", wrap_text=True)
+        _c.border = _bord
+    _ZN = {"crveno": "HITNO", "zuto": "KONTROLA", "zeleno": "DOBRA"}
+    _siv = _PF("solid", fgColor="F1F5F9")
+    for _r in (redovi or []):
+        _i = _r.get("info") or {}
+        _ws.append([_r.get("idk"), _r.get("naziv", ""), _r.get("mesto", ""),
+                    _ZN.get(_r.get("nivo"), "—"),
+                    ("NE ZOVE SE" if _r.get("iskljucen") else "zove se"),
+                    str(_i.get("razlog") or ""), str(_i.get("napomena") or ""),
+                    str(_i.get("ko") or ""), _dt_kratko(_i.get("at")) if _i else ""])
+        _rr = _ws.max_row
+        for _ci, (_h, _w, _a) in enumerate(_kol, start=1):
+            _c = _ws.cell(row=_rr, column=_ci)
+            _c.alignment = _AL(horizontal=_a, vertical="center", wrap_text=(_a == "left"))
+            _c.border = _bord
+            if _r.get("iskljucen"):
+                _c.fill = _siv
+    for _ci, (_h, _w, _a) in enumerate(_kol, start=1):
+        _ws.column_dimensions[_GL(_ci)].width = _w
+    _ws.freeze_panes = "A4"
+    _ws.auto_filter.ref = "A3:" + _GL(_n) + str(max(_ws.max_row, 4))
+    _b = _io.BytesIO(); _wb.save(_b)
+    return _b.getvalue()
+
+
 def auto_zav_ui():
     """Analitika bira objekte koji se ovog meseca ne zovu — idu pravo u ZAVRŠENO."""
     st.markdown("<style>" + CENE_CSS + """
@@ -14501,7 +14630,9 @@ div[class*="st-key-az_"]:hover{background:#faf8ff;}
     st.caption("Ovde označavaš objekte koje ovog meseca nema smisla zvati (zatvoreni, ne "
                "drže taj asortiman, naručuju centralno…). Oni odmah prelaze u ZAVRŠENO: "
                "administracija ih ne zove, ne ulaze u predlog porudžbine ni u mejl sistemu. "
-               "Oznaka važi **samo za izabrani mesec** — sledećeg meseca su opet u igri.")
+               "Oznaka važi **samo za izabrani mesec** — sledećeg meseca su opet u igri. "
+               "Jedini izuzetak je razlog **„zatvoren objekat“**: takav objekat aplikacija "
+               "sama prenosi i na naredne mesece, dok ga ne vratiš dugmetom „Vrati“.")
     _mes = sb_meseci()
     if not _mes:
         st.info("Još nema nijednog objavljenog meseca.")
@@ -14527,6 +14658,22 @@ div[class*="st-key-az_"]:hover{background:#faf8ff;}
         _po.setdefault(int(_s.get("idk")), []).append(_s)
     _kom = sb_komitenti_full()
     _obr = sb_load_obrada(_mk, _sis) or {}
+    # „zatvoren objekat" se sam prenosi na naredne mesece (ostali razlozi ne)
+    _pk = "az_pren_" + _mk + "_" + str(_sis)
+    if not st.session_state.get(_pk):
+        st.session_state[_pk] = True
+        try:
+            _np = sb_auto_zav_prenesi(_mk, _sis, list(_po.keys()), _obr)
+        except Exception:
+            _np = 0
+        if _np:
+            try:
+                sb_load_obrada.clear()
+            except Exception:
+                pass
+            _obr = sb_load_obrada(_mk, _sis) or {}
+            st.toast("🔒 " + str(_np) + " zatvorenih objekata preneto iz ranijih meseci",
+                     icon="✅")
     _red = []
     for _idk, _lst in _po.items():
         _niv = hitnost_objekta(_lst)[0]
@@ -14545,6 +14692,24 @@ div[class*="st-key-az_"]:hover{background:#faf8ff;}
         st.markdown('<div class="cene-note">' + str(len(_red)) + ' objekata · <b>'
                     + str(_n_isk) + '</b> isključeno ovog meseca</div>',
                     unsafe_allow_html=True)
+    _e1, _e2 = st.columns([1.5, 4.5], vertical_alignment="center")
+    with _e1:
+        try:
+            st.download_button("⬇️ Preuzmi u Excel",
+                               auto_zav_xlsx(_red, _sis, _sel),
+                               file_name=("Ne_zovu_se_"
+                                          + "".join(_c if _c.isalnum() else "_"
+                                                    for _c in str(_sis))
+                                          + "_" + str(_mk) + ".xlsx"),
+                               mime=("application/vnd.openxmlformats-officedocument"
+                                     ".spreadsheetml.sheet"),
+                               key="az_xls_" + _mk + "_" + _sis,
+                               use_container_width=True)
+        except Exception as _e:
+            st.caption("Excel nije napravljen: " + str(_e)[:90])
+    with _e2:
+        st.caption("U Excel ide ceo spisak za izabrani mesec i sistem — i oni koji se ne "
+                   "zovu i oni koji se zovu, sa razlogom, napomenom i ko je kada označio.")
     _trazi = st.text_input("Pretraga", key="az_q_" + _mk + "_" + _sis,
                            placeholder="naziv objekta ili ID…", label_visibility="collapsed")
     _q = str(_trazi or "").strip().lower()
@@ -14807,13 +14972,25 @@ def cene_ui(uloga, ugradjeno=False):
     _pf_dod, _pf_lbl = [], "troškovi marketinga"
     _pf_osnov = str(((_sales or {}).get("profit") or {}).get("osnov") or "")
     _pf_tacno = bool(((_sales or {}).get("profit") or {}).get("po_grupi"))
+    _pf_modul = str((_sales or {}).get("modul") or "")
     if _pok_prod:
         _tr_sve = cene_profit_troskovi(_sales)
         if _tr_sve and not _pf_tacno:
             st.caption("⚠️ Profit u prozorčiću 📊 je iz starijeg izveštaja, pa je samo "
                        "procena. Objavi izveštaj prodaje ponovo — sa modulom "
                        "izvestaj_prodaje.py 3.7 ili novijim — da bi profit bio zbir "
-                       "profita artikala te grupe, kao u tvom pivotu.")
+                       "profita artikala te grupe, kao u tvom pivotu.  \n"
+                       "Objavljeni izveštaj je napravljen modulom: **"
+                       + (_pf_modul or "stariji od 3.5 (ne upisuje svoju verziju)")
+                       + "**, a aplikacija sada ima modul **"
+                       + _izp_verzija() + "**.")
+            if st.button("🔄 Osveži podatke iz baze", key="cn_pf_osv_" + _mk):
+                for _fn in (cene_izvestaj_podaci, sb_ucitaj_izvestaj_prodaje):
+                    try:
+                        _fn.clear()
+                    except Exception:
+                        pass
+                st.rerun()
         if _tr_sve:
             _pf_dod = st.multiselect(
                 "Profitabilnost u pregledu 📊 — marketing je uvek unutra, ovde dodaj "
