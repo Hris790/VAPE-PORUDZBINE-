@@ -11873,8 +11873,18 @@ div[class*="st-key-cenered"] [data-testid="stDateInput"] svg{width:14px;height:1
                      #f8fafc 4px,#f8fafc 8px);border:1px solid #dbe3ec;}
 .cp-leg i.n{background:repeating-linear-gradient(45deg,#e9edf3,#e9edf3 3px,#f8fafc 3px,
             #f8fafc 6px);border:1px solid #dbe3ec;}
+.cp-graf>div.cp-lab{flex:0 0 86px!important;border:0;}
 .cp-osa{display:flex;gap:6px;margin-top:6px;}
 .cp-osa>div{flex:1;text-align:center;font-size:10px;color:#8a94a3;line-height:1.5;}
+.cp-lab{flex:0 0 86px!important;text-align:right!important;}
+.cp-lab span{display:block;color:#7a8190;font-weight:700;white-space:nowrap;line-height:1.5;}
+.cp-lab .l-mes{font-size:10px;}
+.cp-lab .l-cena{font-size:11px;}
+.cp-lab .l-pf0{font-size:10.5px;margin-top:3px;color:#312e81;}
+.cp-lab .l-pf{font-size:10.5px;margin-top:1px;}
+.cp-lab .l-rc{font-size:10.5px;margin-top:2px;font-style:italic;opacity:.7;}
+.cp-pf0{display:block;font-weight:800;color:#312e81;font-size:10.5px;font-variant-numeric:tabular-nums;margin-top:3px;}
+.cp-pf0.nema{color:#cbd5e1;font-weight:500;}
 .cp-cena{display:block;font-weight:800;color:#5b21b6;font-size:11px;}
 .cp-cena.bez{color:#b2bac6;font-weight:600;}
 .cp-pf{display:block;font-weight:700;color:#166534;font-size:10.5px;
@@ -12467,6 +12477,24 @@ def cene_grupa_udeo(sales, sistem, grupa, kupci_map=None):
     return _out
 
 
+def cene_profit_bruto_niz(sales, sistem, grupa, mes_keys):
+    """Samo „Sum of Profit" te grupe po mesecima — bez oduzimanja troška."""
+    _p = ((sales or {}).get("profit") or {})
+    _pg = (((_p.get("po_grupi") or {}).get(str(sistem)) or {}).get(str(grupa)) or {})
+    _naz = list(_p.get("nazivi") or [])
+    if not _pg or not _naz:
+        return None
+    _idx = {}
+    for _i, _l in enumerate(_naz):
+        _idx[str(_cene_mk_od_labela(_l) or _l)] = _i
+    _niz = list(_pg.get("profit") or [])
+    _out = []
+    for _mk in (mes_keys or []):
+        _i = _idx.get(str(_mk))
+        _out.append(float(_niz[_i] or 0) if (_i is not None and _i < len(_niz)) else None)
+    return _out
+
+
 def _izp_verzija():
     """Koja je verzija modula izvestaj_prodaje.py u ovom trenutku na GitHub-u."""
     try:
@@ -12580,7 +12608,7 @@ def _cene_mes_lbl(mesec_key):
 
 
 def cene_pregled_html(p, sistem, grupa, redovna=0, profit=None, profit_lbl="",
-                      osnov="", profit_red=None, tacno=False):
+                      osnov="", profit_red=None, tacno=False, profit_bruto=None):
     """Sadržaj prozorčića — stubići po mesecima, ispod cena i profit, pa zaključak.
 
     `profit` je lista istih dužina kao meseci (RSD, None gde nema podatka);
@@ -12602,6 +12630,8 @@ def cene_pregled_html(p, sistem, grupa, redovna=0, profit=None, profit_lbl="",
                  if redovna else "")
               + "poslednjih " + str(len(_red)) + " meseci</span></div>")
     _h.append('<div class="cp-graf">')
+    if tacno:
+        _h.append('<div class="cp-lab"></div>')
     for _r in _red:
         _vis = max(int(round(_r["kom"] * 100.0 / _max)), 3)
         _h.append('<div class="cp-stub ' + {"akc": "akc", "red": "red", "?": "nep"}[_r["stanje"]]
@@ -12618,6 +12648,15 @@ def cene_pregled_html(p, sistem, grupa, redovna=0, profit=None, profit_lbl="",
         profit_lbl = "promet te grupe (količina × cena po kojoj se prodavalo)"
     _prd = list(profit_red or [])
     _ima_rc = _ima_pf and any(_x is not None for _x in _prd)
+    _brt = list(profit_bruto or [])
+    _ima_br = _ima_pf and any(_x is not None for _x in _brt)
+    if tacno:
+        _h.append('<div class="cp-lab">'
+                  '<span class="l-mes">&nbsp;</span><span class="l-cena">&nbsp;</span>'
+                  + ('<span class="l-pf0">Profit</span>' if _ima_br else '')
+                  + '<span class="l-pf">Profit − trošak</span>'
+                  + ('<span class="l-rc">Redovne cene</span>' if _ima_rc else '')
+                  + '</div>')
     for _i, _r in enumerate(_red):
         _pv = _pf[_i] if _i < len(_pf) else None
         _h.append('<div>' + _h_escape(_cene_mes_lbl(_r["mesec"]))
@@ -12626,6 +12665,9 @@ def cene_pregled_html(p, sistem, grupa, redovna=0, profit=None, profit_lbl="",
                      if _r["stanje"] == "?" else "")
                   + '">'
                   + _h_escape(_r["cena"] or "—") + '</span>'
+                  + ((('<span class="cp-pf0">' + _knj_din(_brt[_i], 0) + '</span>')
+                      if (_i < len(_brt) and _brt[_i] is not None)
+                      else '<span class="cp-pf0 nema">—</span>') if _ima_br else '')
                   + ('<span class="cp-pf'
                      + ('' if _ima_pf else ' prm')
                      + (' neg' if (_ima_pf and _pv is not None and _pv < 0) else '')
@@ -12639,14 +12681,7 @@ def cene_pregled_html(p, sistem, grupa, redovna=0, profit=None, profit_lbl="",
     _h.append('</div>')
     if any(_x is not None for _x in _pf):
         if _ima_pf and tacno:
-            _h.append('<div class="cp-pfl"><b>Treći red (RSD)</b> — <b>profit te grupe</b>: '
-                      'zbir profita artikala iz te grupe, minus '
-                      + _h_escape(profit_lbl or "troškovi marketinga")
-                      + ' podeljeni po <b>broju artikala</b> '
-                      '(trošak sistema ÷ svi artikli sistema × artikli te grupe).'
-                      + ('<br><b>Četvrti red</b> — koliko bi po istoj računici bilo '
-                         '<b>da su cene bile redovne</b>, bez akcije.'
-                         if _ima_rc else '') + '</div>')
+            pass                       # nazivi redova stoje levo, objašnjenje ne treba
         elif _ima_pf:
             _h.append('<div class="cp-pfl">Treći red (RSD): <b>profit te grupe</b> tog '
                       'meseca — račun <b>' + _h_escape(osnov or "po fakturi")
@@ -12668,18 +12703,6 @@ def cene_pregled_html(p, sistem, grupa, redovna=0, profit=None, profit_lbl="",
     if p.get("n_nepoznato"):
         _leg += '<span><i class="n"></i>nemamo zapis o ceni</span>'
     _h.append(_leg + '</div>')
-    if p["najbolji"]:
-        _n = p["najbolji"]
-        _t = ("Najbolje je prošlo na <b>" + _h_escape(_n["cena"]) + "</b> ("
-              + _h_escape(_cene_mes_lbl(_n["mesec"])) + ", "
-              + format(_n["kom"], ",").replace(",", ".") + " kom).")
-        if p["razlika"] is not None:
-            _t += (" Prosek meseci sa akcijom je "
-                   + ("veći" if p["razlika"] > 0 else "manji") + " za "
-                   + str(abs(p["razlika"])) + "% od meseci bez akcije.")
-    else:
-        _t = "U ovih " + str(len(_red)) + " meseci nije bilo akcije na ovoj grupi."
-    _h.append('<div class="cp-zak">' + _t + '</div>')
     if not _ima_pf:
         _h.append('<div class="cp-nepot">⚠️ <b>Profitabilnost nije dostupna</b> — '
                   'objavljen je izveštaj prodaje <b>bez troškova</b> (nepotpun '
@@ -15061,12 +15084,14 @@ def cene_ui(uloga, ugradjeno=False):
                         _pf_red = (cene_profit_grupa_niz(_sales, _sis, _grp, _mes_k,
                                                          _pf_dod, redovne=True)
                                    if _pg else None)
+                        _pf_brt = (cene_profit_bruto_niz(_sales, _sis, _grp, _mes_k)
+                                   if _pg else None)
                         with st.popover("📊", width=(560 if _pg else 330),
                                         help="Prodaja i ranije akcije — iz izveštaja prodaje"):
                             st.markdown(cene_pregled_html(
                                 _pg, _sis, _grp, int(_r.get("redovna") or 0),
-                                _pf_niz, _pf_lbl, _pf_osnov, _pf_red,
-                                _pf_tacno),
+                                _pf_niz, _pf_lbl, _pf_osnov, None,
+                                _pf_tacno, _pf_brt),
                                 unsafe_allow_html=True)
                 with _c[4 + _poml]:
                     _od_v = st.date_input("od", value=_cene_d(_r.get("od"), _p1),
