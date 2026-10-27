@@ -11817,6 +11817,9 @@ div[class*="st-key-cenered"] [data-testid="stDateInput"] svg{width:14px;height:1
 .cp-pf.nema{color:#cbd5e1;font-weight:500;}
 .cp-pf.prm{color:#4c1d95;}
 .cp-pfl{margin-top:8px;font-size:10.5px;color:#8a94a3;line-height:1.4;}
+.cp-rc{display:block;font-size:10.5px;font-weight:600;font-style:italic;color:#15803d;opacity:.6;margin-top:2px;}
+.cp-rc.neg{color:#b91c1c;}
+.cp-rc.nema{color:#cbd5e1;font-weight:500;}
 .cp-nepot{margin-top:8px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;
     padding:8px 11px;font-size:11.5px;color:#92400e;line-height:1.45;}
 .cp-leg{display:flex;gap:14px;margin:9px 0 0;font-size:11px;color:#4b5563;}
@@ -12398,15 +12401,65 @@ def cene_grupa_udeo(sales, sistem, grupa, kupci_map=None):
     return _out
 
 
-def cene_profit_niz(sales, sistem, mes_keys, dodatni=None, grupa=None, kupci_map=None):
+def cene_profit_grupa_niz(sales, sistem, grupa, mes_keys, dodatni=None, redovne=False):
+    """Profit te grupe — isti račun kao u ručnom pivotu.
+
+        profit grupe       = zbir kolone „Profit" za tu grupu (iz izveštaja prodaje)
+        trošak po artiklu  = (marketing + štiklirani troškovi) / broj artikala sistema
+        rezultat           = profit grupe − trošak po artiklu × broj artikala grupe
+
+    Ako je `redovne=True`, umesto ostvarenog profita uzima se profit koji bi bio
+    da se prodavalo po redovnoj ceni. Vraća None gde izveštaj nema podatke.
+    """
+    _p = ((sales or {}).get("profit") or {})
+    _pg = (((_p.get("po_grupi") or {}).get(str(sistem)) or {}).get(str(grupa)) or {})
+    _as = ((_p.get("art_sis") or {}).get(str(sistem)) or [])
+    _sis = (_p.get("po_sistemu") or {}).get(str(sistem)) or {}
+    _naz = list(_p.get("nazivi") or [])
+    if not _pg or not _as or not _naz:
+        return None
+    _idx = {}
+    for _i, _l in enumerate(_naz):
+        _idx[str(_cene_mk_od_labela(_l) or _l)] = _i
+    _kljuc = "profit_red" if redovne else "profit"
+    _dod = [str(_d) for _d in (dodatni or [])]
+    _out = []
+    for _mk in (mes_keys or []):
+        _i = _idx.get(str(_mk))
+        if _i is None or _i >= len(_as) or not _as[_i]:
+            _out.append(None)
+            continue
+        try:
+            _pr = float((_pg.get(_kljuc) or [])[_i] or 0)
+            _ar = int((_pg.get("art") or [])[_i] or 0)
+            _t = float((_sis.get("mkt") or [])[_i] or 0)
+            for _d in _dod:
+                _niz = _sis.get(_d) or []
+                if _i < len(_niz):
+                    _t += float(_niz[_i] or 0)
+            _out.append(_pr - (_t / float(_as[_i])) * _ar)
+        except Exception:
+            _out.append(None)
+    return _out
+
+
+def cene_profit_niz(sales, sistem, mes_keys, dodatni=None, grupa=None, kupci_map=None,
+                    redovne=False):
     """Profit za zadate mesece: profit − marketing − izabrani troškovi.
 
     Vraća listu istih dužina kao `mes_keys` (None gde nema podatka). Marketing se
     uvek oduzima; `dodatni` su id-evi ostalih troškova koje je korisnik štiklirao.
-    Ako se zada `grupa`, račun se svodi na tu grupu (vidi `cene_grupa_udeo`):
-    bruto profit po učešću u prometu, troškovi po broju različitih artikala.
+    Ako se zada `grupa`, ide račun iz `cene_profit_grupa_niz` (zbir profita te
+    grupe minus trošak po artiklu); za starije izveštaje, koji nemaju profit po
+    grupi, pada se na procenu preko učešća u prometu.
     """
     _p = ((sales or {}).get("profit") or {})
+    if grupa:
+        _tacno = cene_profit_grupa_niz(sales, sistem, grupa, mes_keys, dodatni, redovne)
+        if _tacno is not None:
+            return _tacno
+        if redovne:
+            return None
     _naz = list(_p.get("nazivi") or [])
     _sis = (_p.get("po_sistemu") or {}).get(str(sistem))
     if not _naz or not _sis:
@@ -12451,13 +12504,16 @@ def _cene_mes_lbl(mesec_key):
         return str(mesec_key)
 
 
-def cene_pregled_html(p, sistem, grupa, redovna=0, profit=None, profit_lbl="", osnov=""):
+def cene_pregled_html(p, sistem, grupa, redovna=0, profit=None, profit_lbl="",
+                      osnov="", profit_red=None, tacno=False):
     """Sadržaj prozorčića — stubići po mesecima, ispod cena i profit, pa zaključak.
 
     `profit` je lista istih dužina kao meseci (RSD, None gde nema podatka);
     `profit_lbl` objašnjava šta je u njemu (koji su troškovi oduzeti);
     `osnov` je oznaka iz izveštaja prodaje po čemu je profit računat — ako je
-    prazna, objavljen je izveštaj iz starijeg modula (profit po fakturi)."""
+    prazna, objavljen je izveštaj iz starijeg modula (profit po fakturi);
+    `profit_red` je isti račun, samo da se prodavalo po redovnoj ceni;
+    `tacno` je True kad izveštaj nosi profit po grupi (ne procenu)."""
     if not p:
         return ('<div class="cp-nema">Za ovaj sistem i grupu nema prodaje u objavljenom '
                 'izveštaju prodaje. Ako se kupac u izveštaju zove drugačije nego sistem '
@@ -12485,6 +12541,8 @@ def cene_pregled_html(p, sistem, grupa, redovna=0, profit=None, profit_lbl="", o
         # nema profitabilnosti u objavljenom izveštaju — pokaži bar promet te grupe
         _pf = [(_r.get("promet") if _r.get("promet") else None) for _r in _red]
         profit_lbl = "promet te grupe (količina × cena po kojoj se prodavalo)"
+    _prd = list(profit_red or [])
+    _ima_rc = _ima_pf and any(_x is not None for _x in _prd)
     for _i, _r in enumerate(_red):
         _pv = _pf[_i] if _i < len(_pf) else None
         _h.append('<div>' + _h_escape(_cene_mes_lbl(_r["mesec"]))
@@ -12498,22 +12556,35 @@ def cene_pregled_html(p, sistem, grupa, redovna=0, profit=None, profit_lbl="", o
                      + (' neg' if (_ima_pf and _pv is not None and _pv < 0) else '')
                      + '">' + _knj_din(_pv, 0) + '</span>'
                      if _pv is not None else '<span class="cp-pf nema">—</span>')
+                  + (('<span class="cp-rc' + (' neg' if _rv < 0 else '') + '">'
+                      + _knj_din(_rv, 0) + '</span>')
+                     if (_ima_pf and _i < len(_prd) and (_rv := _prd[_i]) is not None)
+                     else ('<span class="cp-rc nema">—</span>' if _ima_rc else ''))
                   + '</div>')
     _h.append('</div>')
     if any(_x is not None for _x in _pf):
-        if _ima_pf:
+        if _ima_pf and tacno:
+            _h.append('<div class="cp-pfl"><b>Treći red (RSD)</b> — <b>profit te grupe</b>: '
+                      'zbir profita artikala iz te grupe, minus '
+                      + _h_escape(profit_lbl or "troškovi marketinga")
+                      + ' podeljeni po <b>broju artikala</b> '
+                      '(trošak sistema ÷ svi artikli sistema × artikli te grupe).'
+                      + ('<br><b>Četvrti red</b> — koliko bi po istoj računici bilo '
+                         '<b>da su cene bile redovne</b>, bez akcije.'
+                         if _ima_rc else '') + '</div>')
+        elif _ima_pf:
             _h.append('<div class="cp-pfl">Treći red (RSD): <b>profit te grupe</b> tog '
                       'meseca — račun <b>' + _h_escape(osnov or "po fakturi")
                       + '</b>: profit sistema podeljen po <b>učešću grupe u prometu</b>, '
                       'minus ' + _h_escape(profit_lbl or "troškovi marketinga")
                       + ' podeljeni po <b>broju različitih artikala</b> koje toj grupi '
                       'prodajemo.</div>')
-            if not osnov:
+            if not tacno:
                 _h.append('<div class="cp-nepot">⚠️ <b>Profit je iz starijeg izveštaja</b> '
                           '— računat je po fakturi i nekim sistemima ispada 0. Da bi bio '
                           '<b>po odjavi</b> (isti kao u tabeli „Uspešnost akcije“), '
                           'objavi izveštaj prodaje ponovo — potreban je modul '
-                          'izvestaj_prodaje.py verzije 3.6 ili novije.</div>')
+                          'izvestaj_prodaje.py verzije 3.7 ili novije.</div>')
         else:
             _h.append('<div class="cp-pfl">Treći red (RSD): '
                       + _h_escape(profit_lbl or "promet te grupe") + '.</div>')
@@ -14735,12 +14806,14 @@ def cene_ui(uloga, ugradjeno=False):
     # (filter stoji IZNAD tabele: da se prozorčić ne zatvara pri svakom štikliranju)
     _pf_dod, _pf_lbl = [], "troškovi marketinga"
     _pf_osnov = str(((_sales or {}).get("profit") or {}).get("osnov") or "")
+    _pf_tacno = bool(((_sales or {}).get("profit") or {}).get("po_grupi"))
     if _pok_prod:
         _tr_sve = cene_profit_troskovi(_sales)
-        if _tr_sve and not _pf_osnov:
-            st.caption("⚠️ Profit u prozorčiću 📊 je iz starijeg izveštaja (po fakturi). "
-                       "Objavi izveštaj prodaje ponovo — sa modulom izvestaj_prodaje.py "
-                       "3.6 ili novijim — da bi bio po odjavi, kao u „Uspešnost akcije“.")
+        if _tr_sve and not _pf_tacno:
+            st.caption("⚠️ Profit u prozorčiću 📊 je iz starijeg izveštaja, pa je samo "
+                       "procena. Objavi izveštaj prodaje ponovo — sa modulom "
+                       "izvestaj_prodaje.py 3.7 ili novijim — da bi profit bio zbir "
+                       "profita artikala te grupe, kao u tvom pivotu.")
         if _tr_sve:
             _pf_dod = st.multiselect(
                 "Profitabilnost u pregledu 📊 — marketing je uvek unutra, ovde dodaj "
@@ -14803,16 +14876,20 @@ def cene_ui(uloga, ugradjeno=False):
                     with _c[4]:
                         _pg = cene_pregled(_sis, str(_r.get("grupa") or ""), _sales,
                                            _kupci_map)
-                        _pf_niz = (cene_profit_niz(
-                            _sales, _sis, [_x["mesec"] for _x in _pg["redovi"]],
-                            _pf_dod, grupa=str(_r.get("grupa") or ""),
-                            kupci_map=_kupci_map) if _pg else None)
+                        _mes_k = [_x["mesec"] for _x in _pg["redovi"]] if _pg else []
+                        _grp = str(_r.get("grupa") or "")
+                        _pf_niz = (cene_profit_niz(_sales, _sis, _mes_k, _pf_dod,
+                                                   grupa=_grp, kupci_map=_kupci_map)
+                                   if _pg else None)
+                        _pf_red = (cene_profit_grupa_niz(_sales, _sis, _grp, _mes_k,
+                                                         _pf_dod, redovne=True)
+                                   if _pg else None)
                         with st.popover("📊", width=(560 if _pg else 330),
                                         help="Prodaja i ranije akcije — iz izveštaja prodaje"):
                             st.markdown(cene_pregled_html(
-                                _pg, _sis, str(_r.get("grupa") or ""),
-                                int(_r.get("redovna") or 0), _pf_niz, _pf_lbl,
-                                _pf_osnov),
+                                _pg, _sis, _grp, int(_r.get("redovna") or 0),
+                                _pf_niz, _pf_lbl, _pf_osnov, _pf_red,
+                                _pf_tacno),
                                 unsafe_allow_html=True)
                 with _c[4 + _poml]:
                     _od_v = st.date_input("od", value=_cene_d(_r.get("od"), _p1),
