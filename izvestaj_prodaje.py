@@ -16,8 +16,9 @@ Glavna funkcija:
 
 # Oznaka verzije modula — vidi se u aplikaciji (Objava izveštaja → Izveštaj prodaje),
 # da se odmah zna da li je na GitHub-u najnoviji fajl.
-VERZIJA = ("3.7 · 27.10.2026 (sažetak nosi profit PO GRUPI — zbir kolone Profit po "
-           "grupi i broj artikala, plus koliko bi bilo da su cene bile redovne)")
+VERZIJA = ("3.8 · 27.10.2026 (sažetak nosi profit PO GRUPI — zbir kolone Profit po "
+           "grupi i broj artikala; legenda „CENE PO GRUPAMA“ stoji odmah iznad tabele "
+           "prodaje, a trake sa promenama i različitim cenama su iznad nje)")
 
 import calendar
 import html as html_mod
@@ -1678,9 +1679,9 @@ Meseci: <b id="mesec-count">{num_s}/{num_s}</b> ▾</button>
 {filters_profit_block}
 {filters_drv_block}
 {filters_zalihe_block}
+<div id="pc-bar-wrap">{promene_bar_html}{mix_bar_html}</div>
 <div class="legend" id="leg"><span class="lg-note">CENE PO GRUPAMA:</span>
 {legend_items}{pc_legend}{mx_legend}</div>
-<div id="pc-bar-wrap">{promene_bar_html}{mix_bar_html}</div>
 <div class="panel active" id="panel-prodaja"><div class="tw"><table><thead>{ph}</thead>
 <tbody id="tbody-prodaja">{chr(10).join(prodaja_rows)}</tbody></table></div>
 <div class="ft">Klikni na sistem → grupe · Klikni na grupu → artikli</div>{analitika_html}</div>
@@ -2097,6 +2098,7 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--t1);min-he
 .ms-actions{display:flex;gap:6px;border-top:1px solid var(--bd);padding-top:9px;margin-top:2px}
 .ms-close{margin-left:auto;background:rgba(90,95,122,0.07);color:var(--t2);border-color:var(--bd2)}
 .legend{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 28px;font-size:10px;color:var(--t3);background:var(--bg);border-bottom:1px solid var(--bd)}
+#pc-bar-wrap:not(:empty){margin-bottom:10px;border-bottom:1px solid var(--bd);padding-bottom:12px}
 .legend b{font-family:'IBM Plex Mono',monospace;font-weight:700}
 .lg-grupa{display:inline-flex;align-items:center;gap:3px;margin-right:14px;padding:2px 0}
 .lg-grupa b{color:var(--t2);margin-right:3px}
