@@ -4033,6 +4033,11 @@ def knez_admin_ui():
                       + _z["naziv"].replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,")
                       + "  —  " + _z["razlog"] for _z in _spisak] or ["—"]
             _idx_r = 0
+            if _edit_ik:
+                for _j_e, _z_e in enumerate(_spisak):
+                    if int(_z_e["idk"]) == int(_edit_ik):
+                        _idx_r = _j_e
+                        break
             _izb = st.selectbox("Pumpa", _lbl_r, index=_idx_r, key="knez_rucna_pumpa",
                                 label_visibility="collapsed")
             _zi = _lbl_r.index(_izb) if _izb in _lbl_r else 0
@@ -4141,6 +4146,9 @@ def knez_admin_ui():
                                      use_container_width=True, disabled=(_pz_e == "—")):
                             st.session_state["_knez_edit_rucno"] = int(
                                 str(_pz_e).split("·")[0].strip())
+                            # bez ovoga selectbox gore ostane na staroj pumpi (Streamlit
+                            # pamti izbor po ključu i ignoriše index) pa „Otvori" ne radi
+                            st.session_state.pop("knez_rucna_pumpa", None)
                             st.rerun()
 
         # ============ 6) ARTIKLI KOJE NE PREPOZNAJEM ============
