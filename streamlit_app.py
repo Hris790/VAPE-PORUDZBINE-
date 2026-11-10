@@ -9131,6 +9131,18 @@ def knez_mapiraj_artikal(njihov, katalog):
     return (None, "", "")
 
 
+# Artikli koji se kod Knez Petrola UVEK nude (ručni unos i „Dodeli"), i onda
+# kad ih nema ni u jednom objavljenom izveštaju — npr. ukus koji nijedan
+# sistem ne drži, pa se ne pojavi u šifarniku napravljenom iz objava.
+KNEZ_ART_UVEK = {
+    633: "Nikotinske vrećice SYX Icy Cola bez duvana sa zaslađivačem (17 mg/vrećica)",
+    634: "Nikotinske vrećice SYX Blueberry bez duvana sa zaslađivačem (17 mg/vrećica)",
+    635: "Nikotinske vrećice SYX Peppermint bez duvana sa zaslađivačem (17 mg/vrećica)",
+    636: "Nikotinske vrećice SYX Spearmint bez duvana sa zaslađivačem (17 mg/vrećica)",
+    637: "Nikotinske vrećice SYX Freeze bez duvana sa zaslađivačem (17 mg/vrećica)",
+}
+
+
 @st.cache_data(ttl=300)
 def knez_nas_sifarnik(mesec_key):
     """{ID artikla: naš naziv} — iz objavljenih izveštaja (bilo kog sistema).
@@ -9159,6 +9171,10 @@ def knez_nas_sifarnik(mesec_key):
                     _out[_ida] = _nz
         if len(_out) >= 5:
             break
+    # dopuni artiklima koji uvek treba da se mogu upisati (ne gazi objavljene nazive)
+    if _out:
+        for _ida_u, _nz_u in KNEZ_ART_UVEK.items():
+            _out.setdefault(int(_ida_u), _nz_u)
     return _out
 
 
