@@ -4125,10 +4125,12 @@ def knez_admin_ui():
                                                        + "_" + str(_tid))]:
                         st.session_state.pop(_k_s, None)
                     st.session_state["_knez_lager_flash"] = (
-                        "✅ " + _nz_t.replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,")[:44]
+                        "✅ Pumpa " + str(_tid) + " · "
+                        + _nz_t.replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,")[:44]
                         + " — "
                         + ((str(len(_red_nov)) + " artikala je upisano ručno")
                            if _red_nov else "nema ničega (sve nule)")
+                        + "  ·  " + _now().strftime("%d.%m.%Y %H:%M")
                         + ". Pumpa je ZAVRŠENA: skinuta je sa spiska, ušla je u Excel i "
                           "zapamćena je u bazi (ostaje i posle odjave).")
                     st.rerun()
