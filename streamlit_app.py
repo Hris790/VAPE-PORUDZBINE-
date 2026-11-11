@@ -4032,17 +4032,32 @@ def knez_admin_ui():
             _lbl_r = [str(_z["idk"]) + " · "
                       + _z["naziv"].replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,")
                       + "  —  " + _z["razlog"] for _z in _spisak] or ["—"]
-            _idx_r = 0
-            if _edit_ik:
-                for _j_e, _z_e in enumerate(_spisak):
-                    if int(_z_e["idk"]) == int(_edit_ik):
-                        _idx_r = _j_e
-                        break
-            _izb = st.selectbox("Pumpa", _lbl_r, index=_idx_r, key="knez_rucna_pumpa",
-                                label_visibility="collapsed")
-            _zi = _lbl_r.index(_izb) if _izb in _lbl_r else 0
-            _tid = _spisak[min(_zi, len(_spisak) - 1)]["idk"] if _spisak else 0
-            _nz_t = str(_spisak[min(_zi, len(_spisak) - 1)]["naziv"]) if _spisak else ""
+            # Izabrana pumpa se pamti kao BROJ (_knez_rucni_tid), ne kao tekst iz
+            # padajućeg menija. Tekst ume da zastari (nova verzija = drugi natpis),
+            # pa bi se broj pumpe menjao usred rada i klik na Sačuvaj bi propadao.
+            def _knez_izbor_pumpe():
+                _v_izb = str(st.session_state.get("knez_rucna_pumpa") or "")
+                try:
+                    _nov_tid = int(_v_izb.split("·")[0].strip())
+                except Exception:
+                    return
+                st.session_state["_knez_rucni_tid"] = _nov_tid
+                if int(st.session_state.get("_knez_edit_rucno") or 0) != _nov_tid:
+                    st.session_state.pop("_knez_edit_rucno", None)
+
+            _sve_idk = [int(_z["idk"]) for _z in _spisak]
+            _tid = int(st.session_state.get("_knez_rucni_tid") or 0)
+            if _tid not in _sve_idk:
+                _tid = (int(_edit_ik) if (_edit_ik and int(_edit_ik) in _sve_idk)
+                        else (_sve_idk[0] if _sve_idk else 0))
+                st.session_state["_knez_rucni_tid"] = _tid
+            _idx_r = _sve_idk.index(_tid) if _tid in _sve_idk else 0
+            if st.session_state.get("knez_rucna_pumpa") not in _lbl_r:
+                st.session_state.pop("knez_rucna_pumpa", None)
+            st.selectbox("Pumpa", _lbl_r, index=_idx_r, key="knez_rucna_pumpa",
+                         label_visibility="collapsed", on_change=_knez_izbor_pumpe)
+            _zi = _idx_r
+            _nz_t = str(_spisak[_zi]["naziv"]) if _spisak else ""
             _stara = (((_obr.get(_tid) or {}).get("dnevnik") or {}).get("rucni_lager") or {})
             _stara_map = {int(_x["ida"]): _x for _x in (_stara.get("redovi") or [])
                           if _x.get("ida")}
@@ -4084,8 +4099,7 @@ def knez_admin_ui():
             st.caption("Upisuje se za pumpu **" + str(_tid) + " · "
                        + _nz_t.replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,")
                        + "** — proveri da je to prava pumpa pre nego što sačuvaš.")
-            with st.form("knez_rucni_form_" + str(mesec_key) + "_" + str(_tid),
-                         clear_on_submit=False):
+            with st.form("knez_rucni_form_" + str(mesec_key), clear_on_submit=False):
                 _ed_r = st.data_editor(
                     _df_r, hide_index=True, use_container_width=True,
                     key=_kljuc_ed,
@@ -4107,12 +4121,30 @@ def knez_admin_ui():
                     _cuvaj = st.form_submit_button("💾 Sačuvaj", type="primary",
                                                    use_container_width=True)
             if _cuvaj:
+                # rezerva: ako se sadržaj tabele izgubi, pročitaj izmene direktno iz
+                # zapamćenog stanja tabele — tako se ništa upisano ne gubi
+                _ss_ed = st.session_state.get(_kljuc_ed) or {}
+                _ss_rows = ((_ss_ed.get("edited_rows") or {})
+                            if isinstance(_ss_ed, dict) else {})
+                for _ir, _iv in _ss_rows.items():
+                    try:
+                        _ir = int(_ir)
+                    except Exception:
+                        continue
+                    if not (0 <= _ir < len(_ed_r)):
+                        continue
+                    for _ic, _ivv in (_iv or {}).items():
+                        if _ic in _ed_r.columns:
+                            _ed_r.iloc[_ir, _ed_r.columns.get_loc(_ic)] = _ivv
                 _red_nov = [{"ida": int(_rr["ID artikla"]), "naziv": str(_rr["Naziv artikla"]),
                              "izlaz": float(_rr["Izlaz (prodaja)"] or 0),
                              "stanje": float(_rr["Stanje (lager)"] or 0)}
                             for _, _rr in _ed_r.iterrows()
                             if (float(_rr["Izlaz (prodaja)"] or 0) > 0
                                 or float(_rr["Stanje (lager)"] or 0) > 0)]
+                st.info("🔎 Sačuvaj je kliknut · pumpa " + str(_tid) + " · artikala sa "
+                        "količinom: " + str(len(_red_nov))
+                        + "  —  ovaj red je privremen, da vidimo gde zapinje.")
                 if not _red_nov and not _nula_ok:
                     st.warning("Nisi upisala nijednu količinu. Ako pumpa stvarno nema ništa, "
                                "čekiraj „sve nule“ pa sačuvaj — skloniću je sa spiska.")
@@ -4163,8 +4195,10 @@ def knez_admin_ui():
                                      use_container_width=True, disabled=(_pz_e == "—")):
                             st.session_state["_knez_edit_rucno"] = int(
                                 str(_pz_e).split("·")[0].strip())
-                            # bez ovoga selectbox gore ostane na staroj pumpi (Streamlit
-                            # pamti izbor po ključu i ignoriše index) pa „Otvori" ne radi
+                            # izbor pumpe se pamti kao BROJ — tekst iz padajućeg menija
+                            # ume da zastari posle nove verzije, pa se izgubi klik na Sačuvaj
+                            st.session_state["_knez_rucni_tid"] = int(
+                                st.session_state["_knez_edit_rucno"])
                             st.session_state.pop("knez_rucna_pumpa", None)
                             # obriši zapamćene izmene tabele za tu pumpu, da se
                             # otvori tačno ono što piše u bazi
