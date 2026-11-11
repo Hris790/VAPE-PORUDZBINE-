@@ -4070,14 +4070,25 @@ def knez_admin_ui():
                                    "Izlaz (prodaja)": float(_stara_map.get(_i, {}).get("izlaz", 0) or 0),
                                    "Stanje (lager)": float(_stara_map.get(_i, {}).get("stanje", 0) or 0)}
                                   for _i, _n in sorted(_kat_p.items())])
-            st.markdown('<div class="knez-ed-hdr">✍️ Ručni unos &nbsp;·&nbsp; '
+            # potpis spiska artikala — ulazi u ključ tabele (vidi objašnjenje niže)
+            _pot_art = str(len(_df_r)) + "x" + str(
+                sum((_j + 1) * int(_i) for _j, _i in enumerate(sorted(_kat_p))) % 1000000)
+            _kljuc_ed = ("knez_rucni_ed_" + str(mesec_key) + "_" + str(_tid)
+                         + "_" + _pot_art)
+            st.markdown('<div class="knez-ed-hdr">'
+                        + ('✏️ IZMENA ručnog unosa &nbsp;·&nbsp; '
+                           if (_edit_ik and int(_edit_ik) == int(_tid))
+                           else '✍️ Ručni unos &nbsp;·&nbsp; ')
                         + _h_escape(_nz_t.replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,"))
                         + '</div>', unsafe_allow_html=True)
+            st.caption("Upisuje se za pumpu **" + str(_tid) + " · "
+                       + _nz_t.replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,")
+                       + "** — proveri da je to prava pumpa pre nego što sačuvaš.")
             with st.form("knez_rucni_form_" + str(mesec_key) + "_" + str(_tid),
                          clear_on_submit=False):
                 _ed_r = st.data_editor(
                     _df_r, hide_index=True, use_container_width=True,
-                    key="knez_rucni_ed_" + str(mesec_key) + "_" + str(_tid),
+                    key=_kljuc_ed,
                     height=min(56 + 35 * len(_df_r), 430),
                     column_config={
                         "ID artikla": st.column_config.NumberColumn(disabled=True, width="small"),
@@ -4109,6 +4120,10 @@ def knez_admin_ui():
                                        ko=st.session_state.get("admin_user", ""),
                                        prazno=bool(not _red_nov)):
                     st.session_state.pop("_knez_edit_rucno", None)
+                    for _k_s in [_k for _k in list(st.session_state)
+                                 if str(_k).startswith("knez_rucni_ed_" + str(mesec_key)
+                                                       + "_" + str(_tid))]:
+                        st.session_state.pop(_k_s, None)
                     st.session_state["_knez_lager_flash"] = (
                         "✅ " + _nz_t.replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,")[:44]
                         + " — "
@@ -4149,6 +4164,13 @@ def knez_admin_ui():
                             # bez ovoga selectbox gore ostane na staroj pumpi (Streamlit
                             # pamti izbor po ključu i ignoriše index) pa „Otvori" ne radi
                             st.session_state.pop("knez_rucna_pumpa", None)
+                            # obriši zapamćene izmene tabele za tu pumpu, da se
+                            # otvori tačno ono što piše u bazi
+                            _pref_e = ("knez_rucni_ed_" + str(mesec_key) + "_"
+                                       + str(st.session_state["_knez_edit_rucno"]))
+                            for _k_e in [_k for _k in list(st.session_state)
+                                         if str(_k).startswith(_pref_e)]:
+                                st.session_state.pop(_k_e, None)
                             st.rerun()
 
         # ============ 6) ARTIKLI KOJE NE PREPOZNAJEM ============
