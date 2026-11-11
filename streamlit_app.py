@@ -4007,6 +4007,108 @@ def knez_admin_ui():
                         st.session_state["_knez_pdf_rez"] = {"stavke": _stavke, "izv": _izv}
                         st.rerun()
 
+        # ============ 5a) IZMENA već upisane pumpe — SASVIM ODVOJENO ============
+        # Izmena postojećeg upisa nema NIŠTA zajedničko sa unosom za nove pumpe:
+        # svoj naslov, svoja tabela, svoje dugme, svoji ključevi. Tako upis ne može
+        # da „odluta“ na drugu pumpu.
+        _edit_ik = st.session_state.get("_knez_edit_rucno")
+        if _edit_ik and not _zakljucan_k and _kat_p:
+            _eid = int(_edit_ik)
+            _enz = next((r["naziv"] for r in _pumpe if int(r["idk"]) == _eid), "")
+            _enz_k = (_enz.replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,")
+                      or ("ID " + str(_eid)))
+            _est = (((_obr.get(_eid) or {}).get("dnevnik") or {}).get("rucni_lager") or {})
+            _emap = {int(_x["ida"]): _x for _x in (_est.get("redovi") or [])
+                     if _x.get("ida")}
+            st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+            st.markdown('<div class="knez-ed-hdr">✏️ IZMENA već upisane pumpe '
+                        '&nbsp;·&nbsp; ' + _h_escape(_enz_k) + '</div>',
+                        unsafe_allow_html=True)
+            _ec1, _ec2 = st.columns([3.4, 1.3])
+            with _ec1:
+                st.caption("Menja se SAMO pumpa **" + str(_eid) + " · " + _enz_k + "**."
+                           + (("  ·  do sada upisano " + str(len(_emap))
+                               + " artikala · " + str(_est.get("ko", ""))
+                               + " · " + _dt_kratko(_est.get("at", "")))
+                              if _est else ""))
+            with _ec2:
+                if st.button("✖ Zatvori izmenu", key="knez_izm_close",
+                             use_container_width=True):
+                    st.session_state.pop("_knez_edit_rucno", None)
+                    for _k_z in [_k for _k in list(st.session_state)
+                                 if str(_k).startswith("knezizm_ed_")]:
+                        st.session_state.pop(_k_z, None)
+                    st.rerun()
+            _edf = pd.DataFrame([{"ID artikla": _i, "Naziv artikla": _n,
+                                  "Izlaz (prodaja)": float(_emap.get(_i, {}).get("izlaz", 0) or 0),
+                                  "Stanje (lager)": float(_emap.get(_i, {}).get("stanje", 0) or 0)}
+                                 for _i, _n in sorted(_kat_p.items())])
+            _ekey = "knezizm_ed_" + str(mesec_key) + "_" + str(_eid)
+            with st.form("knezizm_form_" + str(mesec_key), clear_on_submit=False):
+                _eed = st.data_editor(
+                    _edf, hide_index=True, use_container_width=True, key=_ekey,
+                    height=min(56 + 35 * len(_edf), 430),
+                    column_config={
+                        "ID artikla": st.column_config.NumberColumn(disabled=True,
+                                                                    width="small"),
+                        "Naziv artikla": st.column_config.TextColumn(disabled=True,
+                                                                     width="large"),
+                        "Izlaz (prodaja)": st.column_config.NumberColumn(min_value=0, step=1,
+                                                                         format="%d"),
+                        "Stanje (lager)": st.column_config.NumberColumn(min_value=0, step=1,
+                                                                        format="%d")})
+                _eq1, _eq2 = st.columns([2.6, 1])
+                with _eq1:
+                    st.caption("Ispravi količine pa klikni Sačuvaj izmenu — upisuje se u "
+                               "pumpu **" + str(_eid) + "** i menja se datum izmene.")
+                    _enule = st.checkbox("Ova pumpa nema ništa (sve nule) — svejedno sačuvaj",
+                                         key="knezizm_nule_" + str(_eid))
+                with _eq2:
+                    _ecuv = st.form_submit_button("💾 Sačuvaj izmenu", type="primary",
+                                                  use_container_width=True)
+            if _ecuv:
+                _ess = st.session_state.get(_ekey) or {}
+                _esr = ((_ess.get("edited_rows") or {}) if isinstance(_ess, dict) else {})
+                for _ir, _iv in _esr.items():
+                    try:
+                        _ir = int(_ir)
+                    except Exception:
+                        continue
+                    if not (0 <= _ir < len(_eed)):
+                        continue
+                    for _ic, _ivv in (_iv or {}).items():
+                        if _ic in _eed.columns:
+                            _eed.iloc[_ir, _eed.columns.get_loc(_ic)] = _ivv
+                _enov = [{"ida": int(_rr["ID artikla"]), "naziv": str(_rr["Naziv artikla"]),
+                          "izlaz": float(_rr["Izlaz (prodaja)"] or 0),
+                          "stanje": float(_rr["Stanje (lager)"] or 0)}
+                         for _, _rr in _eed.iterrows()
+                         if (float(_rr["Izlaz (prodaja)"] or 0) > 0
+                             or float(_rr["Stanje (lager)"] or 0) > 0)]
+                if not _enov and not _enule:
+                    st.warning("Nisi upisala nijednu količinu. Ako pumpa stvarno nema "
+                               "ništa, čekiraj „sve nule“ pa sačuvaj.")
+                elif sb_knez_rucni_set(mesec_key, _eid, _enov,
+                                       ko=st.session_state.get("admin_user", ""),
+                                       prazno=bool(not _enov)):
+                    st.session_state.pop("_knez_edit_rucno", None)
+                    for _k_z in [_k for _k in list(st.session_state)
+                                 if str(_k).startswith("knezizm_ed_")]:
+                        st.session_state.pop(_k_z, None)
+                    st.session_state["_knez_lager_flash"] = (
+                        "✅ IZMENJENO · pumpa " + str(_eid) + " · " + _enz_k[:44]
+                        + " — "
+                        + ((str(len(_enov)) + " artikala") if _enov else "sve nule")
+                        + "  ·  " + _now().strftime("%d.%m.%Y %H:%M"))
+                    st.rerun()
+                else:
+                    st.error("❌ Nije sačuvano — "
+                             + (str(st.session_state.pop("_knez_rucni_err", ""))[:180]
+                                or "Supabase nije dostupan")
+                             + ". NE zatvaraj stranicu — probaj ponovo za koji trenutak.")
+            st.markdown("<hr style='margin:16px 0 4px;border:none;"
+                        "border-top:1px solid #e5e7eb;'>", unsafe_allow_html=True)
+
         # ============ 5) RUČNI UNOS (samo pumpe koje NISU završene) ============
         st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
         st.markdown('<div style="font-size:14px;font-weight:800;color:#7c2d12;">'
@@ -4020,44 +4122,20 @@ def knez_admin_ui():
             st.info("🔒 Izveštaj je zaključan — ručni unos se više ne menja.")
         elif not _kat_p:
             st.info("Ručni unos nije moguć dok nemam naš šifarnik artikala (objavi jedan sistem).")
-        elif not _za_rucno and not st.session_state.get("_knez_edit_rucno"):
+        elif not _za_rucno:
             st.success("✅ Sve pumpe su završene — nema šta da se upisuje ručno.")
         else:
-            _edit_ik = st.session_state.get("_knez_edit_rucno")
-            _spisak = list(_za_rucno)
-            if _edit_ik and all(int(_z["idk"]) != int(_edit_ik) for _z in _spisak):
-                _nz_e = next((r["naziv"] for r in _pumpe if int(r["idk"]) == int(_edit_ik)), "")
-                _spisak = [{"idk": int(_edit_ik), "naziv": _nz_e,
-                            "razlog": "✍️ izmena ručnog unosa"}] + _spisak
             _lbl_r = [str(_z["idk"]) + " · "
                       + _z["naziv"].replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,")
-                      + "  —  " + _z["razlog"] for _z in _spisak] or ["—"]
-            # Izabrana pumpa se pamti kao BROJ (_knez_rucni_tid), ne kao tekst iz
-            # padajućeg menija. Tekst ume da zastari (nova verzija = drugi natpis),
-            # pa bi se broj pumpe menjao usred rada i klik na Sačuvaj bi propadao.
-            def _knez_izbor_pumpe():
-                _v_izb = str(st.session_state.get("knez_rucna_pumpa") or "")
-                try:
-                    _nov_tid = int(_v_izb.split("·")[0].strip())
-                except Exception:
-                    return
-                st.session_state["_knez_rucni_tid"] = _nov_tid
-                if int(st.session_state.get("_knez_edit_rucno") or 0) != _nov_tid:
-                    st.session_state.pop("_knez_edit_rucno", None)
-
-            _sve_idk = [int(_z["idk"]) for _z in _spisak]
-            _tid = int(st.session_state.get("_knez_rucni_tid") or 0)
-            if _tid not in _sve_idk:
-                _tid = (int(_edit_ik) if (_edit_ik and int(_edit_ik) in _sve_idk)
-                        else (_sve_idk[0] if _sve_idk else 0))
-                st.session_state["_knez_rucni_tid"] = _tid
-            _idx_r = _sve_idk.index(_tid) if _tid in _sve_idk else 0
+                      + "  —  " + _z["razlog"] for _z in _za_rucno]
             if st.session_state.get("knez_rucna_pumpa") not in _lbl_r:
                 st.session_state.pop("knez_rucna_pumpa", None)
-            st.selectbox("Pumpa", _lbl_r, index=_idx_r, key="knez_rucna_pumpa",
-                         label_visibility="collapsed", on_change=_knez_izbor_pumpe)
-            _zi = _idx_r
-            _nz_t = str(_spisak[_zi]["naziv"]) if _spisak else ""
+            _izb = st.selectbox("Pumpa", _lbl_r, index=0, key="knez_rucna_pumpa",
+                                label_visibility="collapsed")
+            _zi = _lbl_r.index(_izb) if _izb in _lbl_r else 0
+            _tid = int(_za_rucno[_zi]["idk"])
+            _nz_t = str(_za_rucno[_zi]["naziv"])
+            _nz_tk = _nz_t.replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,")
             _stara = (((_obr.get(_tid) or {}).get("dnevnik") or {}).get("rucni_lager") or {})
             _stara_map = {int(_x["ida"]): _x for _x in (_stara.get("redovi") or [])
                           if _x.get("ida")}
@@ -4066,7 +4144,6 @@ def knez_admin_ui():
                            + str(_stara.get("ko", "")) + "  ·  "
                            + _dt_kratko(_stara.get("at", "")))
             else:
-                # ako je pumpa ipak poslala fajl (pogrešan period, dupli…) — ponudi brojeve
                 _fajl_pum = sorted([_g for _g in _izv
                                     if _g.get("idk") == _tid and _g.get("redova")],
                                    key=lambda g: -g["redova"])
@@ -4085,28 +4162,20 @@ def knez_admin_ui():
                                    "Izlaz (prodaja)": float(_stara_map.get(_i, {}).get("izlaz", 0) or 0),
                                    "Stanje (lager)": float(_stara_map.get(_i, {}).get("stanje", 0) or 0)}
                                   for _i, _n in sorted(_kat_p.items())])
-            # potpis spiska artikala — ulazi u ključ tabele (vidi objašnjenje niže)
-            _pot_art = str(len(_df_r)) + "x" + str(
-                sum((_j + 1) * int(_i) for _j, _i in enumerate(sorted(_kat_p))) % 1000000)
-            _kljuc_ed = ("knez_rucni_ed_" + str(mesec_key) + "_" + str(_tid)
-                         + "_" + _pot_art)
-            st.markdown('<div class="knez-ed-hdr">'
-                        + ('✏️ IZMENA ručnog unosa &nbsp;·&nbsp; '
-                           if (_edit_ik and int(_edit_ik) == int(_tid))
-                           else '✍️ Ručni unos &nbsp;·&nbsp; ')
-                        + _h_escape(_nz_t.replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,"))
-                        + '</div>', unsafe_allow_html=True)
-            st.caption("Upisuje se za pumpu **" + str(_tid) + " · "
-                       + _nz_t.replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,")
+            _kljuc_ed = "knez_rucni_ed_" + str(mesec_key) + "_" + str(_tid)
+            st.markdown('<div class="knez-ed-hdr">✍️ Ručni unos &nbsp;·&nbsp; '
+                        + _h_escape(_nz_tk) + '</div>', unsafe_allow_html=True)
+            st.caption("Upisuje se za pumpu **" + str(_tid) + " · " + _nz_tk
                        + "** — proveri da je to prava pumpa pre nego što sačuvaš.")
             with st.form("knez_rucni_form_" + str(mesec_key), clear_on_submit=False):
                 _ed_r = st.data_editor(
-                    _df_r, hide_index=True, use_container_width=True,
-                    key=_kljuc_ed,
+                    _df_r, hide_index=True, use_container_width=True, key=_kljuc_ed,
                     height=min(56 + 35 * len(_df_r), 430),
                     column_config={
-                        "ID artikla": st.column_config.NumberColumn(disabled=True, width="small"),
-                        "Naziv artikla": st.column_config.TextColumn(disabled=True, width="large"),
+                        "ID artikla": st.column_config.NumberColumn(disabled=True,
+                                                                    width="small"),
+                        "Naziv artikla": st.column_config.TextColumn(disabled=True,
+                                                                     width="large"),
                         "Izlaz (prodaja)": st.column_config.NumberColumn(min_value=0, step=1,
                                                                          format="%d"),
                         "Stanje (lager)": st.column_config.NumberColumn(min_value=0, step=1,
@@ -4121,8 +4190,6 @@ def knez_admin_ui():
                     _cuvaj = st.form_submit_button("💾 Sačuvaj", type="primary",
                                                    use_container_width=True)
             if _cuvaj:
-                # rezerva: ako se sadržaj tabele izgubi, pročitaj izmene direktno iz
-                # zapamćenog stanja tabele — tako se ništa upisano ne gubi
                 _ss_ed = st.session_state.get(_kljuc_ed) or {}
                 _ss_rows = ((_ss_ed.get("edited_rows") or {})
                             if isinstance(_ss_ed, dict) else {})
@@ -4142,24 +4209,17 @@ def knez_admin_ui():
                             for _, _rr in _ed_r.iterrows()
                             if (float(_rr["Izlaz (prodaja)"] or 0) > 0
                                 or float(_rr["Stanje (lager)"] or 0) > 0)]
-                st.info("🔎 Sačuvaj je kliknut · pumpa " + str(_tid) + " · artikala sa "
-                        "količinom: " + str(len(_red_nov))
-                        + "  —  ovaj red je privremen, da vidimo gde zapinje.")
                 if not _red_nov and not _nula_ok:
                     st.warning("Nisi upisala nijednu količinu. Ako pumpa stvarno nema ništa, "
                                "čekiraj „sve nule“ pa sačuvaj — skloniću je sa spiska.")
                 elif sb_knez_rucni_set(mesec_key, _tid, _red_nov,
                                        ko=st.session_state.get("admin_user", ""),
                                        prazno=bool(not _red_nov)):
-                    st.session_state.pop("_knez_edit_rucno", None)
                     for _k_s in [_k for _k in list(st.session_state)
-                                 if str(_k).startswith("knez_rucni_ed_" + str(mesec_key)
-                                                       + "_" + str(_tid))]:
+                                 if str(_k).startswith("knez_rucni_ed_" + str(mesec_key))]:
                         st.session_state.pop(_k_s, None)
                     st.session_state["_knez_lager_flash"] = (
-                        "✅ Pumpa " + str(_tid) + " · "
-                        + _nz_t.replace("KNEZ PETROL DOO ZEMUN,", "").strip(" -,")[:44]
-                        + " — "
+                        "✅ Pumpa " + str(_tid) + " · " + _nz_tk[:44] + " — "
                         + ((str(len(_red_nov)) + " artikala je upisano ručno")
                            if _red_nov else "nema ničega (sve nule)")
                         + "  ·  " + _now().strftime("%d.%m.%Y %H:%M")
@@ -4193,13 +4253,13 @@ def knez_admin_ui():
                         st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
                         if st.button("✏️ Otvori", key="knez_izmeni_btn",
                                      use_container_width=True, disabled=(_pz_e == "—")):
+                            # IZMENA je sasvim odvojen deo (5a) — samo mu kažemo
+                            # koja je pumpa; padajući meni za nove pumpe se ne dira
                             st.session_state["_knez_edit_rucno"] = int(
                                 str(_pz_e).split("·")[0].strip())
-                            # izbor pumpe se pamti kao BROJ — tekst iz padajućeg menija
-                            # ume da zastari posle nove verzije, pa se izgubi klik na Sačuvaj
-                            st.session_state["_knez_rucni_tid"] = int(
-                                st.session_state["_knez_edit_rucno"])
-                            st.session_state.pop("knez_rucna_pumpa", None)
+                            for _k_z in [_k for _k in list(st.session_state)
+                                         if str(_k).startswith("knezizm_ed_")]:
+                                st.session_state.pop(_k_z, None)
                             # obriši zapamćene izmene tabele za tu pumpu, da se
                             # otvori tačno ono što piše u bazi
                             _pref_e = ("knez_rucni_ed_" + str(mesec_key) + "_"
@@ -4208,6 +4268,11 @@ def knez_admin_ui():
                                          if str(_k).startswith(_pref_e)]:
                                 st.session_state.pop(_k_e, None)
                             st.rerun()
+                    if st.session_state.get("_knez_edit_rucno"):
+                        st.info("⬆️ Izmena za pumpu "
+                                + str(st.session_state["_knez_edit_rucno"])
+                                + " je otvorena IZNAD ove tabele — skroluj gore, "
+                                  "do naslova „✏️ IZMENA već upisane pumpe“.")
 
         # ============ 6) ARTIKLI KOJE NE PREPOZNAJEM ============
         _nepoz_novi = {_k: _v for _k, _v in _nepoz.items() if _k not in _nije_nase}
@@ -8641,7 +8706,7 @@ def _knez_odgovori_jedno(adrese, od_datum=None, do_datum=None, cfg=None):
     """Pro\u010ditaj sandu\u010de i na\u0111i ODGOVORE pumpi. `adrese` = skup mejlova iz \u0161ifarnika.
 
     BRZINA: prvo se povla\u010de SAMO zaglavlja (From/Subject/Date) svih poruka od
-    `od_datum` \u2014 to je par kilobajta. Cela poruka (sa prilozima) se skida tek za
+    `od_datum` — to je par kilobajta. Cela poruka (sa prilozima) se skida tek za
     one \u010diji se po\u0161iljalac poklapa sa pumpom. Zato traje sekundama, a ne minutima.
 
     Vrati (po_adresi, neprepoznati, greska)."""
@@ -8851,7 +8916,7 @@ def knez_citaj_lager_pdf(data):
 
     # --- provera da je to zaista ta tabela ---
     if not _re.search(r"izlaz", _txt, _re.I) or not _re.search(r"stanje", _txt, _re.I):
-        _out["greska"] = ("Ovo ne izgleda kao \u201eLager lista\u201c \u2014 nisu na\u0111ene kolone "
+        _out["greska"] = ("Ovo ne izgleda kao „Lager lista“ — nisu na\u0111ene kolone "
                           "Izlaz / Stanje.")
         return _out
     _top_h = None
@@ -8868,7 +8933,7 @@ def knez_citaj_lager_pdf(data):
         _k = (_w["_p"], round(_w["top"] / 3.0))
         _redovi.setdefault(_k, []).append(_w)
 
-    # broj iz tabele UVEK ima decimale (3,00 / 2.670,00) \u2014 po tome se razlikuje
+    # broj iz tabele UVEK ima decimale (3,00 / 2.670,00) — po tome se razlikuje
     # od brojeva u nazivu artikla (HQD 1000, 17MG, 2000 puffs)
     # dva formata: naš (3,00 / 2.670,00) i engleski (3.00 / 2,670.00) — pumpe šalju
     # i jedan i drugi, zavisno od podešavanja njihovog programa
@@ -12767,7 +12832,7 @@ def cene_pregled_html(p, sistem, grupa, redovna=0, profit=None, profit_lbl="",
     if not p:
         return ('<div class="cp-nema">Za ovaj sistem i grupu nema prodaje u objavljenom '
                 'izveštaju prodaje. Ako se kupac u izveštaju zove drugačije nego sistem '
-                'ovde, poveži ga u „Knjižno odobrenje → Kupci koji nisu povezani\u201c.</div>')
+                'ovde, poveži ga u „Knjižno odobrenje → Kupci koji nisu povezani“.</div>')
     _red = p["redovi"]
     _max = max([_r["kom"] for _r in _red] + [1])
     _h = ['<div class="cp">']
@@ -17495,7 +17560,7 @@ div[data-stale="true"] { opacity: 1 !important; }
                        + "  ·  ukupno " + str(len(_export_rows)) + " objekata.")
         # --- Lista: naziv objekta je dugme (klik otvara Detalj za taj objekat) ---
         # Ostale kolone idu kao JEDAN HTML blok po redu (fiksne \u0161irine), da lista
-        # ostane brza \u2014 ina\u010de bi 238 objekata zna\u010dilo ~1900 elemenata po prikazu.
+        # ostane brza — ina\u010de bi 238 objekata zna\u010dilo ~1900 elemenata po prikazu.
         _W = [0.62, 4.3, 8.1]
         _CW = [78, 96, 150, 172, 108, 112]      # Na nuli, Izgubljeno, Zona, Status, Trebovali, Zavr\u0161eno
         _HDR = ["Na nuli", "Izgubljeno", "Zona", "Status", "Trebovali", "Zavr\u0161eno"]
@@ -23624,7 +23689,7 @@ with tab_obj:
                 if _imaju:
                     with st.expander("Obri\u0161i objavljeni izve\u0161taj (" + _psel + ")"):
                         st.caption("Izaberi sistem(e) za ovaj mesec koje \u017Eeli\u0161 da obri\u0161e\u0161, pa potvrdi. "
-                                   "Brisanje je trajno \u2014 posle mo\u017Ee\u0161 da objavi\u0161 nove.")
+                                   "Brisanje je trajno — posle mo\u017Ee\u0161 da objavi\u0161 nove.")
                         _del_sel = st.multiselect("Sistemi za brisanje", _imaju, key="del_sis_" + _pmk)
                         _del_ok = st.checkbox("Potvr\u0111ujem brisanje izabranih", key="del_ok_" + _pmk)
                         if st.button("Obri\u0161i izabrano", key="del_btn_" + _pmk,
@@ -24339,7 +24404,7 @@ with tab_obj:
                         except Exception:
                             _xb64 = None
                         sb_objavi(_mk2, _osist, _payload, xlsx_b64=_xb64)
-                        st.success(f"\u2705 Objavljeno: {_osist} \u2014 {_mlbl2} \u00b7 {len(_stavke)} stavki, {_payload['meta']['n_objekata']} objekata. Osveži (F5) da se ažurira lista gore.")
+                        st.success(f"\u2705 Objavljeno: {_osist} — {_mlbl2} \u00b7 {len(_stavke)} stavki, {_payload['meta']['n_objekata']} objekata. Osveži (F5) da se ažurira lista gore.")
                         if getattr(_eng, "upozorenja", None):
                             st.warning("⚠️ U fajlu ima praznih ćelija — objava je prošla, "
                                        "ali proveri ovo:\n\n"
