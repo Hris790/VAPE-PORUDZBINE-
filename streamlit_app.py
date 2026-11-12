@@ -4317,6 +4317,9 @@ def knez_admin_ui():
                             if sb_knez_nije_nase_dodaj([{"kljuc": _kj5, "naziv": _nz5}],
                                                        st.session_state.get("admin_user", "")):
                                 st.rerun()
+                            else:
+                                st.error("❌ Nije sačuvano — Supabase nije dostupan. "
+                                         "Probaj ponovo za koji trenutak.")
                 if not _nepoz_novi:
                     st.success("✅ Nema novih nepoznatih artikala — sve je već provereno.")
                 if _nije_nase:
@@ -9050,7 +9053,8 @@ def sb_knez_nije_nase_get():
         if not res.data:
             return {}
         _lst = ((res.data[0].get("dnevnik") or {}).get("nije_nase") or [])
-        return {str(_x.get("kljuc", "")): _x for _x in _lst if _x.get("kljuc")}
+        return {str(_x.get("kljuc", "")): _x for _x in _lst
+                if _x.get("kljuc") and str(_x.get("kljuc")) != "kljuc"}
     except Exception:
         return {}
 
@@ -9062,10 +9066,21 @@ def sb_knez_nije_nase_dodaj(stavke, ko=""):
         return False
     try:
         _post = dict(sb_knez_nije_nase_get())
-        for _k, _n in stavke:
-            if _k and _k not in _post:
+        for _st in (stavke or []):
+            # stavka sme da bude i rečnik {"kljuc":…, "naziv":…} i par (kljuc, naziv)
+            if isinstance(_st, dict):
+                _k = str(_st.get("kljuc") or "")
+                _n = _st.get("naziv") or ""
+            else:
+                try:
+                    _k = str(_st[0] or "")
+                    _n = (_st[1] if len(_st) > 1 else "")
+                except Exception:
+                    continue
+            if _k and _k != "kljuc" and _k not in _post:
                 _post[_k] = {"kljuc": _k, "naziv": str(_n or "")[:120],
                              "ko": str(ko or ""), "at": _now().isoformat()}
+        _post.pop("kljuc", None)   # očisti pogrešan zapis iz starije verzije
         cli.table("obrada").upsert(
             {"mesec": KNEZ_ART_KLJUC, "sistem": KNEZ_SIS, "idk": 0,
              "reakcije": [], "trebovali": False, "trebovali_tip": "", "njihova": {},
@@ -13029,6 +13044,41 @@ def _knj_broj(v):
         return None
 
 
+def _knj_prvi_broj(s):
+    """Prvi broj iz teksta: „490 +1 din drugi artikal“ -> 490."""
+    _t = ""
+    for _ch in str(s or ""):
+        if _ch.isdigit() or _ch in ".,":
+            _t += _ch
+        elif _t:
+            break
+    return _knj_broj(_t)
+
+
+def _knj_akc_po_komadu(v):
+    """Akcija „490 +1din“ nije obična cena, ali JESTE cena po komadu:
+    dva komada za 491 din = 245,50 po komadu. Zato se takav red računa sam,
+    a količina se povlači iz izveštaja kao i kod obične akcijske cene.
+
+    Vraća (cena_po_komadu, objašnjenje) ili (None, "") ako to nije taj oblik.
+    „1+1“ i „2+1“ se NE računaju ovde — to su količinske akcije bez cene."""
+    _s = str(v or "").strip().lower()
+    for _c in ("\u00a0", " ", "rsd", "din.", "din", "rds"):
+        _s = _s.replace(_c, "")
+    if _s.count("+") != 1:
+        return (None, "")
+    _l, _d = _s.split("+")
+    _a = _knj_prvi_broj(_l)
+    _b = _knj_prvi_broj(_d)
+    if _a is None or _b is None:
+        return (None, "")
+    if _a < 10 or _b > _a:          # „1+1“, „2+1“ — nije cena
+        return (None, "")
+    _po = (_a + _b) / 2.0
+    return (_po, "„" + str(v).strip() + "“ = dva komada za "
+            + _knj_din(_a + _b, 0) + " → " + _knj_din(_po, 2) + " po komadu")
+
+
 def _knj_izmenjen(a, b, tol=0.5):
     """Da li je analitičar promenio polje: `a` je ono što je sada u polju,
     `b` ono što je bilo prikazano."""
@@ -13285,6 +13335,9 @@ def knjizno_razlozeno(redovi, sistem, radnje, marze=None, cenovnik=None, danas=N
             _osn_r = _knj_broj(_o_ruc.get(_kljuc))
             _red = _knj_broj(_r.get("redovna")) or 0.0
             _akc = _knj_broj(_r.get("akcijska"))
+            _akc_obj = ""
+            if _akc is None:
+                _akc, _akc_obj = _knj_akc_po_komadu(_r.get("akcijska"))
             _m = knjizno_marza(_sis, _g, marze)
             _nap = ""
             _osn_a = 0.0
@@ -13296,6 +13349,8 @@ def knjizno_razlozeno(redovi, sistem, radnje, marze=None, cenovnik=None, danas=N
                 _osn_a = _po["osnovica"] * _kom
                 if _iz_cen:
                     _nap = "naša cena " + _knj_din(_nas, 0)
+                if _akc_obj:
+                    _nap = (_nap + " · " if _nap else "") + _akc_obj
             _osn = _osn_a if _osn_r is None else _osn_r
             if _kom_u is not None:
                 _nap = (_nap + " · " if _nap else "") + "količina upisana ručno"
@@ -13553,6 +13608,10 @@ def knjizno_tabela(redovi, kol, kupac_sistem, marze=None, rucno=None,
             _ruc = _rucno.get(_kljuc) or {}
             _osn_r = _knj_broj(_o_ruc.get(_kljuc))
             _akc_txt = str(_r.get("akcijska") or "")
+            # „490 +1din“ = 245,50 po komadu — računa se samo, kao obična cena
+            _akc_obj = ""
+            if _akc is None:
+                _akc, _akc_obj = _knj_akc_po_komadu(_akc_txt)
             # --- akcija koja nije obična cena (1+1 i slično) ---
             if _akc is None:
                 _cena = _knj_broj(_ruc.get("cena"))
@@ -13602,6 +13661,8 @@ def knjizno_tabela(redovi, kol, kupac_sistem, marze=None, rucno=None,
                         + _knj_din(_red, 0) + ", marža " + str(int(_m)) + "%)")
             if _osn_r is not None:
                 _nap = (_nap + " · " if _nap else "") + "iznos ručno izmenjen"
+            if _akc_obj:
+                _nap = (_nap + " · " if _nap else "") + _akc_obj
             _out.append(_zapis(_kupac, _sis, _g, _red, _akc_txt, _kom, _osn, _m,
                                _kljuc, _r, _nap,
                                rucno_f=bool(_treba_r or _osn_r is not None),
