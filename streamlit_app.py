@@ -6866,6 +6866,13 @@ def napravi_pdf_izvestaj(mesec_key, mesec_lbl):
 
     for _sis in sistemi:
         podaci = sb_ucitaj(mesec_key, _sis)
+        _m_sn = ((podaci or {}).get("meta") or {})
+        if podaci and _m_sn.get("samo_napomena"):
+            _t_sn = str((_m_sn.get("nap_analitika") or {}).get("tekst") or "").strip()
+            el.append(Paragraph(_h_escape(str(_sis)) + "  (nema porudžbine)", Hsys))
+            el.append(Paragraph(_h_escape(_t_sn or "(bez napomene)"), Nar))
+            el.append(Spacer(1, 10))
+            continue
         if not podaci or not podaci.get("stavke"):
             continue
         stavke = podaci["stavke"]
@@ -15870,6 +15877,26 @@ div[data-stale="true"] { opacity: 1 !important; }
                 key="pdf_dl", use_container_width=True)
 
     podaci = sb_ucitaj(mesec_key, sistem)
+    # sistem objavljen SAMO sa napomenom (nema porudžbine ovog meseca)
+    _meta_sn = ((podaci or {}).get("meta") or {})
+    if podaci and _meta_sn.get("samo_napomena"):
+        _nap_sn = (_meta_sn.get("nap_analitika") or {})
+        st.markdown(
+            '<div class="adm-empty"><div class="ic">📝</div>'
+            '<h2>Ovog meseca nema porudžbine</h2>'
+            '<div class="w">' + _h_escape(sistem) + ' · ' + _sel_lbl + '</div>'
+            '<div style="max-width:620px;margin:0 auto;text-align:left;'
+            'background:#fffbeb;border:1px solid #fde68a;border-radius:12px;'
+            'padding:16px 18px;color:#92400e;font-size:15px;line-height:1.55;'
+            'white-space:pre-wrap;">'
+            + _h_escape(str(_nap_sn.get("tekst") or "(bez napomene)")) + '</div>'
+            '<p>Napomenu je ostavila analitika'
+            + ((' · ' + _h_escape(str(_nap_sn.get("ko") or "")))
+               if _nap_sn.get("ko") else '')
+            + ((' · ' + _h_escape(str(_nap_sn.get("at") or "")))
+               if _nap_sn.get("at") else '')
+            + '.</p></div>', unsafe_allow_html=True)
+        return
     if not podaci or not podaci.get("stavke"):
         _plan = sb_load_plan(mesec_key)
         if _plan:
@@ -24240,6 +24267,75 @@ with tab_obj:
     with st.container(border=True):
         st.markdown('<div class="obj-title"><span class="obj-badge">1</span> Učitaj Excel jednog sistema</div>', unsafe_allow_html=True)
         up_o = st.file_uploader("Excel fajl (.xlsx)", type=['xlsx', 'xls'], key="obj_upl", label_visibility="collapsed")
+
+    # ---- objava SAMO napomene: sistem kome ovog meseca ne šaljemo porudžbinu ----
+    with st.container(border=True):
+        st.markdown('<div class="obj-title"><span class="obj-badge">✎</span> '
+                    'Objavi samo napomenu (bez porudžbine)</div>',
+                    unsafe_allow_html=True)
+        st.caption("Za sistem kome ovog meseca ne šaljemo porudžbinu — npr. „KNEZ PETROL "
+                   "— ne primaju cigarete“. Nema fajla ni podataka: administracija "
+                   "vidi samo tvoju napomenu.")
+        _npc1, _npc2 = st.columns(2)
+        with _npc1:
+            _np_sis = st.text_input("Naziv sistema", key="napsam_sist",
+                                    placeholder="npr. KNEZ PETROL")
+        with _npc2:
+            _t_np = datetime.date.today()
+            _np_keys = []
+            _ny, _nm = _t_np.year, _t_np.month - 2
+            while _nm <= 0:
+                _nm += 12
+                _ny -= 1
+            for _ in range(6):
+                _np_keys.append(str(_ny) + "-" + ("0" + str(_nm))[-2:])
+                _nm += 1
+                if _nm > 12:
+                    _nm = 1
+                    _ny += 1
+            _np_def = str(_t_np.year) + "-" + ("0" + str(_t_np.month))[-2:]
+            _np_mes = st.selectbox("Mesec", _np_keys,
+                                   index=(_np_keys.index(_np_def) if _np_def in _np_keys
+                                          else len(_np_keys) - 1),
+                                   format_func=mesec_label, key="napsam_mes")
+        _np_tekst = st.text_area(
+            "Napomena za administraciju", key="napsam_tekst", height=110,
+            placeholder="npr. Ovog meseca ne šaljemo porudžbinu — sistem ne prima "
+                        "cigarete.")
+        _np_ima = None
+        if str(_np_sis or "").strip():
+            try:
+                _np_ima = sb_ucitaj(_np_mes, str(_np_sis).strip())
+            except Exception:
+                _np_ima = None
+        if _np_ima and (_np_ima.get("stavke") or []):
+            st.warning("⚠️ Za " + str(_np_sis).strip() + " · "
+                       + mesec_label(_np_mes) + " već postoji objavljena porudžbina sa "
+                       "podacima. Ako objaviš samo napomenu, ona se BRIŠE i ostaje "
+                       "samo tekst.")
+        if not sb_dostupan():
+            st.info("Objava nije moguća dok Supabase nije podešen.")
+        elif st.button("📤 Objavi napomenu", key="napsam_btn",
+                       use_container_width=True,
+                       disabled=not (str(_np_sis or "").strip()
+                                     and str(_np_tekst or "").strip())):
+            try:
+                sb_objavi(_np_mes, str(_np_sis).strip(),
+                          {"mesec_label": mesec_label(_np_mes),
+                           "meta": {"samo_napomena": True,
+                                    "generisano": _now().strftime("%d.%m.%Y %H:%M"),
+                                    "n_objekata": 0, "ukupno_kom": 0,
+                                    "nap_analitika": {
+                                        "tekst": str(_np_tekst).strip()[:1500],
+                                        "ko": st.session_state.get("admin_user",
+                                                                   "Analitika"),
+                                        "at": _now().strftime("%d.%m.%Y %H:%M")}},
+                           "stavke": []})
+                st.success("✅ Objavljena napomena: " + str(_np_sis).strip() + " — "
+                           + mesec_label(_np_mes)
+                           + ". Osveži (F5) da se vidi u listi.")
+            except Exception as _e_np:
+                st.error("Greška: " + str(_e_np))
 
     if up_o is not None:
         _obytes = up_o.read()
