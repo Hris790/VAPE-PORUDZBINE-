@@ -207,6 +207,54 @@ def sb_objavi(mesec_key, sistem, podaci, xlsx_b64=None):
         except Exception: pass
 
 
+def sb_napomena_objava(mesec_key, sistem, tekst, ko=""):
+    """Napomena analitike za administraciju, za BILO KOJI sistem.
+
+    Ako je izveštaj već objavljen — menja se samo napomena, a porudžbina,
+    stavke i sve ostalo ostaju netaknuti. Ako objave nema — objavljuje se
+    sistem SAMO sa napomenom (bez podataka). Prazan tekst briše napomenu."""
+    cli = _sb()
+    if cli is None:
+        raise RuntimeError("Supabase nije podešen (SUPABASE_URL / SUPABASE_KEY).")
+    _s = str(sistem or "").strip()
+    _tx = str(tekst or "").strip()[:1500]
+    if not _s:
+        return False
+    _nap = {"tekst": _tx, "ko": str(ko or ""),
+            "at": _now().strftime("%d.%m.%Y %H:%M")}
+    res = (cli.table("porudzbine").select("podaci")
+           .eq("mesec", mesec_key).eq("sistem", _s).limit(1).execute())
+    if res.data:
+        podaci = res.data[0].get("podaci") or {}
+        meta = podaci.get("meta") or {}
+        if _tx:
+            meta["nap_analitika"] = _nap
+        else:
+            meta.pop("nap_analitika", None)
+        podaci["meta"] = meta
+        (cli.table("porudzbine").update({"podaci": podaci})
+         .eq("mesec", mesec_key).eq("sistem", _s).execute())
+    else:
+        if not _tx:
+            return False
+        cli.table("porudzbine").upsert(
+            {"mesec": mesec_key, "sistem": _s,
+             "podaci": {"mesec_label": mesec_label(mesec_key),
+                        "meta": {"samo_napomena": True,
+                                 "generisano": _now().strftime("%d.%m.%Y %H:%M"),
+                                 "n_objekata": 0, "ukupno_kom": 0,
+                                 "nap_analitika": _nap},
+                        "stavke": []}},
+            on_conflict="mesec,sistem").execute()
+    for fn in (sb_meseci, sb_sisteme, sb_svi_sistemi, sb_ucitaj, sb_pregled,
+               sb_ucitaj_xlsx):
+        try:
+            fn.clear()
+        except Exception:
+            pass
+    return True
+
+
 def sb_obrisi(mesec_key, sistem):
     """Obriši objavljeni izveštaj (mesec + sistem) iz baze. Trajno."""
     cli = _sb()
@@ -1881,9 +1929,14 @@ def polu_redovi_iz_tabele(iz_tabele):
         _syx = sum(_v for (_s2, _gr), _v in _g.items()
                    if _s2 == _s and (_cene_korpa_artikla(_gr) or _gr) == "SYX")
         _nov = int(_novi.get(_s, 0) or 0)
+        _prm = sum(_v for (_s2, _gr), _v in ((iz_tabele or {}).get("promet")
+                                             or {}).items() if _s2 == _s)
+        _lgr = sum(_v for (_s2, _gr), _v in ((iz_tabele or {}).get("zalihe")
+                                             or {}).items() if _s2 == _s)
         _out.append({"sistem": _s, "hqd_novi": _nov,
                      "hqd_stari": max(_hqd - _nov, 0), "nerd": _nerd, "syx": _syx,
-                     "ukupno": _hqd + _nerd + _syx})
+                     "ukupno": _hqd + _nerd + _syx,
+                     "promet": int(_prm or 0), "lager": int(_lgr or 0)})
     return _out
 
 
@@ -2139,6 +2192,16 @@ def polu_direktor_blok(lista=None):
                             'color:#92400e;margin:4px 0 8px;">📝 '
                             + _h_escape(_r.get("napomena")) + '</div>',
                             unsafe_allow_html=True)
+            if _red and any((_x.get("promet") or _x.get("lager")) for _x in _red):
+                _d_lbl = _rok_fmt(_r.get("do_datuma"))
+                with st.expander("📦 Lager i promet · zaključno sa " + str(_d_lbl)):
+                    st.dataframe(pd.DataFrame(
+                        [{"Sistem": _x.get("sistem"),
+                          "Prodaja do " + str(_d_lbl): int(_x.get("ukupno") or 0),
+                          "Promet do " + str(_d_lbl): int(_x.get("promet") or 0),
+                          "Lager na " + str(_d_lbl): int(_x.get("lager") or 0)}
+                         for _x in _red]),
+                        hide_index=True, use_container_width=True)
             if _red:
                 try:
                     _sal = cene_izvestaj_podaci()
@@ -2154,7 +2217,9 @@ def polu_direktor_blok(lista=None):
                           "HQD novi": int(_x.get("hqd_novi") or 0),
                           "NERD 2000": int(_x.get("nerd") or 0),
                           "SYX": int(_x.get("syx") or 0),
-                          "Ukupno": int(_x.get("ukupno") or 0)} for _x in _red]),
+                          "Ukupno": int(_x.get("ukupno") or 0),
+                          "Promet": int(_x.get("promet") or 0),
+                          "Lager": int(_x.get("lager") or 0)} for _x in _red]),
                         hide_index=True, use_container_width=True)
             _doc = sb_polu_get(_r.get("period")) or {}
             if _doc.get("xlsx_b64"):
@@ -13158,7 +13223,8 @@ def knjizno_kol_iz_tabele(fajl, mesec_key):
        "sistemi": [...], "redova": n, "greska": ""}
     HQD novi ukusi se prepoznaju po ID-u artikla (619, 620, 621, 623)."""
     import openpyxl as _ox
-    _out = {"grupe": {}, "hqd_novi": {}, "sistemi": [], "redova": 0, "greska": ""}
+    _out = {"grupe": {}, "hqd_novi": {}, "promet": {}, "zalihe": {},
+            "sistemi": [], "redova": 0, "greska": ""}
     try:
         _g = int(str(mesec_key).split("-")[0]); _m = int(str(mesec_key).split("-")[1])
     except Exception:
@@ -13177,7 +13243,9 @@ def knjizno_kol_iz_tabele(fajl, mesec_key):
                 "grupa": ["GRUPAARTIKLA", "GRUPAARTIKALA", "GRUPA"],
                 "mesec": ["MESEC"], "godina": ["GODINA"],
                 "kom": ["PRODATAKOLICINAKAKRAJNJEMKUPCU", "PRODATAKOLICINA",
-                        "SUMOFPROMET", "SUMOFKOL"]}
+                        "SUMOFPROMET", "SUMOFKOL"],
+                # opciono — ako ih u fajlu nema, sve radi kao i do sada
+                "promet": ["PROMET"], "zalihe": ["ZALIHE", "LAGER"]}
     for _ws in _wb.worksheets:
         try:
             _hdr = next(_ws.iter_rows(min_row=1, max_row=1, values_only=True))
@@ -13215,6 +13283,13 @@ def knjizno_kol_iz_tabele(fajl, mesec_key):
                     _ida = None
             _kl = (_sis, _gru)
             _out["grupe"][_kl] = _out["grupe"].get(_kl, 0) + _kom
+            for _pk, _pn in (("promet", "promet"), ("zalihe", "zalihe")):
+                if _pk in _poz:
+                    try:
+                        _pv = int(round(float(_r[_poz[_pk]] or 0)))
+                    except Exception:
+                        _pv = 0
+                    _out[_pn][_kl] = _out[_pn].get(_kl, 0) + _pv
             if _ida is not None and _ida in CENE_HQD_NOVI_IDA:
                 _out["hqd_novi"][_sis] = _out["hqd_novi"].get(_sis, 0) + _kom
             _out["redova"] += 1
@@ -22213,7 +22288,7 @@ WMA_WEIGHTS = np.array([0.03, 0.07, 0.12, 0.28, 0.50])
 HIST_WEIGHT = 0.03
 
 class PredictionEngine:
-    def __init__(self, file_bytes, excluded_ids, alpha, beta, min_lager, min_order, mesecni_trosak=0, analitika_meseci=None, min_per_artikal=None, meseci=1.0, max_per_artikal=None, syx_objekti=None):
+    def __init__(self, file_bytes, excluded_ids, alpha, beta, min_lager, min_order, mesecni_trosak=0, analitika_meseci=None, min_per_artikal=None, meseci=1.0, max_per_artikal=None, syx_objekti=None, magacin=None):
         self.file_bytes = file_bytes; self.excluded = excluded_ids
         self.alpha = alpha; self.beta = beta; self.min_lager = min_lager; self.min_order = min_order
         self.min_per_artikal = min_per_artikal
@@ -22225,7 +22300,63 @@ class PredictionEngine:
         self.logs = []; self.adjustments = []; self.has_history = False
         self.has_prices = False
         self.upozorenja = []      # problemi u ulaznom fajlu (prazne ćelije i sl.)
+        # naš magacin: {id artikla: koliko imamo}; 0 = nemamo, nema u spisku = bez
+        # ograničenja. Koristi se za kolonu „PORUDZBINA NA OSNOVU LAGERA".
+        self.magacin = {}
+        for _k_mg, _v_mg in dict(magacin or {}).items():
+            try:
+                self.magacin[int(_k_mg)] = max(int(_v_mg or 0), 0)
+            except Exception:
+                continue
+        self.magacin_izvestaj = []
     def log(self, msg): self.logs.append(msg)
+
+    def _magacin_limit(self):
+        """PORUDZBINA NA OSNOVU LAGERA — koliko stvarno možemo da pošaljemo.
+
+        Artikal koji nije upisan nema ogranicenje. Kolicina 0 znaci da ga
+        NEMAMO -> 0 komada. Ako imamo manje nego sto je predlozeno, raspodeli
+        se po objektima srazmerno predlogu (ostatak dobijaju oni sa najvecim
+        ostatkom pri deljenju)."""
+        self.df_result["PORUDZBINA NA OSNOVU LAGERA"] = (
+            self.df_result["Porudzbina_2"].fillna(0).astype(int))
+        _mg = dict(getattr(self, "magacin", None) or {})
+        self.magacin_izvestaj = []
+        if not _mg:
+            return
+        _ida_col = self.df_result["id artikla"]
+        for _ida, _ima in _mg.items():
+            _m = (pd.to_numeric(_ida_col, errors="coerce") == int(_ida))
+            if not bool(_m.any()):
+                self.magacin_izvestaj.append((int(_ida), 0, int(_ima), 0))
+                continue
+            _trazeno = int(self.df_result.loc[_m, "Porudzbina_2"].fillna(0).sum())
+            _ima = max(int(_ima or 0), 0)
+            if _trazeno <= _ima:
+                self.magacin_izvestaj.append((int(_ida), _trazeno, _ima, _trazeno))
+                continue
+            if _ima <= 0:
+                self.df_result.loc[_m, "PORUDZBINA NA OSNOVU LAGERA"] = 0
+                self.magacin_izvestaj.append((int(_ida), _trazeno, 0, 0))
+                continue
+            _idx = [_i for _i in self.df_result.index[_m]
+                    if int(self.df_result.at[_i, "Porudzbina_2"] or 0) > 0]
+            _raw = {_i: int(self.df_result.at[_i, "Porudzbina_2"]) * _ima / float(_trazeno)
+                    for _i in _idx}
+            _fl = {_i: int(_raw[_i]) for _i in _idx}
+            _ost = _ima - sum(_fl.values())
+            for _j, _i in enumerate(sorted(_idx, key=lambda k: _raw[k] - _fl[k],
+                                           reverse=True)):
+                if _j < _ost:
+                    _fl[_i] += 1
+            self.df_result.loc[_m, "PORUDZBINA NA OSNOVU LAGERA"] = 0
+            for _i in _idx:
+                self.df_result.at[_i, "PORUDZBINA NA OSNOVU LAGERA"] = int(_fl[_i])
+            self.magacin_izvestaj.append((int(_ida), _trazeno, _ima,
+                                          int(sum(_fl.values()))))
+        self.df_result["PORUDZBINA NA OSNOVU LAGERA"] = (
+            self.df_result["PORUDZBINA NA OSNOVU LAGERA"].fillna(0).astype(int))
+        self.log("Magacin: ograniceno " + str(len(self.magacin_izvestaj)) + " artikala")
 
     def _ocisti_brojeve(self, df, kolone, ime_sheeta):
         """Prazne (ili nebrojčane) ćelije u brojčanim kolonama -> 0, uz jasnu prijavu
@@ -22269,6 +22400,7 @@ class PredictionEngine:
         progress_bar.progress(70, "Lager..."); self._merge_lager()
         progress_bar.progress(80, "Porudzbine..."); self._compute_orders()
         progress_bar.progress(85, "Analitika..."); self._apply_min_order(); self._compute_analytics()
+        progress_bar.progress(95, "Magacin..."); self._magacin_limit()
         progress_bar.progress(100, "Gotovo!"); return self.df_result
     def _load_sheets(self):
         xls = pd.ExcelFile(io.BytesIO(self.file_bytes))
@@ -22278,13 +22410,64 @@ class PredictionEngine:
                 for nl, no in sm.items():
                     if kw in nl: return no
             return None
-        s_prod=find(['prodaja']); s_start=find(['startni']); s_pov=find(['povrat'])
+        def _je_polu(_nl):
+            return "polumes" in str(_nl or "")
+        s_prod = None
+        for _nl0, _no0 in sm.items():
+            if "prodaja" in _nl0 and not _je_polu(_nl0):
+                s_prod = _no0
+                break
+        s_polu = None
+        for _nl0, _no0 in sm.items():
+            if _je_polu(_nl0):
+                s_polu = _no0
+                break
+        s_start=find(['startni']); s_pov=find(['povrat'])
         s_tl=find(['trenutni']); s_hist=find(['pre sept','pre sep','istorij'])
         if not s_prod: raise ValueError("Nema sheeta 'prodaja'!")
         if not s_start: raise ValueError("Nema sheeta 'startni lager'!")
         self.prodaja = pd.read_excel(xls, sheet_name=s_prod); self.prodaja.columns=[c.strip() for c in self.prodaja.columns]
         self.prodaja = self.prodaja[[c for c in self.prodaja.columns if 'Unnamed' not in str(c)]]
         self.log(f"Prodaja: {len(self.prodaja)} redova")
+        # --- POLUMESEC: isti list kao „prodaja", samo za pola meseca (01-15) ---
+        # Prodaja tog meseca se za PREDIKCIJU racuna puta 2 (pola meseca = pola
+        # prodaje), dok se u tabelama vidi stvarno upisana kolicina.
+        self.polu_meseci = set()
+        self.polu_sheet = ""
+        self.polu_faktor = 2.0
+        if s_polu:
+            try:
+                _pl = pd.read_excel(xls, sheet_name=s_polu)
+                _pl.columns = [str(c).strip() for c in _pl.columns]
+                _pl = _pl[[c for c in _pl.columns if 'Unnamed' not in str(c)]]
+            except Exception as _e_pl:
+                _pl = pd.DataFrame()
+                self.log(f"Sheet '{s_polu}' se ne moze procitati: {_e_pl}")
+            if len(_pl) and 'Godina' in _pl.columns and 'Mesec' in _pl.columns:
+                for _g2, _m2 in _pl[['Godina', 'Mesec']].drop_duplicates().values.tolist():
+                    try:
+                        self.polu_meseci.add((int(_g2), int(_m2)))
+                    except Exception:
+                        pass
+                if self.polu_meseci:
+                    _gg = pd.to_numeric(self.prodaja['Godina'], errors='coerce')
+                    _mm = pd.to_numeric(self.prodaja['Mesec'], errors='coerce')
+                    _msk = pd.Series([((int(_a), int(_b)) in self.polu_meseci)
+                                      if (pd.notna(_a) and pd.notna(_b)) else False
+                                      for _a, _b in zip(_gg, _mm)],
+                                     index=self.prodaja.index)
+                    if _msk.any():
+                        self.log(f"Polumesec: {int(_msk.sum())} redova iz lista 'prodaja' "
+                                 "za taj mesec se zamenjuje polumesecnim podacima")
+                        self.prodaja = self.prodaja[~_msk]
+                    self.prodaja = pd.concat([self.prodaja, _pl], ignore_index=True)
+                    self.polu_sheet = str(s_polu)
+                    self.log(f"POLUMESEC '{s_polu}': {len(_pl)} redova  ·  meseci "
+                             f"{sorted(self.polu_meseci)}  ·  prodaja se za predikciju "
+                             "racuna x2")
+            else:
+                self.log(f"Sheet '{s_polu}' je prazan ili nema kolone Godina/Mesec "
+                         "— ignorise se.")
         self.region_map = {}
         if 'Region' in self.prodaja.columns:
             self.region_map = self.prodaja.drop_duplicates('ID KOMITENTA').set_index('ID KOMITENTA')['Region'].to_dict()
@@ -22582,9 +22765,19 @@ class PredictionEngine:
                 lv=lv if not pd.isna(lv) else 0; tv=tv if not pd.isna(tv) else 0
                 row[f'{lb}_Pocetno']=poc; row[f'{lb}_Promet']=tv; row[f'{lb}_Prodaja']=pv
                 row[f'{lb}_Povrat']=self.final_povrat.get((idk,ida,god,mes),0)
-                row[f'{lb}_Korekcija']=self.final_korekcija.get((idk,ida,god,mes),0); poc=lv
+                row[f'{lb}_Korekcija']=self.final_korekcija.get((idk,ida,god,mes),0)
+                if (int(god), int(mes)) in getattr(self, "polu_meseci", set()):
+                    row['START POLUMESEC']=poc
+                    row['PROMET POLUMESEC']=tv
+                    row['PRODAJA POLUMESEC']=pv
+                    row['LAGER POLUMESEC']=lv
+                poc=lv
             rows.append(row)
         self.df_monthly=pd.DataFrame(rows)
+        for _c4 in ("START POLUMESEC", "PROMET POLUMESEC", "PRODAJA POLUMESEC",
+                    "LAGER POLUMESEC"):
+            if _c4 in self.df_monthly.columns:
+                self.df_monthly[_c4]=self.df_monthly[_c4].fillna(0).astype(int)
     def _predict_all(self):
         analysis=[]
         for _,k in self.all_keys.iterrows():
@@ -22593,6 +22786,9 @@ class PredictionEngine:
             for god,mes in self.meseci_order:
                 pv,lv,tv=self.prodaja_dict.get((idk,ida,god,mes),(0,0,0))
                 lv=lv if not pd.isna(lv) else 0; tv=tv if not pd.isna(tv) else 0
+                # polumesec: pola meseca = pola prodaje -> za predikciju x2
+                if (int(god), int(mes)) in getattr(self, "polu_meseci", set()):
+                    pv = (0 if pd.isna(pv) else pv) * float(getattr(self, "polu_faktor", 2.0))
                 sales.append(pv); oos.append(1 if poc==0 else 0); pocs.append(poc)
                 end_lagers.append(lv); promets.append(tv); poc=lv
             ha=self.hist_dict.get((idk,ida),0)
@@ -23029,10 +23225,20 @@ def create_excel(engine, ukljuci_model=True):
         ws1.merge_cells(start_row=1,end_row=1,start_column=hist_col,end_column=hist_col)
         c2=ws1.cell(2,hist_col,'Total prodaja'); c2.font=sfnt; c2.fill=sf_hist; c2.alignment=caw; c2.border=tb
         month_start=6
+    _polu_lbl = set()
+    try:
+        _pm_set = set(getattr(engine, "polu_meseci", set()) or set())
+        for _i5, _gm5 in enumerate(getattr(engine, "meseci_order", []) or []):
+            if (int(_gm5[0]), int(_gm5[1])) in _pm_set:
+                _polu_lbl.add(ml[_i5])
+    except Exception:
+        _polu_lbl = set()
     for i,label in enumerate(ml):
         sc=month_start+i*SC
         ws1.merge_cells(start_row=1,end_row=1,start_column=sc,end_column=sc+SC-1)
-        cell=ws1.cell(1,sc,label); cell.font=hfn; cell.fill=hf; cell.alignment=ca
+        cell=ws1.cell(1,sc,label + ("  \u00b7 POLUMESEC 01-15"
+                                    if label in _polu_lbl else ""))
+        cell.font=hfn; cell.fill=hf; cell.alignment=ca
         for cc in range(sc,sc+SC): ws1.cell(1,cc).border=tb; ws1.cell(1,cc).fill=hf
         for j,(sh,sfill) in enumerate(zip(sub_h,sub_f)):
             cell=ws1.cell(2,sc+j,sh); cell.font=sfnt; cell.fill=sfill; cell.border=tb; cell.alignment=caw
@@ -23043,16 +23249,22 @@ def create_excel(engine, ukljuci_model=True):
     for j,(sh,sfill) in enumerate(zip(['Predikcija','Prosek (svi mes.)','Razlika'],[sf_pred,sf_avg,sf_razl])):
         cell=ws1.cell(2,ps+j,sh); cell.font=sfnt; cell.fill=sfill; cell.border=tb; cell.alignment=caw
     os_c=ps+3
-    ws1.merge_cells(start_row=1,end_row=1,start_column=os_c,end_column=os_c+2)
+    _mg_on = bool(getattr(engine, "magacin", None))
+    OC = 4 if _mg_on else 3
+    ws1.merge_cells(start_row=1,end_row=1,start_column=os_c,end_column=os_c+OC-1)
     cell=ws1.cell(1,os_c,f'PORUDZBINA - {engine.order_label}'); cell.font=hfn; cell.fill=ord_hdr; cell.alignment=ca
-    for cc in range(os_c,os_c+3): ws1.cell(1,cc).border=tb; ws1.cell(1,cc).fill=ord_hdr
+    for cc in range(os_c,os_c+OC): ws1.cell(1,cc).border=tb; ws1.cell(1,cc).fill=ord_hdr
     ll="Lager danas"
     if len(engine.trenutni)>0:
         dc=[c for c in engine.trenutni.columns if 'dan' in c.lower()]
         if dc:
             try: d=pd.to_datetime(engine.trenutni[dc[0]].iloc[0]); ll=f"Lager na dan\n{d.strftime('%d.%m.%Y')}"
             except: pass
-    for j,(sh,sfill) in enumerate(zip([ll,'Porudzbina\n(osnovna)',f'Porudzbina\n(min. {engine.min_lager} na stanju)'],[sf_lager,sf_p1,sf_p2])):
+    _oh=[ll,'Porudzbina\n(osnovna)',f'Porudzbina\n(min. {engine.min_lager} na stanju)']
+    _of=[sf_lager,sf_p1,sf_p2]
+    if _mg_on:
+        _oh.append('PORUDZBINA\nNA OSNOVU LAGERA'); _of.append(sf_p2)
+    for j,(sh,sfill) in enumerate(zip(_oh,_of)):
         cell=ws1.cell(2,os_c+j,sh); cell.font=sfnt; cell.fill=sfill; cell.border=tb; cell.alignment=caw
     for idx,row in df.iterrows():
         r=idx+3
@@ -23074,8 +23286,10 @@ def create_excel(engine, ukljuci_model=True):
                 elif v<0: cell.font=Font(name='Arial',size=9,color='9C0006',bold=True)
                 else: cell.font=dfn
             else: cell.font=dfn
-        for j,cn in enumerate(['Lager_danas','Porudzbina_1','Porudzbina_2']):
-            v=int(row.get(cn,0)); cell=ws1.cell(r,os_c+j,v); cell.alignment=ca; cell.border=tb
+        _ocols=['Lager_danas','Porudzbina_1','Porudzbina_2']
+        if _mg_on: _ocols.append('PORUDZBINA NA OSNOVU LAGERA')
+        for j,cn in enumerate(_ocols):
+            v=int(row.get(cn,0) or 0); cell=ws1.cell(r,os_c+j,v); cell.alignment=ca; cell.border=tb
             if cn!='Lager_danas' and v>0: cell.font=Font(name='Arial',size=9,bold=True,color='375623')
             else: cell.font=dfn
     ws1.column_dimensions['A'].width=14; ws1.column_dimensions['B'].width=11; ws1.column_dimensions['C'].width=50; ws1.column_dimensions['D'].width=12
@@ -23083,7 +23297,7 @@ def create_excel(engine, ukljuci_model=True):
     for i in range(len(ml)):
         for j in range(SC): ws1.column_dimensions[get_column_letter(month_start+i*SC+j)].width=14
     for j in range(3): ws1.column_dimensions[get_column_letter(ps+j)].width=14
-    for j in range(3): ws1.column_dimensions[get_column_letter(os_c+j)].width=18
+    for j in range(OC): ws1.column_dimensions[get_column_letter(os_c+j)].width=18
     ws1.freeze_panes=f'{get_column_letter(month_start)}3'
     ws1.auto_filter.ref=f"A2:{get_column_letter(ws1.max_column)}{ws1.max_row}"
     ws2=wb.create_sheet("Totali po mesecima")
@@ -24045,7 +24259,9 @@ with tab_obj:
         st.markdown('<div class="obj-title">🕐 Polumesečni izveštaj prodaje</div>',
                     unsafe_allow_html=True)
         st.caption("Za mesec koji je u toku: ubaci tabelu sa prodajom do danas — samo za "
-                   "sisteme koji su poslali podatke. Direktori to vide kao posebnu "
+                   "sisteme koji su poslali podatke. Ako tabela ima i kolone "
+                   "„Promet“ i „Zalihe“, upisuje se i promet do tog dana i lager "
+                   "na taj dan. Direktori to vide kao posebnu "
                    "karticu unutar „Izveštaj prodaje“. Čim objaviš pun izveštaj prodaje "
                    "koji pokriva taj mesec, polumesečni se sam briše.")
         _pok, _ppor = sb_polu_ok()
@@ -24084,13 +24300,38 @@ with tab_obj:
                     st.error(_pproc["greska"])
                 else:
                     _pred = polu_redovi_iz_tabele(_pproc)
+                    _p_ima_lg = any((_r.get("promet") or _r.get("lager"))
+                                    for _r in _pred)
+                    _p_dlbl = _pdo.strftime("%d.%m.")
                     st.success("Pročitano: " + str(_pproc["redova"]) + " redova  ·  "
-                               + str(len(_pred)) + " sistema  ·  ukupno "
-                               + _knj_din(sum(_r["ukupno"] for _r in _pred), 0) + " kom")
+                               + str(len(_pred)) + " sistema  ·  prodaja "
+                               + _knj_din(sum(_r["ukupno"] for _r in _pred), 0) + " kom"
+                               + ((("  ·  promet "
+                                    + _knj_din(sum(int(_r.get("promet") or 0)
+                                                   for _r in _pred), 0)
+                                    + " kom  ·  lager "
+                                    + _knj_din(sum(int(_r.get("lager") or 0)
+                                                   for _r in _pred), 0) + " kom"))
+                                  if _p_ima_lg else ""))
+                    if _p_ima_lg:
+                        st.caption("✅ U fajlu su i kolone **Promet** i **Zalihe** — "
+                                   "upisuje se prodaja do " + _p_dlbl + ", promet do "
+                                   + _p_dlbl + " i lager na " + _p_dlbl + ".")
+                    else:
+                        st.caption("ℹ️ U fajlu nema kolona **Promet** i **Zalihe** — "
+                                   "objavljuje se samo prodaja. Ako sistem pošalje i "
+                                   "lager i promet, dodaj te dve kolone u tabelu pa "
+                                   "ponovo učitaj.")
                     st.dataframe(pd.DataFrame(
-                        [{"Sistem": _r["sistem"], "HQD stari": _r["hqd_stari"],
-                          "HQD novi": _r["hqd_novi"], "NERD 2000": _r["nerd"],
-                          "SYX": _r["syx"], "Ukupno": _r["ukupno"]} for _r in _pred]),
+                        [dict([("Sistem", _r["sistem"]),
+                               ("HQD stari", _r["hqd_stari"]),
+                               ("HQD novi", _r["hqd_novi"]),
+                               ("NERD 2000", _r["nerd"]), ("SYX", _r["syx"]),
+                               ("Prodaja do " + _p_dlbl, _r["ukupno"])]
+                              + ([("Promet do " + _p_dlbl, int(_r.get("promet") or 0)),
+                                  ("Lager na " + _p_dlbl, int(_r.get("lager") or 0))]
+                                 if _p_ima_lg else []))
+                         for _r in _pred]),
                         hide_index=True, use_container_width=True)
                     if st.button("📤 Objavi polumesečni izveštaj za direktore",
                                  key="polu_save", type="primary",
@@ -24268,18 +24509,16 @@ with tab_obj:
         st.markdown('<div class="obj-title"><span class="obj-badge">1</span> Učitaj Excel jednog sistema</div>', unsafe_allow_html=True)
         up_o = st.file_uploader("Excel fajl (.xlsx)", type=['xlsx', 'xls'], key="obj_upl", label_visibility="collapsed")
 
-    # ---- objava SAMO napomene: sistem kome ovog meseca ne šaljemo porudžbinu ----
+    # ---- napomena za administraciju: bilo koji sistem, sa podacima ili bez ----
     with st.container(border=True):
         st.markdown('<div class="obj-title"><span class="obj-badge">✎</span> '
-                    'Objavi samo napomenu (bez porudžbine)</div>',
+                    'Napomena za administraciju (bilo koji sistem)</div>',
                     unsafe_allow_html=True)
-        st.caption("Za sistem kome ovog meseca ne šaljemo porudžbinu — npr. „KNEZ PETROL "
-                   "— ne primaju cigarete“. Nema fajla ni podataka: administracija "
-                   "vidi samo tvoju napomenu.")
+        st.caption("Dopiši ili izmeni napomenu na već objavljenom izveštaju — "
+                   "porudžbina i podaci ostaju netaknuti. Ako sistem za taj mesec još "
+                   "nije objavljen, objavljuje se SAMO napomena, bez podataka — npr. "
+                   "„KNEZ PETROL — ne primaju cigarete, ne šaljemo porudžbinu“.")
         _npc1, _npc2 = st.columns(2)
-        with _npc1:
-            _np_sis = st.text_input("Naziv sistema", key="napsam_sist",
-                                    placeholder="npr. KNEZ PETROL")
         with _npc2:
             _t_np = datetime.date.today()
             _np_keys = []
@@ -24298,44 +24537,64 @@ with tab_obj:
                                    index=(_np_keys.index(_np_def) if _np_def in _np_keys
                                           else len(_np_keys) - 1),
                                    format_func=mesec_label, key="napsam_mes")
-        _np_tekst = st.text_area(
-            "Napomena za administraciju", key="napsam_tekst", height=110,
-            placeholder="npr. Ovog meseca ne šaljemo porudžbinu — sistem ne prima "
-                        "cigarete.")
+        _NOV = "➕ novi sistem (upiši ime)"
+        try:
+            _np_lst = list(sb_sisteme(_np_mes) or [])
+        except Exception:
+            _np_lst = []
+        with _npc1:
+            _np_izb = st.selectbox("Sistem", _np_lst + [_NOV], key="napsam_izb")
+        _np_sis = str(_np_izb or "")
+        if _np_izb == _NOV:
+            _np_sis = str(st.text_input("Naziv novog sistema", key="napsam_sist",
+                                        placeholder="npr. KNEZ PETROL") or "")
+        _np_sis = _np_sis.strip()
         _np_ima = None
-        if str(_np_sis or "").strip():
+        if _np_sis:
             try:
-                _np_ima = sb_ucitaj(_np_mes, str(_np_sis).strip())
+                _np_ima = sb_ucitaj(_np_mes, _np_sis)
             except Exception:
                 _np_ima = None
+        # pri prvom otvaranju popuni postojeću napomenu, da se ne prekuca slučajno
+        _np_pf = "napsam_pf_" + str(_np_mes) + "_" + _np_sis
+        if _np_sis and not st.session_state.get(_np_pf):
+            st.session_state["napsam_tekst"] = str(
+                (((_np_ima or {}).get("meta") or {}).get("nap_analitika") or {})
+                .get("tekst", "") or "")
+            st.session_state[_np_pf] = True
         if _np_ima and (_np_ima.get("stavke") or []):
-            st.warning("⚠️ Za " + str(_np_sis).strip() + " · "
-                       + mesec_label(_np_mes) + " već postoji objavljena porudžbina sa "
-                       "podacima. Ako objaviš samo napomenu, ona se BRIŠE i ostaje "
-                       "samo tekst.")
+            st.caption("✅ Sistem je objavljen sa podacima ("
+                       + str(len(_np_ima["stavke"])) + " stavki) — napomena se samo "
+                       "dodaje, porudžbina ostaje ista.")
+        elif _np_ima:
+            st.caption("📝 Za ovaj sistem je objavljena samo napomena — možeš "
+                       "je izmeniti.")
+        elif _np_sis:
+            st.caption("ℹ️ Sistem za taj mesec još nije objavljen — objaviće se "
+                       "SAMO napomena, bez podataka.")
+        _np_tekst = st.text_area(
+            "Napomena za administraciju", key="napsam_tekst", height=110,
+            placeholder="npr. Ne šaljemo porudžbinu — sistem ne prima cigarete.")
         if not sb_dostupan():
-            st.info("Objava nije moguća dok Supabase nije podešen.")
-        elif st.button("📤 Objavi napomenu", key="napsam_btn",
-                       use_container_width=True,
-                       disabled=not (str(_np_sis or "").strip()
-                                     and str(_np_tekst or "").strip())):
-            try:
-                sb_objavi(_np_mes, str(_np_sis).strip(),
-                          {"mesec_label": mesec_label(_np_mes),
-                           "meta": {"samo_napomena": True,
-                                    "generisano": _now().strftime("%d.%m.%Y %H:%M"),
-                                    "n_objekata": 0, "ukupno_kom": 0,
-                                    "nap_analitika": {
-                                        "tekst": str(_np_tekst).strip()[:1500],
-                                        "ko": st.session_state.get("admin_user",
-                                                                   "Analitika"),
-                                        "at": _now().strftime("%d.%m.%Y %H:%M")}},
-                           "stavke": []})
-                st.success("✅ Objavljena napomena: " + str(_np_sis).strip() + " — "
-                           + mesec_label(_np_mes)
-                           + ". Osveži (F5) da se vidi u listi.")
-            except Exception as _e_np:
-                st.error("Greška: " + str(_e_np))
+            st.info("Čuvanje nije moguće dok Supabase nije podešen.")
+        else:
+            _np_prazno = not str(_np_tekst or "").strip()
+            if st.button(("🗑 Obriši napomenu" if (_np_prazno and _np_ima)
+                          else "💾 Sačuvaj napomenu"),
+                         key="napsam_btn", use_container_width=True,
+                         disabled=not _np_sis or (_np_prazno and not _np_ima)):
+                try:
+                    if sb_napomena_objava(_np_mes, _np_sis, _np_tekst,
+                                          st.session_state.get("admin_user",
+                                                               "Analitika")):
+                        st.success(("🗑 Napomena obrisana za " if _np_prazno
+                                    else "✅ Napomena sačuvana za ")
+                                   + _np_sis + " · " + mesec_label(_np_mes)
+                                   + ". Osveži (F5) da se vidi kod administracije.")
+                    else:
+                        st.error("Nije sačuvano — proveri naziv sistema i tekst.")
+                except Exception as _e_np:
+                    st.error("Greška: " + str(_e_np))
 
     if up_o is not None:
         _obytes = up_o.read()
@@ -24601,6 +24860,13 @@ with tab_ana:
             st.markdown("**🧊 Objekti koji prodaju SYX**")
             syx_str = st.text_area("ID-evi (prazno = SYX ide svima)", value="", height=70, key="ana_syx",
                                    help="Ako upišeš ID-jeve, SYX vrećice se predlažu u porudžbini samo u tim objektima; u ostalima se stave na 0.")
+            st.markdown("**🏭 Naš magacin — šta nemamo / koliko imamo**")
+            mag_str = st.text_area(
+                "ID artikla  ·  ili  ID=količina", value="", height=90, key="ana_mag",
+                help="Novi red ili zarez. Samo ID (npr. 634) = NEMAMO ga, porudžbina za "
+                     "njega je 0. ID=broj (npr. 634=40) = imamo 40 kom, pa se porudžbina "
+                     "srazmerno smanji po objektima. Što nije upisano — bez ograničenja. "
+                     "Rezultat je nova kolona PORUDZBINA NA OSNOVU LAGERA.")
     excluded = set()
     for part in excluded_str.replace('\n', ',').split(','):
         p = part.strip()
@@ -24610,6 +24876,27 @@ with tab_ana:
         p = part.strip()
         if p.isdigit(): syx_set.add(int(p))
     syx_objekti = syx_set if syx_set else None
+    magacin = {}
+    for part in str(mag_str or "").replace('\n', ',').replace(';', ',').split(','):
+        p = part.strip()
+        if not p:
+            continue
+        _sep = "=" if "=" in p else (":" if ":" in p else "")
+        if _sep:
+            _a, _b = p.split(_sep, 1)
+            if _a.strip().isdigit():
+                magacin[int(_a.strip())] = (int(_b.strip()) if _b.strip().isdigit() else 0)
+        elif p.isdigit():
+            magacin[int(p)] = 0
+    if magacin:
+        _nema = sorted([_k for _k, _v in magacin.items() if _v <= 0])
+        _ima = sorted([_k for _k, _v in magacin.items() if _v > 0])
+        st.caption("🏭 Magacin: "
+                   + ((str(len(_nema)) + " artikala NEMAMO ("
+                       + ", ".join(str(_x) for _x in _nema[:12])
+                       + ("…" if len(_nema) > 12 else "") + ")") if _nema else "")
+                   + ("  ·  " if (_nema and _ima) else "")
+                   + ((str(len(_ima)) + " artikala sa ograničenom količinom") if _ima else ""))
     uploaded = st.file_uploader("Učitaj Excel fajl sa podacima", type=['xlsx','xls'])
     if uploaded:
         file_bytes = uploaded.read()
@@ -24640,11 +24927,22 @@ with tab_ana:
         if st.button("🚀 POKRENI ANALIZU", use_container_width=True):
             progress_bar = st.progress(0)
             try:
-                engine = PredictionEngine(file_bytes, excluded, alpha, beta, min_lager, min_order, mesecni_trosak, selected_meseci, min_per_artikal, meseci=float(meseci_ana), max_per_artikal=max_per_artikal, syx_objekti=syx_objekti)
+                engine = PredictionEngine(file_bytes, excluded, alpha, beta, min_lager, min_order, mesecni_trosak, selected_meseci, min_per_artikal, meseci=float(meseci_ana), max_per_artikal=max_per_artikal, syx_objekti=syx_objekti, magacin=magacin)
                 result = engine.run(progress_bar)
                 st.session_state["last_engine"] = engine
                 st.session_state["last_result"] = result
                 st.session_state["last_filename"] = uploaded.name
+                if getattr(engine, "polu_meseci", None):
+                    _pl_lbls = [engine.mesec_labels[_i]
+                                for _i, _gm in enumerate(engine.meseci_order)
+                                if (int(_gm[0]), int(_gm[1])) in engine.polu_meseci]
+                    st.info("🕐 **POLUMESEC** — iz lista „"
+                            + str(getattr(engine, "polu_sheet", ""))
+                            + "“ učitan je " + ", ".join(_pl_lbls)
+                            + " kao pola meseca (01–15). Prodaja tog meseca se za "
+                              "predikciju računa **×2**, a u tabeli su dodate kolone "
+                              "**START / PROMET / PRODAJA / LAGER POLUMESEC** sa stvarno "
+                              "upisanim količinama.")
                 st.markdown("---")
                 tp = int(result['Predikcija'].sum()); tl = int(result['Lager_danas'].sum())
                 t1 = int(result[~result['ID KOMITENTA'].isin(excluded)]['Porudzbina_1'].sum())
@@ -24662,6 +24960,27 @@ with tab_ana:
                     m3.markdown(f'<div class="metric-card"><div class="metric-value-green">{t2:,}</div><div class="metric-label">Porudžbina (kom)</div></div>', unsafe_allow_html=True)
                     m4.markdown(f'<div class="metric-card"><div class="metric-value">{n_obj_salji:,}</div><div class="metric-label">Objekata prima robu</div></div>', unsafe_allow_html=True)
                     m5.markdown(f'<div class="metric-card"><div class="metric-value">{tl:,}</div><div class="metric-label">Lager danas</div></div>', unsafe_allow_html=True)
+                    if getattr(engine, "magacin", None):
+                        _tm = int(result[~result['ID KOMITENTA'].isin(excluded)]
+                                  ['PORUDZBINA NA OSNOVU LAGERA'].sum())
+                        st.markdown('<div style="background:#ecfdf5;border:1px solid #a7f3d0;'
+                                    'border-radius:10px;padding:10px 14px;margin:10px 0 2px;'
+                                    'font-size:13.5px;color:#065f46;font-weight:700;">'
+                                    '🏭 PORUDZBINA NA OSNOVU LAGERA: '
+                                    + f"{_tm:,}" + ' kom  (predlog je ' + f"{t2:,}"
+                                    + ' kom — razlika ' + f"{max(t2 - _tm, 0):,}"
+                                    + ' kom nemamo u magacinu)</div>',
+                                    unsafe_allow_html=True)
+                        _mi = [x for x in (getattr(engine, "magacin_izvestaj", []) or [])
+                               if x[1] != x[3]]
+                        if _mi:
+                            with st.expander("🏭 Artikli koji su smanjeni zbog magacina ("
+                                             + str(len(_mi)) + ")"):
+                                st.dataframe(pd.DataFrame(
+                                    [{"ID artikla": _x[0], "Predlog (kom)": _x[1],
+                                      "Imamo u magacinu": _x[2],
+                                      "Šalje se (kom)": _x[3]} for _x in _mi]),
+                                    hide_index=True, use_container_width=True)
                     st.markdown("")
                     st.markdown("<div style='margin:24px 0 4px 0;'></div>", unsafe_allow_html=True)
                     ml = engine.mesec_labels
